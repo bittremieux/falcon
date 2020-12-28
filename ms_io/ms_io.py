@@ -3,9 +3,7 @@ from typing import Iterable, Iterator, List
 
 from spectrum_utils.spectrum import MsmsSpectrum
 
-from spectrum_clustering.ms_io import mgf_io
-from spectrum_clustering.ms_io import mzml_io
-from spectrum_clustering.ms_io import mzxml_io
+from ms_io import mgf_io, mzml_io, mzxml_io
 
 
 def get_spectra(filename: str) -> Iterator[MsmsSpectrum]:
