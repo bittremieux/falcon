@@ -351,18 +351,12 @@ def _dist_mz_interval(index_filename: str, n_probe: int, vectors: np.ndarray,
         # noinspection PyArgumentList
         nn_dists, nn_idx_ann = index.search(vectors[batch_start:batch_stop],
                                             n_neighbors_ann)
-        # Filter the neighbors based on the precursor m/z tolerance.
-        nn_idx_mz = _get_neighbors_idx(
+        # Filter the neighbors based on the precursor m/z tolerance and assign
+        # distances.
+        _filter_neighbors_mz(
             precursor_mzs, batch_start, batch_stop, precursor_tol_mass,
-            precursor_tol_mode)
-        for i, idx_ann, idx_mz, dists in zip(
-                np.arange(batch_start, batch_stop), nn_idx_ann, nn_idx_mz,
-                nn_dists):
-            mask = _intersect_idx_ann_mz(idx_ann, idx_mz, n_neighbors)
-            indptr[i + 1] = indptr[i] + len(mask)
-            # Convert cosine similarity to cosine distance.
-            distances[indptr[i]:indptr[i + 1]] = np.clip(1 - dists[mask], 0, 1)
-            indices[indptr[i]:indptr[i + 1]] = idx_ann[mask]
+            precursor_tol_mode, nn_dists, nn_idx_ann, n_neighbors, distances,
+            indices, indptr)
     index.reset()
 
 
@@ -387,6 +381,55 @@ def _load_ann_index(index_filename: str, n_probe: int) -> faiss.Index:
     if hasattr(index, 'nprobe'):
         index.nprobe = min(math.ceil(index.nlist / 2), n_probe)
     return index
+
+
+@nb.njit(parallel=True)
+def _filter_neighbors_mz(precursor_mzs: np.ndarray, batch_start: int,
+                         batch_stop: int, precursor_tol_mass: float,
+                         precursor_tol_mode: str, nn_dists: np.ndarray,
+                         nn_idx_ann: np.ndarray, n_neighbors: int,
+                         distances: np.ndarray, indices: np.ndarray,
+                         indptr: np.ndarray) -> None:
+    """
+    Filter ANN neighbor indexes by precursor m/z tolerances and assign
+    pairwise distances.
+
+    Parameters
+    ----------
+    precursor_mzs : np.ndarray
+        Precursor m/z's corresponding to the vectors.
+    batch_start, batch_stop : int
+        The indexes in the precursor m/z's of the current batch.
+    precursor_tol_mass : float
+        The precursor tolerance mass for vectors to be considered as neighbors.
+    precursor_tol_mode : str
+        The unit of the precursor m/z tolerance ('Da' or 'ppm').
+    nn_dists : np.ndarray
+        Distances of the nearest neighbors.
+    nn_idx_ann : np.ndarray
+        Indexes of the nearest neighbors.
+    n_neighbors : int
+        The (maximum) number of neighbors to set for each vector.
+    distances : np.ndarray
+        The nearest neighbor distances. See `scipy.sparse.csr_matrix` (`data`).
+    indices : np.ndarray
+        The column indices for the nearest neighbor distances. See
+        `scipy.sparse.csr_matrix`.
+    indptr : np.ndarray
+        The index pointers for the nearest neighbor distances. See
+        `scipy.sparse.csr_matrix`.
+    """
+    nn_idx_mz = _get_neighbors_idx(
+        precursor_mzs, batch_start, batch_stop, precursor_tol_mass,
+        precursor_tol_mode)
+    for i, idx_ann, idx_mz, dists in zip(
+            np.arange(batch_start, batch_stop), nn_idx_ann, nn_idx_mz,
+            nn_dists):
+        mask = _intersect_idx_ann_mz(idx_ann, idx_mz, n_neighbors)
+        indptr[i + 1] = indptr[i] + len(mask)
+        # Convert cosine similarity to cosine distance.
+        distances[indptr[i]:indptr[i + 1]] = np.maximum(1 - dists[mask], 0)
+        indices[indptr[i]:indptr[i + 1]] = idx_ann[mask]
 
 
 @nb.njit(parallel=True)
