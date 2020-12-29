@@ -6,20 +6,23 @@ from typing import Any, List, Optional, Sequence, Tuple
 import faiss
 import numba as nb
 import numpy as np
-import pandas as pd
 import scipy.sparse as ss
 import tqdm
+from sklearn.cluster import AgglomerativeClustering
+# noinspection PyProtectedMember
+from sklearn.cluster._dbscan_inner import dbscan_inner
+from sklearn.metrics import pairwise_distances
 
 
 logger = logging.getLogger('spectrum_clustering')
 
 
-def compute_pairwise_distances(
+def _compute_pairwise_distances(
         vectors: np.ndarray, precursor_mzs: np.ndarray,
         precursor_tol_mass: float, precursor_tol_mode: str, mz_interval: float,
         n_neighbors: int, n_neighbors_ann: int, mz_margin: float,
         mz_margin_mode: str, batch_size: int, n_probe: int,
-        work_dir: str = '/tmp') -> ss.csr_matrix:
+        work_dir: str) -> ss.csr_matrix:
     """
     Compute a pairwise distance matrix for the given cluster vectors.
 
@@ -60,7 +63,7 @@ def compute_pairwise_distances(
     Returns
     -------
     ss.csr_matrix
-        A sparse pairwise distance matrix containing the cosine distance
+        A sparse pairwise distance matrix containing the cosine distances
         between similar neighbors in the given vectors.
     """
     if not _is_sorted(precursor_mzs):
@@ -517,3 +520,134 @@ def _intersect_idx_ann_mz(idx_ann: np.ndarray, idx_mz: np.ndarray,
     #        https://github.com/numba/numba/issues/2445
     return (np.sort(idx_ann_order[np.asarray(idx_ann_intersect)])
             [:max_neighbors])
+
+
+def _generate_clusters(pairwise_dist_matrix: ss.csr_matrix, eps: float,
+                       min_samples: int, precursor_mzs: np.ndarray,
+                       precursor_tol_mass: float, precursor_tol_mode: str) \
+        -> np.ndarray:
+    """
+    DBSCAN clustering of the given pairwise distance matrix.
+
+    Parameters
+    ----------
+    pairwise_dist_matrix : ss.csr_matrix
+        A sparse pairwise distance matrix used for clustering.
+    eps : float
+        The maximum distance between two samples for one to be considered as in
+        the neighborhood of the other.
+    min_samples : int
+        The number of samples in a neighborhood for a point to be considered as
+        a core point. This includes the point itself.
+    precursor_mzs : np.ndarray
+        Precursor m/z's matching the pairwise distance matrix.
+    precursor_tol_mass : float
+        Maximum precursor mass tolerance for points to be clustered together.
+    precursor_tol_mode : str
+        The unit of the precursor m/z tolerance ('Da' or 'ppm').
+
+    Returns
+    -------
+    np.ndarray
+        Cluster labels. Noisy samples are given the label -1.
+    """
+    # DBSCAN clustering using the precomputed pairwise distance matrix.
+    logger.info('DBSCAN clustering (eps=%.4f, min_samples=%d) of precomputed '
+                'pairwise distance matrix', eps, min_samples)
+    # Reimplement DBSCAN preprocessing to avoid unnecessary memory consumption.
+    # Find the eps-neighborhoods for all points.
+    mask = pairwise_dist_matrix.data <= eps
+    indices = pairwise_dist_matrix.indices[mask].astype(np.intp)
+    indptr = np.zeros(len(mask) + 1, dtype=np.int64)
+    np.cumsum(mask, out=indptr[1:])
+    indptr = indptr[pairwise_dist_matrix.indptr]
+    neighborhoods = np.split(indices, indptr[1:-1])
+    # Initially, all samples are noise.
+    cluster_labels = np.full(pairwise_dist_matrix.shape[0], -1, dtype=np.intp)
+    # A list of all core samples found.
+    n_neighbors = np.fromiter(map(len, neighborhoods), np.uint32)
+    core_samples = n_neighbors >= min_samples
+    # Run Scikit-Learn DBSCAN.
+    dbscan_inner(core_samples, np.asarray(neighborhoods, dtype=object),
+                 cluster_labels)
+
+    # Refine initial clusters to make sure spectra within a cluster don't have
+    # an excessive precursor m/z difference.
+    order = np.argsort(cluster_labels)
+    n_clusters = cluster_labels[order[-1]]
+    logger.debug('Finetune %d initial cluster assignments to not exceed %d %s '
+                 'precursor m/z tolerance', n_clusters, precursor_tol_mass,
+                 precursor_tol_mode)
+    start_i = 0
+    while cluster_labels[order[start_i]] == -1:
+        start_i += 1
+    stop_i, label = start_i, cluster_labels[order[start_i]]
+    cluster_labels_new = []
+    while stop_i < cluster_labels.shape[0]:
+        start_i, label = stop_i, cluster_labels[order[stop_i]]
+        while (stop_i < cluster_labels.shape[0]
+               and cluster_labels[order[stop_i]] == label):
+            stop_i += 1
+        cluster_labels_new.append((start_i, stop_i, _postprocess_cluster(
+            precursor_mzs[order[start_i:stop_i]], precursor_tol_mass,
+            precursor_tol_mode)))
+    # Assign globally unique cluster labels.
+    cluster_labels, current_label = -np.ones_like(cluster_labels), 0
+    for start_i, stop_i, (clust, n_clusters) in cluster_labels_new:
+        cluster_labels[order[start_i:stop_i]] = clust + current_label
+        current_label += n_clusters
+    logger.debug('%d vectors partitioned in %d clusters',
+                 cluster_labels.shape[0], current_label + 1)
+    return cluster_labels
+
+
+def _postprocess_cluster(cluster_mzs: np.ndarray, precursor_tol_mass: float,
+                         precursor_tol_mode: str) -> Tuple[np.ndarray, int]:
+    """
+    Agglomerative clustering of the precursor m/z's within each initial
+    cluster to avoid that spectra within a cluster have an excessive precursor
+    m/z difference.
+
+    Parameters
+    ----------
+    cluster_mzs : np.ndarray
+        Precursor m/z's of the samples in a single initial cluster.
+    precursor_tol_mass : float
+        Maximum precursor mass tolerance for points to be clustered together.
+    precursor_tol_mode : str
+        The unit of the precursor m/z tolerance ('Da' or 'ppm').
+
+    Returns
+    -------
+    Tuple[np.ndarray, int]
+        A tuple with the array with cluster assignments starting at 0 and the
+        number of clusters.
+    """
+    cluster_labels = np.zeros_like(cluster_mzs)
+    # No splitting possible if only 1 item in cluster.
+    # This seems to happen sometimes despite that DBSCAN requires a higher
+    # `min_samples`.
+    if cluster_labels.shape[0] == 1:
+        n_clusters = 1
+    else:
+        cluster_mzs = cluster_mzs.reshape(-1, 1)
+        # Pairwise differences in Dalton.
+        pairwise_mz_diff = pairwise_distances(cluster_mzs)
+        if precursor_tol_mode == 'ppm':
+            pairwise_mz_diff = pairwise_mz_diff / cluster_mzs * 10**6
+        # Group items within the cluster based on their precursor m/z.
+        # Precursor m/z's within a single group can't exceed the specified
+        # precursor m/z tolerance (`distance_threshold`).
+        clusterer = AgglomerativeClustering(
+            n_clusters=None, affinity='precomputed', linkage='complete',
+            distance_threshold=precursor_tol_mass)
+        cluster_assignments = clusterer.fit_predict(pairwise_mz_diff)
+        n_clusters = clusterer.n_clusters_
+        # Update cluster assignments.
+        if n_clusters > 1:
+            cluster_assignments = cluster_assignments.reshape(1, -1)
+            labels = np.arange(1, n_clusters).reshape(-1, 1)
+            # noinspection PyTypeChecker
+            for label, mask in zip(labels, cluster_assignments == labels):
+                cluster_labels[mask] = label
+    return cluster_labels, n_clusters
