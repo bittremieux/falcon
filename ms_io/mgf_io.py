@@ -23,7 +23,7 @@ def get_spectra(source: Union[IO, str]) -> Iterable[sus.MsmsSpectrum]:
     with pyteomics.mgf.MGF(source) as f_in:
         filename = os.path.basename(f_in.name)
         for spectrum_i, spectrum_dict in enumerate(f_in):
-            # USI-inspired spectrum identifier.
+            # USI-inspired cluster identifier.
             if 'scans' in spectrum_dict['params']:
                 # Use a scan number as identifier.
                 spectrum_dict['params']['title'] = \
@@ -40,17 +40,17 @@ def get_spectra(source: Union[IO, str]) -> Iterable[sus.MsmsSpectrum]:
 
 def _parse_spectrum(spectrum_dict: Dict) -> sus.MsmsSpectrum:
     """
-    Parse the Pyteomics spectrum dict.
+    Parse the Pyteomics cluster dict.
 
     Parameters
     ----------
     spectrum_dict : Dict
-        The Pyteomics spectrum dict to be parsed.
+        The Pyteomics cluster dict to be parsed.
 
     Returns
     -------
     MsmsSpectrum
-        The parsed spectrum.
+        The parsed cluster.
     """
     identifier = spectrum_dict['params']['title']
 
@@ -85,7 +85,7 @@ def write_spectra(filename: str, spectra: Iterable[sus.MsmsSpectrum]) -> None:
 
 def _spectra_to_dicts(spectra: Iterable[sus.MsmsSpectrum]) -> Iterable[Dict]:
     """
-    Convert MsmsSpectrum objects to Pyteomics MGF spectrum dictionaries.
+    Convert MsmsSpectrum objects to Pyteomics MGF cluster dictionaries.
 
     Parameters
     ----------

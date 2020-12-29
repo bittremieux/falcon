@@ -30,7 +30,7 @@ def get_spectra(source: Union[IO, str]) -> Iterable[sus.MsmsSpectrum]:
         try:
             for spectrum_dict in f_in:
                 if int(spectrum_dict.get('msLevel', -1)) == 2:
-                    # USI-inspired spectrum identifier.
+                    # USI-inspired cluster identifier.
                     scan_nr = int(spectrum_dict['id'])
                     spectrum_dict['id'] = f'{filename}:scan:{scan_nr}'
                     try:
@@ -43,17 +43,17 @@ def get_spectra(source: Union[IO, str]) -> Iterable[sus.MsmsSpectrum]:
 
 def _parse_spectrum(spectrum_dict: Dict) -> sus.MsmsSpectrum:
     """
-    Parse the Pyteomics spectrum dict.
+    Parse the Pyteomics cluster dict.
 
     Parameters
     ----------
     spectrum_dict : Dict
-        The Pyteomics spectrum dict to be parsed.
+        The Pyteomics cluster dict to be parsed.
 
     Returns
     -------
     MsmsSpectrum
-        The parsed spectrum.
+        The parsed cluster.
     """
     spectrum_id = spectrum_dict['id']
     mz_array = spectrum_dict['m/z array']

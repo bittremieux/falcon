@@ -15,21 +15,21 @@ MsmsSpectrumTuple = collections.namedtuple(
 def _check_spectrum_valid(spectrum_mz: np.ndarray, min_peaks: int,
                           min_mz_range: float) -> bool:
     """
-    Check whether a spectrum is of good enough quality to be used.
+    Check whether a cluster is of good enough quality to be used.
 
     Parameters
     ----------
     spectrum_mz : np.ndarray
-        M/z peaks of the spectrum whose quality is checked.
+        M/z peaks of the cluster whose quality is checked.
     min_peaks : int
-        Minimum number of peaks the spectrum has to contain.
+        Minimum number of peaks the cluster has to contain.
     min_mz_range : float
-        Minimum m/z range the spectrum's peaks need to cover.
+        Minimum m/z range the cluster's peaks need to cover.
 
     Returns
     -------
     bool
-        True if the spectrum has enough peaks covering a wide enough mass
+        True if the cluster has enough peaks covering a wide enough mass
         range, False otherwise.
     """
     return (len(spectrum_mz) >= min_peaks and
@@ -39,12 +39,12 @@ def _check_spectrum_valid(spectrum_mz: np.ndarray, min_peaks: int,
 @nb.njit
 def _norm_intensity(spectrum_intensity: np.ndarray) -> np.ndarray:
     """
-    Normalize spectrum peak intensities by their vector norm.
+    Normalize cluster peak intensities by their vector norm.
 
     Parameters
     ----------
     spectrum_intensity : np.ndarray
-        The spectrum peak intensities to be normalized.
+        The cluster peak intensities to be normalized.
 
     Returns
     -------
@@ -64,7 +64,7 @@ def process_spectrum(spectrum: sus.MsmsSpectrum,
                      scaling: Optional[str] = None) \
         -> Optional[MsmsSpectrumTuple]:
     """
-    Process a spectrum.
+    Process a cluster.
 
     Processing steps include:
     - Restrict the m/z range to a minimum and maximum m/z.
@@ -76,11 +76,11 @@ def process_spectrum(spectrum: sus.MsmsSpectrum,
     Parameters
     ----------
     spectrum : MsmsSpectrum
-        The spectrum to be processed.
+        The cluster to be processed.
     min_peaks : int
-        Minimum number of peaks the spectrum has to contain to be valid.
+        Minimum number of peaks the cluster has to contain to be valid.
     min_mz_range : float
-        Minimum m/z range the spectrum's peaks need to cover to be valid.
+        Minimum m/z range the cluster's peaks need to cover to be valid.
     mz_min : Optional[float], optional
         Minimum m/z (inclusive). If not set no minimal m/z restriction will
         occur.
@@ -111,7 +111,7 @@ def process_spectrum(spectrum: sus.MsmsSpectrum,
     Returns
     -------
     MsmsSpectrum
-        The processed spectrum.
+        The processed cluster.
     """
     spectrum = spectrum.set_mz_range(mz_min, mz_max)
     if not _check_spectrum_valid(spectrum.mz, min_peaks, min_mz_range):
@@ -170,7 +170,7 @@ def to_vector(spectrum: MsmsSpectrumTuple, vector: np.ndarray,
               min_mz: float, max_mz: float, bin_size: float,
               hash_lookup: np.ndarray, norm: bool = True) -> np.ndarray:
     """
-    Convert a spectrum to a hashed NumPy vector.
+    Convert a cluster to a hashed NumPy vector.
 
     Peaks are first discretized in to mass bins of width `bin_size` between
     `min_mz` and `max_mz`, after which they are hashed to random hash bins
@@ -179,7 +179,7 @@ def to_vector(spectrum: MsmsSpectrumTuple, vector: np.ndarray,
     Parameters
     ----------
     spectrum : MsmsSpectrumTuple
-        The spectrum to be converted to a vector.
+        The cluster to be converted to a vector.
     vector : np.ndarray, optional
         A pre-allocated vector to store the output.
     min_mz : float
@@ -196,7 +196,7 @@ def to_vector(spectrum: MsmsSpectrumTuple, vector: np.ndarray,
     Returns
     -------
     np.ndarray
-        The hashed spectrum vector.
+        The hashed cluster vector.
     """
     _, min_bound, max_bound = get_dim(min_mz, max_mz, bin_size)
     for mz, intensity in zip(spectrum.mz, spectrum.intensity):
