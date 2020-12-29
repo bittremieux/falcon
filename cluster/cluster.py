@@ -389,6 +389,7 @@ def _load_ann_index(index_filename: str, n_probe: int) -> faiss.Index:
     return index
 
 
+@nb.njit(parallel=True)
 def _get_neighbors_idx(mzs: np.ndarray, start_i: int, stop_i: int,
                        precursor_tol_mass: float, precursor_tol_mode: str) \
         -> List[np.ndarray]:
@@ -416,21 +417,23 @@ def _get_neighbors_idx(mzs: np.ndarray, start_i: int, stop_i: int,
     if precursor_tol_mode == 'Da':
         min_mz = mzs[start_i] - precursor_tol_mass
         max_mz = mzs[stop_i - 1] + precursor_tol_mass
-        mz_filter = 'abs(batch_mzs - match_mzs) < precursor_tol_mass'
     elif precursor_tol_mode == 'ppm':
         min_mz = mzs[start_i] - mzs[start_i] * precursor_tol_mass / 10**6
         max_mz = mzs[stop_i - 1] + mzs[stop_i - 1] * precursor_tol_mass / 10**6
-        mz_filter = ('abs(batch_mzs - match_mzs)'
-                     '/ match_mzs * 10**6 < precursor_tol_mass')
     else:
         raise ValueError('Unknown precursor tolerance filter')
-    batch_mzs = mzs[start_i:stop_i].reshape((-1, 1))
+    batch_mzs = mzs[start_i:stop_i].reshape((stop_i - start_i, 1))
     match_i = np.searchsorted(mzs, [min_mz, max_mz])
-    match_mzs = mzs[match_i[0]:match_i[1]].reshape((1, -1))
+    match_mzs = (mzs[match_i[0]:match_i[1]]
+                 .reshape((1, match_i[1] - match_i[0])))
     match_mzs_i = np.arange(match_i[0], match_i[1])
-    # FIXME: try this with Numba.
-    import numexpr as ne
-    return [match_mzs_i[mask] for mask in ne.evaluate(mz_filter)]
+    if precursor_tol_mode == 'Da':
+        masks = np.abs(batch_mzs - match_mzs) < precursor_tol_mass
+    elif precursor_tol_mode == 'ppm':
+        masks = (np.abs(batch_mzs - match_mzs) / match_mzs * 10**6
+                 < precursor_tol_mass)
+    # noinspection PyUnboundLocalVariable
+    return [match_mzs_i[mask] for mask in masks]
 
 
 @nb.njit
