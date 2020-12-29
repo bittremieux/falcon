@@ -4,6 +4,7 @@ import os
 from typing import Any, List, Optional, Sequence, Tuple
 
 import faiss
+import joblib
 import numba as nb
 import numpy as np
 import scipy.sparse as ss
@@ -563,42 +564,61 @@ def _generate_clusters(pairwise_dist_matrix: ss.csr_matrix, eps: float,
     indptr = indptr[pairwise_dist_matrix.indptr]
     neighborhoods = np.split(indices, indptr[1:-1])
     # Initially, all samples are noise.
-    cluster_labels = np.full(pairwise_dist_matrix.shape[0], -1, dtype=np.intp)
+    clusters = np.full(pairwise_dist_matrix.shape[0], -1, dtype=np.intp)
     # A list of all core samples found.
     n_neighbors = np.fromiter(map(len, neighborhoods), np.uint32)
     core_samples = n_neighbors >= min_samples
     # Run Scikit-Learn DBSCAN.
     dbscan_inner(core_samples, np.asarray(neighborhoods, dtype=object),
-                 cluster_labels)
+                 clusters)
 
     # Refine initial clusters to make sure spectra within a cluster don't have
     # an excessive precursor m/z difference.
-    order = np.argsort(cluster_labels)
-    n_clusters = cluster_labels[order[-1]]
+    order = np.argsort(clusters)
+    n_clusters = clusters[order[-1]]
     logger.debug('Finetune %d initial cluster assignments to not exceed %d %s '
                  'precursor m/z tolerance', n_clusters, precursor_tol_mass,
                  precursor_tol_mode)
+    group_idx = _get_cluster_group_idx(clusters, order)
+    cluster_reassignments = nb.typed.List(joblib.Parallel(n_jobs=-1)(
+        joblib.delayed(_postprocess_cluster)
+        (precursor_mzs[order[start_i:stop_i]], precursor_tol_mass,
+         precursor_tol_mode) for start_i, stop_i in group_idx))
+    return _assign_unique_cluster_labels(group_idx, order,
+                                         cluster_reassignments)
+
+
+@nb.njit
+def _get_cluster_group_idx(cluster_labels: np.ndarray, order: np.ndarray) \
+        -> nb.typed.List:
+    """
+    Get start and stop indexes for unique cluster labels.
+
+    Parameters
+    ----------
+    cluster_labels : np.ndarray
+        The cluster labels.
+    order : np.ndarray
+        Order to sort the cluster labels.
+
+    Returns
+    -------
+    nb.typed.List[Tuple[int, int]]
+        Tuples with the start index (inclusive) and end index (exclusive) of
+        the unique cluster labels.
+    """
     start_i = 0
     while cluster_labels[order[start_i]] == -1:
         start_i += 1
     stop_i, label = start_i, cluster_labels[order[start_i]]
-    cluster_labels_new = []
+    group_idx = nb.typed.List()
     while stop_i < cluster_labels.shape[0]:
         start_i, label = stop_i, cluster_labels[order[stop_i]]
         while (stop_i < cluster_labels.shape[0]
                and cluster_labels[order[stop_i]] == label):
             stop_i += 1
-        cluster_labels_new.append((start_i, stop_i, _postprocess_cluster(
-            precursor_mzs[order[start_i:stop_i]], precursor_tol_mass,
-            precursor_tol_mode)))
-    # Assign globally unique cluster labels.
-    cluster_labels, current_label = -np.ones_like(cluster_labels), 0
-    for start_i, stop_i, (clust, n_clusters) in cluster_labels_new:
-        cluster_labels[order[start_i:stop_i]] = clust + current_label
-        current_label += n_clusters
-    logger.debug('%d vectors partitioned in %d clusters',
-                 cluster_labels.shape[0], current_label + 1)
-    return cluster_labels
+        group_idx.append((start_i, stop_i))
+    return group_idx
 
 
 def _postprocess_cluster(cluster_mzs: np.ndarray, precursor_tol_mass: float,
@@ -620,10 +640,10 @@ def _postprocess_cluster(cluster_mzs: np.ndarray, precursor_tol_mass: float,
     Returns
     -------
     Tuple[np.ndarray, int]
-        A tuple with the array with cluster assignments starting at 0 and the
-        number of clusters.
+        A tuple with cluster assignments starting at 0 and the number of
+        clusters.
     """
-    cluster_labels = np.zeros_like(cluster_mzs)
+    cluster_labels = np.zeros_like(cluster_mzs, np.int64)
     # No splitting possible if only 1 item in cluster.
     # This seems to happen sometimes despite that DBSCAN requires a higher
     # `min_samples`.
@@ -651,3 +671,35 @@ def _postprocess_cluster(cluster_mzs: np.ndarray, precursor_tol_mass: float,
             for label, mask in zip(labels, cluster_assignments == labels):
                 cluster_labels[mask] = label
     return cluster_labels, n_clusters
+
+
+@nb.njit
+def _assign_unique_cluster_labels(group_idx: nb.typed.List, order: np.ndarray,
+                                  cluster_reassignments: nb.typed.List) \
+        -> np.ndarray:
+    """
+    Make sure all cluster labels are unique after potential splitting of
+    clusters to avoid excessive precursor m/z differences.
+
+    Parameters
+    ----------
+    group_idx : nb.typed.List[Tuple[int, int]]
+        Tuples with the start index (inclusive) and end index (exclusive) of
+        the unique cluster labels.
+    order : np.ndarray
+        Order to sort the cluster labels.
+    cluster_reassignments : nb.typed.List[Tuple[np.ndarray, int]]
+        Tuples with cluster assignments starting at 0 and the number of
+        clusters.
+
+    Returns
+    -------
+    np.ndarray
+        An array with globally unique cluster labels.
+    """
+    clusters, current_label = -np.ones((group_idx[-1][1],), np.int64), 0
+    for (start_i, stop_i), (cluster_reassignment, n_clusters) in zip(
+            group_idx, cluster_reassignments):
+        clusters[order[start_i:stop_i]] = cluster_reassignment + current_label
+        current_label += n_clusters
+    return clusters
