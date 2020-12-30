@@ -4,12 +4,14 @@ import os
 from typing import Any, List, Optional, Sequence, Tuple
 
 import faiss
+import fastcluster
 import joblib
 import numba as nb
 import numpy as np
 import scipy.sparse as ss
 import tqdm
-from sklearn.cluster import AgglomerativeClustering
+from scipy.cluster.hierarchy import fcluster
+from scipy.spatial.distance import squareform
 # noinspection PyProtectedMember
 from sklearn.cluster._dbscan_inner import dbscan_inner
 from sklearn.metrics import pairwise_distances
@@ -659,11 +661,13 @@ def _postprocess_cluster(cluster_mzs: np.ndarray, precursor_tol_mass: float,
         # Group items within the cluster based on their precursor m/z.
         # Precursor m/z's within a single group can't exceed the specified
         # precursor m/z tolerance (`distance_threshold`).
-        clusterer = AgglomerativeClustering(
-            n_clusters=None, affinity='precomputed', linkage='complete',
-            distance_threshold=precursor_tol_mass)
-        cluster_assignments = clusterer.fit_predict(pairwise_mz_diff)
-        n_clusters = clusterer.n_clusters_
+        # Subtract 1 because fcluster starts with cluster label 1 instead of 0
+        # (like sklearn does).
+        cluster_assignments = fcluster(
+            fastcluster.linkage(
+                squareform(pairwise_mz_diff, checks=False), 'complete'),
+            precursor_tol_mass, 'distance') - 1
+        n_clusters = cluster_assignments.max() + 1
         # Update cluster assignments.
         if n_clusters > 1:
             cluster_assignments = cluster_assignments.reshape(1, -1)
