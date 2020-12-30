@@ -18,7 +18,7 @@ from sklearn.metrics import pairwise_distances
 logger = logging.getLogger('spectrum_clustering')
 
 
-def _compute_pairwise_distances(
+def compute_pairwise_distances(
         vectors: np.ndarray, precursor_mzs: np.ndarray,
         precursor_tol_mass: float, precursor_tol_mode: str, mz_interval: float,
         n_neighbors: int, n_neighbors_ann: int, mz_margin: float,
@@ -71,10 +71,9 @@ def _compute_pairwise_distances(
         raise ValueError("The precursor m/z's (and the corresponding vectors) "
                          "must be supplied in sorted order")
     n_probe, n_neighbors_ann = _check_ann_config(n_probe, n_neighbors_ann)
-    ann_dir = os.path.join(work_dir, 'ann')
-    os.makedirs(ann_dir, exist_ok=True)
-    index_filename = os.path.join(ann_dir, 'ann_{}.faiss')
-    sparse_filename = os.path.join(ann_dir, '{}.npy')
+    os.makedirs(work_dir, exist_ok=True)
+    index_filename = os.path.join(work_dir, 'ann_{}.faiss')
+    sparse_filename = os.path.join(work_dir, '{}.npy')
     mz_splits = np.arange(
         math.floor(np.amin(precursor_mzs) / mz_interval) * mz_interval,
         math.ceil(np.max(precursor_mzs) / mz_interval) * mz_interval,
@@ -117,7 +116,6 @@ def _compute_pairwise_distances(
     pairwise_dist_matrix = ss.csr_matrix(
         (distances, indices, indptr), (vectors.shape[0], vectors.shape[0]),
         np.float32, False)
-    ss.save_npz(os.path.join(ann_dir, 'dist.npz'), pairwise_dist_matrix)
     os.remove(sparse_filename.format('data'))
     os.remove(sparse_filename.format('indices'))
     os.remove(sparse_filename.format('indptr'))
@@ -200,7 +198,8 @@ def _build_ann_index(vectors: np.ndarray, precursor_mzs: np.ndarray,
     batch_size : int
         The number of vectors to be simultaneously added to the index.
     """
-    logger.info('Use %d GPUs for ANN index construction', faiss.get_num_gpus())
+    logger.debug('Use %d GPU(s) for ANN index construction',
+                 faiss.get_num_gpus())
     # Create separate indexes per specified precursor m/z interval.
     for mz in tqdm.tqdm(mz_splits, desc='Indexes built', unit='index'):
         if os.path.isfile(index_filename.format(mz)):
@@ -232,7 +231,7 @@ def _build_ann_index(vectors: np.ndarray, precursor_mzs: np.ndarray,
                 logger.warning('More than 1B vectors to be indexed, consider '
                                'decreasing the ANN size')
         logger.debug('Build the ANN index for precursor m/z %d–%d '
-                     '(%d vector, %d lists)', int(mz), int(mz + mz_interval),
+                     '(%d vectors, %d lists)', int(mz), int(mz + mz_interval),
                      n_vectors_split, n_list)
         # Create a suitable index and compute cluster centroids.
         if n_list <= 0:
@@ -523,9 +522,9 @@ def _intersect_idx_ann_mz(idx_ann: np.ndarray, idx_mz: np.ndarray,
             [:max_neighbors])
 
 
-def _generate_clusters(pairwise_dist_matrix: ss.csr_matrix, eps: float,
-                       min_samples: int, precursor_mzs: np.ndarray,
-                       precursor_tol_mass: float, precursor_tol_mode: str) \
+def generate_clusters(pairwise_dist_matrix: ss.csr_matrix, eps: float,
+                      min_samples: int, precursor_mzs: np.ndarray,
+                      precursor_tol_mass: float, precursor_tol_mode: str) \
         -> np.ndarray:
     """
     DBSCAN clustering of the given pairwise distance matrix.
@@ -569,17 +568,19 @@ def _generate_clusters(pairwise_dist_matrix: ss.csr_matrix, eps: float,
     n_neighbors = np.fromiter(map(len, neighborhoods), np.uint32)
     core_samples = n_neighbors >= min_samples
     # Run Scikit-Learn DBSCAN.
-    dbscan_inner(core_samples, np.asarray(neighborhoods, dtype=object),
-                 clusters)
+    neighborhoods_arr = np.empty(len(neighborhoods), dtype=np.object)
+    neighborhoods_arr[:] = neighborhoods
+    dbscan_inner(core_samples, neighborhoods_arr, clusters)
 
     # Refine initial clusters to make sure spectra within a cluster don't have
     # an excessive precursor m/z difference.
     order = np.argsort(clusters)
-    n_clusters = clusters[order[-1]]
-    logger.debug('Finetune %d initial cluster assignments to not exceed %d %s '
-                 'precursor m/z tolerance', n_clusters, precursor_tol_mass,
-                 precursor_tol_mode)
+    logger.debug('Finetune %d initial unique clusters to not exceed %d %s '
+                 'precursor m/z tolerance', clusters[order[-1]] + 1,
+                 precursor_tol_mass, precursor_tol_mode)
     group_idx = _get_cluster_group_idx(clusters, order)
+    if len(group_idx) == 0:     # Only noise samples.
+        return np.asarray([])
     cluster_reassignments = nb.typed.List(joblib.Parallel(n_jobs=-1)(
         joblib.delayed(_postprocess_cluster)
         (precursor_mzs[order[start_i:stop_i]], precursor_tol_mass,
