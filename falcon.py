@@ -1,3 +1,4 @@
+import copy
 import logging
 import os
 import sys
@@ -41,13 +42,15 @@ if __name__ == '__main__':
     # Read the spectra from the input files.
     # FIXME: Configurable input files.
     filenames = []
-    spectra = {charge: [] for charge in charges}
+    spectra, spectra_raw = {charge: [] for charge in charges}, {}
     logger.info('Read spectra from %d peak file(s)', len(filenames))
     # noinspection PyProtectedMember
     for file_spectra in joblib.Parallel(n_jobs=-1)(
             joblib.delayed(ms_io._get_spectra)(filename)
             for filename in filenames):
         for spec_raw in file_spectra:
+            spec_raw.identifier = f'mzspec:{pxd}:{spec_raw.identifier}'
+            spectra_raw[spec_raw.identifier] = copy.copy(spec_raw)
             # Discard low-quality spectra.
             spec_processed = spectrum.process_spectrum(
                 spec_raw, min_peaks, min_mz_range, min_mz, max_mz,
@@ -68,7 +71,7 @@ if __name__ == '__main__':
                               for i in range(vec_len)], np.uint32)
 
     # Cluster the spectra per charge.
-    clusters_all = []
+    clusters_all, current_label, representatives = [], 0, []
     for charge, spectra_charge in spectra.items():
         logger.info('Cluster %d spectra with precursor charge %d',
                     len(spectra_charge), charge)
@@ -96,15 +99,28 @@ if __name__ == '__main__':
         clusters = cluster.generate_clusters(
             pairwise_dist_matrix, eps, min_samples, precursor_mzs,
             precursor_tol_mass, precursor_tol_mode)
-        usis = [f'mzspec:{pxd}:{spec.identifier}' for spec in spectra_charge]
-        clusters_all.append(pd.DataFrame({'identifier': usis,
-                                          'cluster': clusters}))
-    current_label = 0
-    for clusters in clusters_all:
-        clusters.loc[clusters['cluster'] != -1, 'cluster'] += current_label
-        current_label = clusters['cluster'].max() + 1
+        # Make sure that different charges have non-overlapping cluster labels.
+        mask_no_noise = clusters != -1
+        clusters[mask_no_noise] += current_label
+        current_label = np.amax(clusters[mask_no_noise]) + 1
+        # Extract cluster representatives (medoids).
+        for cluster_label, representative_i in \
+                cluster.get_cluster_representatives(
+                    clusters[mask_no_noise], pairwise_dist_matrix):
+            representative = spectra_raw[spectra_charge[representative_i]
+                                         .identifier]
+            representative.cluster = cluster_label
+            representatives.append(representative)
+        # Save cluster assignments.
+        clusters_all.append(pd.DataFrame({
+            'identifier': [spec.identifier for spec in spectra_charge],
+            'cluster': clusters}))
+
+    # Export cluster memberships and representative spectra.
     clusters_all = (pd.concat(clusters_all, ignore_index=True)
                     .sort_values('identifier', key=natsort.natsort_keygen()))
     clusters_all.to_csv(os.path.join(work_dir, 'clusters.csv'), index=False)
+    ms_io.write_spectra(os.path.join(work_dir, 'clusters.mgf'),
+                        sorted(representatives, key=lambda spec: spec.cluster))
 
     logging.shutdown()

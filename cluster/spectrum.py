@@ -1,4 +1,3 @@
-import collections
 import math
 from typing import Optional, Tuple
 
@@ -7,9 +6,21 @@ import numpy as np
 import spectrum_utils.spectrum as sus
 
 
-MsmsSpectrumTuple = collections.namedtuple(
-    'SpectrumTuple', ['identifier', 'precursor_mz', 'precursor_charge', 'mz',
-                      'intensity'])
+@nb.experimental.jitclass([('identifier', nb.types.string),
+                           ('precursor_mz', nb.float64),
+                           ('precursor_charge', nb.int8),
+                           ('mz', nb.float32[:]),
+                           ('intensity', nb.float32[:]),
+                           ('cluster', nb.int64)])
+class MsmsSpectrumNb:
+    def __init__(self, identifier: str, precursor_mz: float,
+                 precursor_charge: int, mz: np.ndarray, intensity: np.ndarray):
+        self.identifier = identifier
+        self.precursor_mz = precursor_mz
+        self.precursor_charge = precursor_charge
+        self.mz = mz
+        self.intensity = intensity
+        self.cluster = -1
 
 
 @nb.njit
@@ -63,7 +74,7 @@ def process_spectrum(spectrum: sus.MsmsSpectrum,
                      min_intensity: Optional[float] = None,
                      max_peaks_used: Optional[int] = None,
                      scaling: Optional[str] = None) \
-        -> Optional[MsmsSpectrumTuple]:
+        -> Optional[MsmsSpectrumNb]:
     """
     Process a cluster.
 
@@ -133,8 +144,8 @@ def process_spectrum(spectrum: sus.MsmsSpectrum,
     spectrum = spectrum.scale_intensity(scaling, max_rank=max_peaks_used)
     intensity = _norm_intensity(spectrum.intensity)
 
-    return MsmsSpectrumTuple(spectrum.identifier, spectrum.precursor_mz,
-                             spectrum.precursor_charge, spectrum.mz, intensity)
+    return MsmsSpectrumNb(spectrum.identifier, spectrum.precursor_mz,
+                          spectrum.precursor_charge, spectrum.mz, intensity)
 
 
 @nb.njit('Tuple((u4, f4, f4))(f4, f4, f4)')
@@ -167,7 +178,7 @@ def get_dim(min_mz: float, max_mz: float, bin_size: float) \
 
 
 @nb.njit
-def to_vector(spectrum: MsmsSpectrumTuple, vector: np.ndarray,
+def to_vector(spectrum: MsmsSpectrumNb, vector: np.ndarray,
               min_mz: float, max_mz: float, bin_size: float,
               hash_lookup: np.ndarray, norm: bool = True) -> np.ndarray:
     """

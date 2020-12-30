@@ -80,7 +80,7 @@ def write_spectra(filename: str, spectra: Iterable[sus.MsmsSpectrum]) -> None:
         The spectra to be written to the MGF file.
     """
     with open(filename, 'w') as f_out:
-        pyteomics.mgf.write(_spectra_to_dicts(spectra), f_out)
+        pyteomics.mgf.write(_spectra_to_dicts(spectra), f_out, use_numpy=True)
 
 
 def _spectra_to_dicts(spectra: Iterable[sus.MsmsSpectrum]) -> Iterable[Dict]:
@@ -105,6 +105,8 @@ def _spectra_to_dicts(spectra: Iterable[sus.MsmsSpectrum]) -> Iterable[Dict]:
             params['rtinseconds'] = spectrum.retention_time
         if hasattr(spectrum, 'scan'):
             params['scan'] = spectrum.scan
+        if hasattr(spectrum, 'cluster'):
+            params['cluster'] = spectrum.cluster
         yield {'params': params,
                'm/z array': spectrum.mz,
                'intensity array': spectrum.intensity}
