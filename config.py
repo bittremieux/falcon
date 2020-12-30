@@ -29,3 +29,4 @@ min_samples = 2
 
 # Miscellaneous.
 work_dir = '/tmp'
+pxd = 'USI000000'

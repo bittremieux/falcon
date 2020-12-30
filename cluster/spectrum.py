@@ -8,7 +8,8 @@ import spectrum_utils.spectrum as sus
 
 
 MsmsSpectrumTuple = collections.namedtuple(
-    'SpectrumTuple', ['precursor_mz', 'precursor_charge', 'mz', 'intensity'])
+    'SpectrumTuple', ['identifier', 'precursor_mz', 'precursor_charge', 'mz',
+                      'intensity'])
 
 
 @nb.njit
@@ -132,8 +133,8 @@ def process_spectrum(spectrum: sus.MsmsSpectrum,
     spectrum = spectrum.scale_intensity(scaling, max_rank=max_peaks_used)
     intensity = _norm_intensity(spectrum.intensity)
 
-    return MsmsSpectrumTuple(spectrum.precursor_mz, spectrum.precursor_charge,
-                             spectrum.mz, intensity)
+    return MsmsSpectrumTuple(spectrum.identifier, spectrum.precursor_mz,
+                             spectrum.precursor_charge, spectrum.mz, intensity)
 
 
 @nb.njit('Tuple((u4, f4, f4))(f4, f4, f4)')

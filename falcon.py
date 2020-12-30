@@ -3,7 +3,9 @@ import os
 import sys
 
 import joblib
+import natsort
 import numpy as np
+import pandas as pd
 import scipy.sparse as ss
 from sklearn.utils import murmurhash3_32
 
@@ -26,6 +28,7 @@ if __name__ == '__main__':
     # Disable dependency non-critical log messages.
     logging.getLogger('faiss').setLevel(logging.WARNING)
     logging.getLogger('numba').setLevel(logging.WARNING)
+    logging.getLogger('numexpr').setLevel(logging.WARNING)
     # Initialize the logger.
     logger = logging.getLogger('spectrum_clustering')
 
@@ -65,6 +68,7 @@ if __name__ == '__main__':
                               for i in range(vec_len)], np.uint32)
 
     # Cluster the spectra per charge.
+    clusters_all = []
     for charge, spectra_charge in spectra.items():
         logger.info('Cluster %d spectra with precursor charge %d',
                     len(spectra_charge), charge)
@@ -92,5 +96,15 @@ if __name__ == '__main__':
         clusters = cluster.generate_clusters(
             pairwise_dist_matrix, eps, min_samples, precursor_mzs,
             precursor_tol_mass, precursor_tol_mode)
+        usis = [f'mzspec:{pxd}:{spec.identifier}' for spec in spectra_charge]
+        clusters_all.append(pd.DataFrame({'identifier': usis,
+                                          'cluster': clusters}))
+    current_label = 0
+    for clusters in clusters_all:
+        clusters.loc[clusters['cluster'] != -1, 'cluster'] += current_label
+        current_label = clusters['cluster'].max() + 1
+    clusters_all = (pd.concat(clusters_all, ignore_index=True)
+                    .sort_values('identifier', key=natsort.natsort_keygen()))
+    clusters_all.to_csv(os.path.join(work_dir, 'clusters.csv'), index=False)
 
     logging.shutdown()
