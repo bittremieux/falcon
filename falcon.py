@@ -1,6 +1,5 @@
 import copy
 import logging
-import os
 import sys
 
 import joblib
@@ -40,8 +39,6 @@ if __name__ == '__main__':
         os.makedirs(work_dir)
 
     # Read the spectra from the input files.
-    # FIXME: Configurable input files.
-    filenames = []
     spectra, spectra_raw = {charge: [] for charge in charges}, {}
     logger.info('Read spectra from %d peak file(s)', len(filenames))
     # noinspection PyProtectedMember

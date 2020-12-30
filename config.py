@@ -1,3 +1,6 @@
+import os
+
+
 # Precursor charges considered.
 charges = 2, 3
 
@@ -24,9 +27,12 @@ n_probe = 128
 batch_size = 2**16
 
 # DBSCAN clustering.
-eps = 0.3
+eps = 0.4
 min_samples = 2
 
-# Miscellaneous.
-work_dir = '/tmp'
-pxd = 'USI000000'
+# Input/output.
+pxd = 'PXD000561'   # 'USI000000'
+filenames = [os.path.abspath(filename)
+             for filename in os.listdir('../data/interim')
+             if filename.endswith('.mgf')]
+work_dir = os.path.abspath('../data/processed')
