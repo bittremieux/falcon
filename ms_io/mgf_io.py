@@ -21,7 +21,7 @@ def get_spectra(source: Union[IO, str]) -> Iterable[sus.MsmsSpectrum]:
         An iterator over the spectra in the given file.
     """
     with pyteomics.mgf.MGF(source) as f_in:
-        filename = os.path.basename(f_in.name)
+        filename = os.path.splitext(os.path.basename(f_in.name))[0]
         for spectrum_i, spectrum_dict in enumerate(f_in):
             # USI-inspired cluster identifier.
             if 'scans' in spectrum_dict['params']:
