@@ -48,14 +48,15 @@ def main():
             for filename in config.filenames):
         for spec_raw in file_spectra:
             spec_raw.identifier = f'mzspec:{config.pxd}:{spec_raw.identifier}'
-            spectra_raw[spec_raw.identifier] = copy.copy(spec_raw)
             # Discard low-quality spectra.
             spec_processed = spectrum.process_spectrum(
-                spec_raw, config.min_peaks, config.min_mz_range, config.min_mz,
-                config.max_mz, config.remove_precursor_tolerance,
-                config.min_intensity, config.max_peaks_used, config.scaling)
+                copy.copy(spec_raw), config.min_peaks, config.min_mz_range,
+                config.min_mz, config.max_mz,
+                config.remove_precursor_tolerance, config.min_intensity,
+                config.max_peaks_used, config.scaling)
             if (spec_processed is not None
                     and spec_processed.precursor_charge in config.charges):
+                spectra_raw[spec_raw.identifier] = spec_raw
                 spectra[spec_processed.precursor_charge].append(spec_processed)
     # Make sure the spectra are sorted by precursor m/z for every charge state.
     for charge, spectra_charge in spectra.items():
