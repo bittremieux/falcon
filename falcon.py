@@ -18,6 +18,9 @@ from cluster import cluster, spectrum
 from ms_io import ms_io
 
 
+logger = logging.getLogger('spectrum_clustering')
+
+
 def main():
     # Configure logging.
     logging.captureWarnings(True)
@@ -33,8 +36,6 @@ def main():
     logging.getLogger('faiss').setLevel(logging.WARNING)
     logging.getLogger('numba').setLevel(logging.WARNING)
     logging.getLogger('numexpr').setLevel(logging.WARNING)
-    # Initialize the logger.
-    logger = logging.getLogger('spectrum_clustering')
 
     if os.path.isdir(config.work_dir):
         logging.warning('Working directory %s already exists, previous '
@@ -43,35 +44,9 @@ def main():
     os.makedirs(os.path.join(config.work_dir, 'spectra'), exist_ok=True)
     os.makedirs(os.path.join(config.work_dir, 'nn'), exist_ok=True)
 
-    # FIXME
     # Read the spectra from the input files and partition them based on their
     # precursor m/z.
-    logger.info('Read spectra from %d peak file(s)', len(config.filenames))
-    filehandles = {
-        (charge, mz): open(os.path.join(config.work_dir, 'spectra',
-                                        f'{charge}_{mz}.pkl'), 'wb')
-        for charge in config.charges for mz in config.mzs}
-    for file_spectra in joblib.Parallel(n_jobs=-1)(
-            joblib.delayed(_read_process_spectra)(filename)
-            for filename in config.filenames):
-        for spec in file_spectra:
-            # FIXME: Add nearby spectra to neighboring files.
-            pickle.dump(
-                spec,
-                filehandles[(
-                    spec.precursor_charge,
-                    math.floor(spec.precursor_mz / config.mz_interval)
-                    * config.mz_interval)],
-                protocol=5)
-    for filehandle in filehandles.values():
-        filehandle.close()
-    # Make sure the spectra in the individual files are sorted by their
-    # precursor m/z.
-    logger.debug('Order spectrum splits by precursor m/z')
-    joblib.Parallel(n_jobs=-1)(
-            joblib.delayed(_read_write_spectra_pkl)(
-                os.path.join(config.work_dir, 'spectra', f'{charge}_{mz}.pkl'))
-            for charge in config.charges for mz in config.mzs)
+    _prepare_spectra()
 
     # Pre-compute the index hash mappings.
     vec_len, min_mz, max_mz = spectrum.get_dim(config.min_mz, config.max_mz,
@@ -147,6 +122,38 @@ def main():
                         representatives)
 
     logging.shutdown()
+
+
+def _prepare_spectra() -> None:
+    """
+    Read the spectra from the input peak files and partition to intermediate
+    files split and sorted by precursor m/z.
+    """
+    logger.info('Read spectra from %d peak file(s)', len(config.filenames))
+    filehandles = {(charge, mz): open(os.path.join(config.work_dir, 'spectra',
+                                                   f'{charge}_{mz}.pkl'), 'wb')
+                   for charge in config.charges for mz in config.mzs}
+    for file_spectra in joblib.Parallel(n_jobs=-1)(
+            joblib.delayed(_read_process_spectra)(filename)
+            for filename in config.filenames):
+        for spec in file_spectra:
+            # FIXME: Add nearby spectra to neighboring files.
+            pickle.dump(
+                spec,
+                filehandles[(
+                    spec.precursor_charge,
+                    math.floor(spec.precursor_mz / config.mz_interval)
+                    * config.mz_interval)],
+                protocol=5)
+    for filehandle in filehandles.values():
+        filehandle.close()
+    # Make sure the spectra in the individual files are sorted by their
+    # precursor m/z.
+    logger.debug('Order spectrum splits by precursor m/z')
+    joblib.Parallel(n_jobs=-1)(
+            joblib.delayed(_read_write_spectra_pkl)(
+                os.path.join(config.work_dir, 'spectra', f'{charge}_{mz}.pkl'))
+            for charge in config.charges for mz in config.mzs)
 
 
 def _read_process_spectra(filename: str) -> List[spectrum.MsmsSpectrumNb]:
