@@ -1,3 +1,4 @@
+import collections
 import math
 from typing import Optional, Tuple
 
@@ -6,21 +7,9 @@ import numpy as np
 import spectrum_utils.spectrum as sus
 
 
-@nb.experimental.jitclass([('identifier', nb.types.string),
-                           ('precursor_mz', nb.float64),
-                           ('precursor_charge', nb.int8),
-                           ('mz', nb.float32[:]),
-                           ('intensity', nb.float32[:]),
-                           ('cluster', nb.int64)])
-class MsmsSpectrumNb:
-    def __init__(self, identifier: str, precursor_mz: float,
-                 precursor_charge: int, mz: np.ndarray, intensity: np.ndarray):
-        self.identifier = identifier
-        self.precursor_mz = precursor_mz
-        self.precursor_charge = precursor_charge
-        self.mz = mz
-        self.intensity = intensity
-        self.cluster = -1
+MsmsSpectrumNb = collections.namedtuple(
+    'MsmsSpectrumNb', ['identifier', 'precursor_mz', 'precursor_charge', 'mz',
+                       'intensity'])
 
 
 @nb.njit

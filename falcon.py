@@ -2,6 +2,7 @@ import copy
 import logging
 import os
 import sys
+from typing import List
 
 import joblib
 import natsort
@@ -40,24 +41,13 @@ def main():
         os.makedirs(config.work_dir)
 
     # Read the spectra from the input files.
-    spectra, spectra_raw = {charge: [] for charge in config.charges}, {}
+    spectra = {charge: [] for charge in config.charges}
     logger.info('Read spectra from %d peak file(s)', len(config.filenames))
-    # noinspection PyProtectedMember
     for file_spectra in joblib.Parallel(n_jobs=-1)(
-            joblib.delayed(ms_io._get_spectra)(filename)
+            joblib.delayed(_read_process_spectra)(filename)
             for filename in config.filenames):
-        for spec_raw in file_spectra:
-            spec_raw.identifier = f'mzspec:{config.pxd}:{spec_raw.identifier}'
-            # Discard low-quality spectra.
-            spec_processed = spectrum.process_spectrum(
-                copy.copy(spec_raw), config.min_peaks, config.min_mz_range,
-                config.min_mz, config.max_mz,
-                config.remove_precursor_tolerance, config.min_intensity,
-                config.max_peaks_used, config.scaling)
-            if (spec_processed is not None
-                    and spec_processed.precursor_charge in config.charges):
-                spectra_raw[spec_raw.identifier] = spec_raw
-                spectra[spec_processed.precursor_charge].append(spec_processed)
+        for spec in file_spectra:
+            spectra[spec.precursor_charge].append(spec)
     # Make sure the spectra are sorted by precursor m/z for every charge state.
     for charge, spectra_charge in spectra.items():
         spectra[charge] = sorted(
@@ -106,13 +96,14 @@ def main():
         clusters[mask_no_noise] += current_label
         current_label = np.amax(clusters[mask_no_noise]) + 1
         # Extract cluster representatives (medoids).
-        for cluster_label, representative_i in \
-                cluster.get_cluster_representatives(
-                    clusters[mask_no_noise], pairwise_dist_matrix):
-            representative = spectra_raw[spectra_charge[representative_i]
-                                         .identifier]
-            representative.cluster = cluster_label
-            representatives.append(representative)
+        # FIXME
+        # for cluster_label, representative_i in \
+        #         cluster.get_cluster_representatives(
+        #             clusters[mask_no_noise], pairwise_dist_matrix):
+        #     representative = spectra_raw[spectra_charge[representative_i]
+        #                                  .identifier]
+        #     representative.cluster = cluster_label
+        #     representatives.append(representative)
         # Save cluster assignments.
         clusters_all.append(pd.DataFrame({
             'identifier': [spec.identifier for spec in spectra_charge],
@@ -127,6 +118,34 @@ def main():
                         sorted(representatives, key=lambda spec: spec.cluster))
 
     logging.shutdown()
+
+
+def _read_process_spectra(filename: str) -> List[spectrum.MsmsSpectrumNb]:
+    """
+    Get high-quality processed MS/MS spectra from the given file.
+
+    Parameters
+    ----------
+    filename : str
+        The path of the peak file to be read.
+
+    Returns
+    -------
+    List[spectrum.MsmsSpectrumNb]
+        The processed spectra in the given file.
+    """
+    spectra = []
+    for spec_raw in ms_io.get_spectra(filename):
+        spec_raw.identifier = f'mzspec:{config.pxd}:{spec_raw.identifier}'
+        # Discard low-quality spectra.
+        spec_processed = spectrum.process_spectrum(
+            spec_raw, config.min_peaks, config.min_mz_range, config.min_mz,
+            config.max_mz, config.remove_precursor_tolerance,
+            config.min_intensity, config.max_peaks_used, config.scaling)
+        if (spec_processed is not None
+                and spec_processed.precursor_charge in config.charges):
+            spectra.append(spec_processed)
+    return sorted(spectra, key=lambda spec: spec.precursor_mz)
 
 
 if __name__ == '__main__':

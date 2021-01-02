@@ -32,7 +32,8 @@ min_samples = 2
 
 # Input/output.
 pxd = 'PXD000561'   # 'USI000000'
-filenames = [os.path.abspath(filename)
-             for filename in os.listdir('../data/interim')
-             if filename.endswith('.mgf')]
+peak_dir = '../data/interim'
 work_dir = os.path.abspath('../data/processed')
+filenames = [os.path.join(peak_dir, filename)
+             for filename in os.listdir(peak_dir)
+             if filename.endswith('.mgf')]

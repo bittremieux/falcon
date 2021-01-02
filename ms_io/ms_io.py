@@ -40,24 +40,6 @@ def get_spectra(filename: str) -> Iterator[MsmsSpectrum]:
         yield spec
 
 
-def _get_spectra(filepath: str) -> List[MsmsSpectrum]:
-    """
-    Wrapper method converting the generator to a list to be able to read
-    multiple peak files simultaneously (generators are not picklable).
-
-    Parameters
-    ----------
-    filepath : str
-        The path of the peak file to be read.
-
-    Returns
-    -------
-    List[MsmsSpectrum]
-        The spectra in the given file.
-    """
-    return list(get_spectra(filepath))
-
-
 def write_spectra(filename: str, spectra: Iterable[MsmsSpectrum]) -> None:
     """
     Write the given spectra to a peak file.
