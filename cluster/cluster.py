@@ -550,36 +550,33 @@ def generate_clusters(pairwise_dist_matrix: ss.csr_matrix, eps: float,
     neighborhoods_arr = np.empty(len(neighborhoods), dtype=np.object)
     neighborhoods_arr[:] = neighborhoods
     dbscan_inner(core_samples, neighborhoods_arr, clusters)
-
     # Refine initial clusters to make sure spectra within a cluster don't have
     # an excessive precursor m/z difference.
     order = np.argsort(clusters)
-    logger.debug('Finetune %d initial unique clusters to not exceed %d %s '
-                 'precursor m/z tolerance', clusters[order[-1]] + 1,
+    clusters, precursor_mzs = clusters[order], precursor_mzs[order]
+    logger.debug('Finetune %d initial unique clusters to not exceed %.2f %s '
+                 'precursor m/z tolerance', clusters[-1] + 1,
                  precursor_tol_mass, precursor_tol_mode)
-    group_idx = _get_cluster_group_idx(clusters, order)
+    group_idx = _get_cluster_group_idx(clusters)
     if len(group_idx) == 0:     # Only noise samples.
         return np.asarray([])
     cluster_reassignments = nb.typed.List(joblib.Parallel(n_jobs=-1)(
         joblib.delayed(_postprocess_cluster)
-        (precursor_mzs[order[start_i:stop_i]], precursor_tol_mass,
+        (precursor_mzs[start_i:stop_i], precursor_tol_mass,
          precursor_tol_mode) for start_i, stop_i in group_idx))
-    return _assign_unique_cluster_labels(group_idx, order,
-                                         cluster_reassignments, min_samples)
+    return _assign_unique_cluster_labels(
+        group_idx, cluster_reassignments, min_samples)
 
 
 @nb.njit
-def _get_cluster_group_idx(cluster_labels: np.ndarray, order: np.ndarray) \
-        -> nb.typed.List:
+def _get_cluster_group_idx(cluster_labels: np.ndarray) -> nb.typed.List:
     """
     Get start and stop indexes for unique cluster labels.
 
     Parameters
     ----------
     cluster_labels : np.ndarray
-        The cluster labels.
-    order : np.ndarray
-        Order to sort the cluster labels.
+        The ordered cluster labels (noise points are -1).
 
     Returns
     -------
@@ -588,14 +585,14 @@ def _get_cluster_group_idx(cluster_labels: np.ndarray, order: np.ndarray) \
         the unique cluster labels.
     """
     start_i = 0
-    while cluster_labels[order[start_i]] == -1:
+    while cluster_labels[start_i] == -1:
         start_i += 1
-    stop_i, label = start_i, cluster_labels[order[start_i]]
+    stop_i, label = start_i, cluster_labels[start_i]
     group_idx = nb.typed.List()
     while stop_i < cluster_labels.shape[0]:
-        start_i, label = stop_i, cluster_labels[order[stop_i]]
+        start_i, label = stop_i, cluster_labels[stop_i]
         while (stop_i < cluster_labels.shape[0]
-               and cluster_labels[order[stop_i]] == label):
+               and cluster_labels[stop_i] == label):
             stop_i += 1
         group_idx.append((start_i, stop_i))
     return group_idx
@@ -623,12 +620,12 @@ def _postprocess_cluster(cluster_mzs: np.ndarray, precursor_tol_mass: float,
         A tuple with cluster assignments starting at 0 and the number of
         clusters.
     """
-    cluster_labels = np.zeros_like(cluster_mzs, np.int64)
+    cluster_labels = -np.ones_like(cluster_mzs, np.int64)
     # No splitting possible if only 1 item in cluster.
     # This seems to happen sometimes despite that DBSCAN requires a higher
     # `min_samples`.
     if cluster_labels.shape[0] == 1:
-        n_clusters = 1
+        n_clusters = 0
     else:
         cluster_mzs = cluster_mzs.reshape(-1, 1)
         # Pairwise differences in Dalton.
@@ -646,17 +643,22 @@ def _postprocess_cluster(cluster_mzs: np.ndarray, precursor_tol_mass: float,
             precursor_tol_mass, 'distance') - 1
         n_clusters = cluster_assignments.max() + 1
         # Update cluster assignments.
-        if n_clusters > 1:
+        if 1 < n_clusters < cluster_mzs.shape[0]:
             cluster_assignments = cluster_assignments.reshape(1, -1)
-            labels = np.arange(1, n_clusters).reshape(-1, 1)
+            label, labels = 0, np.arange(n_clusters).reshape(-1, 1)
             # noinspection PyTypeChecker
-            for label, mask in zip(labels, cluster_assignments == labels):
-                cluster_labels[mask] = label
+            for mask in cluster_assignments == labels:
+                if mask.sum() > 1:
+                    cluster_labels[mask] = label
+                    label += 1
+            n_clusters = label
+        else:
+            n_clusters = 0
     return cluster_labels, n_clusters
 
 
 @nb.njit
-def _assign_unique_cluster_labels(group_idx: nb.typed.List, order: np.ndarray,
+def _assign_unique_cluster_labels(group_idx: nb.typed.List,
                                   cluster_reassignments: nb.typed.List,
                                   min_samples: int) -> np.ndarray:
     """
@@ -668,8 +670,6 @@ def _assign_unique_cluster_labels(group_idx: nb.typed.List, order: np.ndarray,
     group_idx : nb.typed.List[Tuple[int, int]]
         Tuples with the start index (inclusive) and end index (exclusive) of
         the unique cluster labels.
-    order : np.ndarray
-        Order to sort the cluster labels.
     cluster_reassignments : nb.typed.List[Tuple[np.ndarray, int]]
         Tuples with cluster assignments starting at 0 and the number of
         clusters.
@@ -681,12 +681,11 @@ def _assign_unique_cluster_labels(group_idx: nb.typed.List, order: np.ndarray,
     np.ndarray
         An array with globally unique cluster labels.
     """
-    clusters, current_label = -np.ones((group_idx[-1][1],), np.int64), 0
+    clusters, current_label = -np.ones(group_idx[-1][1], np.int64), 0
     for (start_i, stop_i), (cluster_reassignment, n_clusters) in zip(
             group_idx, cluster_reassignments):
-        if stop_i - start_i >= min_samples:
-            clusters[order[start_i:stop_i]] = (cluster_reassignment
-                                               + current_label)
+        if n_clusters > 0 and stop_i - start_i >= min_samples:
+            clusters[start_i:stop_i] = cluster_reassignment + current_label
             current_label += n_clusters
     return clusters
 
