@@ -21,9 +21,9 @@ def main():
     # Configure logging.
     logging.captureWarnings(True)
     root = logging.getLogger()
-    root.setLevel(logging.INFO)
+    root.setLevel(logging.DEBUG)
     handler = logging.StreamHandler(sys.stdout)
-    handler.setLevel(logging.INFO)
+    handler.setLevel(logging.DEBUG)
     handler.setFormatter(logging.Formatter(
         '{asctime} {levelname} [{name}/{processName}] {module}.{funcName} : '
         '{message}', style='{'))
@@ -49,12 +49,8 @@ def main():
             for filename in config.filenames):
         for spec in file_spectra:
             spectra[spec.precursor_charge].append(spec)
-    # Make sure the spectra are sorted by precursor m/z for every charge state.
-    for charge, spectra_charge in spectra.items():
-        spectra[charge] = nb.typed.List(sorted(
-            spectra_charge, key=lambda spec: spec.precursor_mz))
 
-    # Pre-compute index hash mappings.
+    # Pre-compute the index hash mappings.
     vec_len, min_mz, max_mz = spectrum.get_dim(config.min_mz, config.max_mz,
                                                config.fragment_mz_tolerance)
     hash_lookup = np.asarray([murmurhash3_32(i, 0, True) % config.hash_len
@@ -71,18 +67,34 @@ def main():
                     len(spectra_charge), charge)
         dist_filename = os.path.join(config.work_dir, f'dist_{charge}.npz')
         if not os.path.isfile(dist_filename):
+            # Make sure the spectra are sorted by precursor m/z.
+            logger.debug('Sort the spectra by their precursor m/z')
+            spectra_charge.sort(key=lambda spec: spec.precursor_mz)
             pairwise_dist_matrix = cluster.compute_pairwise_distances(
-                spectra_charge, vectorize, config.precursor_tol_mass,
-                config.precursor_tol_mode, config.mz_interval,
-                config.n_neighbors, config.n_neighbors_ann,
+                nb.typed.List(spectra_charge), vectorize,
+                config.precursor_tol_mass, config.precursor_tol_mode,
+                config.mz_interval, config.n_neighbors, config.n_neighbors_ann,
                 config.precursor_tol_mass, config.precursor_tol_mode,
                 config.batch_size, config.n_probe,
                 os.path.join(config.work_dir, str(charge)))
+            logger.debug('Export pairwise distance matrix to file %s',
+                         dist_filename)
             ss.save_npz(dist_filename, pairwise_dist_matrix)
+            # The spectra are already sorted.
+            precursor_mzs = np.asarray(([spec.precursor_mz
+                                         for spec in spectra_charge]))
+            identifiers = [spec.identifier for spec in spectra_charge]
         else:
+            logger.debug('Load previously computed pairwise distance matrix '
+                         'from file %s', dist_filename)
             pairwise_dist_matrix = ss.load_npz(dist_filename)
-        precursor_mzs = np.asarray([spec.precursor_mz
-                                    for spec in spectra_charge])
+            precursor_mzs, identifiers = [], []
+            for spec in spectra_charge:
+                precursor_mzs.append(spec.precursor_mz)
+                identifiers.append(spec.identifier)
+            order = np.argsort(precursor_mzs)
+            precursor_mzs = np.asarray(precursor_mzs)[order]
+            identifiers = np.asarray(identifiers)[order]
         clusters = cluster.generate_clusters(
             pairwise_dist_matrix, config.eps, config.min_samples,
             precursor_mzs, config.precursor_tol_mass,
@@ -101,17 +113,19 @@ def main():
         #     representative.cluster = cluster_label
         #     representatives.append(representative)
         # Save cluster assignments.
-        clusters_all.append(pd.DataFrame({
-            'identifier': [spec.identifier for spec in spectra_charge],
-            'cluster': clusters}))
+        clusters_all.append(pd.DataFrame({'identifier': identifiers,
+                                          'cluster': clusters}))
 
     # Export cluster memberships and representative spectra.
+    logger.debug('Export cluster assignments')
     clusters_all = (pd.concat(clusters_all, ignore_index=True)
                     .sort_values('identifier', key=natsort.natsort_keygen()))
     clusters_all.to_csv(os.path.join(config.work_dir, 'clusters.csv'),
                         index=False)
+    logger.debug('Export cluster representative spectra')
+    representatives.sort(key=lambda spec: spec.cluster)
     ms_io.write_spectra(os.path.join(config.work_dir, 'clusters.mgf'),
-                        sorted(representatives, key=lambda spec: spec.cluster))
+                        representatives)
 
     logging.shutdown()
 
@@ -141,7 +155,8 @@ def _read_process_spectra(filename: str) -> List[spectrum.MsmsSpectrumNb]:
         if (spec_processed is not None
                 and spec_processed.precursor_charge in config.charges):
             spectra.append(spec_processed)
-    return sorted(spectra, key=lambda spec: spec.precursor_mz)
+    spectra.sort(key=lambda spec: spec.precursor_mz)
+    return spectra
 
 
 if __name__ == '__main__':

@@ -23,11 +23,10 @@ logger = logging.getLogger('spectrum_clustering')
 
 
 def compute_pairwise_distances(
-        spectra: List[spectrum.MsmsSpectrumNb], vectorize: Callable,
-        precursor_tol_mass: float, precursor_tol_mode: str, mz_interval: float,
-        n_neighbors: int, n_neighbors_ann: int, mz_margin: float,
-        mz_margin_mode: str, batch_size: int, n_probe: int, work_dir: str) \
-        -> ss.csr_matrix:
+        spectra: nb.typed.List, vectorize: Callable, precursor_tol_mass: float,
+        precursor_tol_mode: str, mz_interval: float, n_neighbors: int,
+        n_neighbors_ann: int, mz_margin: float, mz_margin_mode: str,
+        batch_size: int, n_probe: int, work_dir: str) -> ss.csr_matrix:
     """
     Compute a pairwise distance matrix for the given spectra.
 
@@ -35,7 +34,7 @@ def compute_pairwise_distances(
 
     Parameters
     ----------
-    spectra : List[spectrum.MsmsSpectrumNb]
+    spectra : nb.typed.List[spectrum.MsmsSpectrumNb]
         The vectors for which to compute pairwise distances.
     vectorize : Callable
         Function to convert the spectra to vectors.
@@ -168,10 +167,9 @@ def _check_ann_config(n_probe: int, n_neighbors: int) -> Tuple[int, int]:
 
 
 def _build_ann_index(
-        spectra: List[spectrum.MsmsSpectrumNb], vectorize: Callable,
-        precursor_mzs: np.ndarray, index_filename: str, mz_splits: np.ndarray,
-        mz_interval: float, mz_margin: float, mz_margin_mode: str,
-        batch_size: int) -> None:
+        spectra: nb.typed.List, vectorize: Callable, precursor_mzs: np.ndarray,
+        index_filename: str, mz_splits: np.ndarray, mz_interval: float,
+        mz_margin: float, mz_margin_mode: str, batch_size: int) -> None:
     """
     Create ANN index(es) for the given spectra.
 
@@ -180,7 +178,7 @@ def _build_ann_index(
 
     Parameters
     ----------
-    spectra : List[spectrum.MsmsSpectrumNb]
+    spectra : nb.typed.List[spectrum.MsmsSpectrumNb]
         The spectra for which to build the ANN index.
     vectorize : Callable
         Function to convert the spectra to vectors.
@@ -304,19 +302,19 @@ def _get_precursor_mz_interval_i(precursor_mzs: np.ndarray, start_mz: float,
 
 
 def _dist_mz_interval(
-        spectra: List[spectrum.MsmsSpectrumNb], vectorize: Callable,
-        precursor_mzs: np.ndarray, index_filename: str, n_probe: int, mz: int,
-        mz_interval: float, batch_size: int, n_neighbors: int,
-        n_neighbors_ann: int, precursor_tol_mass: float,
-        precursor_tol_mode: str, distances: np.ndarray, indices: np.ndarray,
-        indptr: np.ndarray) -> None:
+        spectra: nb.typed.List, vectorize: Callable, precursor_mzs: np.ndarray,
+        index_filename: str, n_probe: int, mz: int, mz_interval: float,
+        batch_size: int, n_neighbors: int, n_neighbors_ann: int,
+        precursor_tol_mass: float, precursor_tol_mode: str,
+        distances: np.ndarray, indices: np.ndarray, indptr: np.ndarray) \
+        -> None:
     """
     Compute distances to the nearest neighbors for the given precursor m/z
     interval.
 
     Parameters
     ----------
-    spectra : List[spectrum.MsmsSpectrumNb]
+    spectra : nb.typed.List[spectrum.MsmsSpectrumNb]
         The spectra for which to compute NN distances.
     vectorize : Callable
         Function to convert the spectra to vectors.
