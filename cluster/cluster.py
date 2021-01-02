@@ -592,7 +592,7 @@ def generate_clusters(pairwise_dist_matrix: ss.csr_matrix, eps: float,
         (precursor_mzs[order[start_i:stop_i]], precursor_tol_mass,
          precursor_tol_mode) for start_i, stop_i in group_idx))
     return _assign_unique_cluster_labels(group_idx, order,
-                                         cluster_reassignments)
+                                         cluster_reassignments, min_samples)
 
 
 @nb.njit
@@ -684,8 +684,8 @@ def _postprocess_cluster(cluster_mzs: np.ndarray, precursor_tol_mass: float,
 
 @nb.njit
 def _assign_unique_cluster_labels(group_idx: nb.typed.List, order: np.ndarray,
-                                  cluster_reassignments: nb.typed.List) \
-        -> np.ndarray:
+                                  cluster_reassignments: nb.typed.List,
+                                  min_samples: int) -> np.ndarray:
     """
     Make sure all cluster labels are unique after potential splitting of
     clusters to avoid excessive precursor m/z differences.
@@ -700,6 +700,8 @@ def _assign_unique_cluster_labels(group_idx: nb.typed.List, order: np.ndarray,
     cluster_reassignments : nb.typed.List[Tuple[np.ndarray, int]]
         Tuples with cluster assignments starting at 0 and the number of
         clusters.
+    min_samples : int
+        The minimum number of samples in a cluster.
 
     Returns
     -------
@@ -709,8 +711,10 @@ def _assign_unique_cluster_labels(group_idx: nb.typed.List, order: np.ndarray,
     clusters, current_label = -np.ones((group_idx[-1][1],), np.int64), 0
     for (start_i, stop_i), (cluster_reassignment, n_clusters) in zip(
             group_idx, cluster_reassignments):
-        clusters[order[start_i:stop_i]] = cluster_reassignment + current_label
-        current_label += n_clusters
+        if stop_i - start_i >= min_samples:
+            clusters[order[start_i:stop_i]] = (cluster_reassignment
+                                               + current_label)
+            current_label += n_clusters
     return clusters
 
 
