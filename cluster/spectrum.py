@@ -1,7 +1,9 @@
 import collections
 import math
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
+import faiss
+import joblib
 import numba as nb
 import numpy as np
 import spectrum_utils.spectrum as sus
@@ -171,16 +173,16 @@ def to_vector(spectrum: MsmsSpectrumNb, vector: np.ndarray,
               min_mz: float, max_mz: float, bin_size: float,
               hash_lookup: np.ndarray, norm: bool = True) -> np.ndarray:
     """
-    Convert a cluster to a hashed NumPy vector.
+    Convert a spectrum to a hashed NumPy vector.
 
-    Peaks are first discretized in to mass bins of width `bin_size` between
+    Peaks are first discretized to mass bins of width `bin_size` between
     `min_mz` and `max_mz`, after which they are hashed to random hash bins
     (using the hash lookup table) in the final vector.
 
     Parameters
     ----------
-    spectrum : MsmsSpectrumTuple
-        The cluster to be converted to a vector.
+    spectrum : MsmsSpectrumNb
+        The spectrum to be converted to a vector.
     vector : np.ndarray, optional
         A pre-allocated vector to store the output.
     min_mz : float
@@ -197,7 +199,7 @@ def to_vector(spectrum: MsmsSpectrumNb, vector: np.ndarray,
     Returns
     -------
     np.ndarray
-        The hashed cluster vector.
+        The hashed spectrum vector.
     """
     _, min_bound, max_bound = get_dim(min_mz, max_mz, bin_size)
     for mz, intensity in zip(spectrum.mz, spectrum.intensity):
@@ -205,3 +207,46 @@ def to_vector(spectrum: MsmsSpectrumNb, vector: np.ndarray,
             hash_idx = hash_lookup[math.floor((mz - min_bound) / bin_size)]
             vector[hash_idx] += intensity
     return vector if not norm else _norm_intensity(vector)
+
+
+def to_vector_parallel(spectra: List[MsmsSpectrumNb], dim: int, min_mz: float,
+                       max_mz: float, bin_size: float, hash_lookup: np.ndarray,
+                       norm: bool) -> np.ndarray:
+    """
+    Convert multiple spectra to hashed NumPy vectors.
+
+    Peaks are first discretized to mass bins of width `bin_size` between
+    `min_mz` and `max_mz`, after which they are hashed to random hash bins
+    (using the hash lookup table) in the final vector.
+
+    Parameters
+    ----------
+    spectra : List[MsmsSpectrumNb]
+        The spectra to be converted to vectors.
+    dim: int
+        The dimensionality of the hashed spectrum vectors.
+    min_mz : float
+        The minimum m/z to include in the vector.
+    max_mz : float
+        The maximum m/z to include in the vector.
+    bin_size : float
+        The bin size in m/z used to divide the m/z range.
+    hash_lookup : np.ndarray
+        A lookup vector with hash indexes.
+    norm : bool
+        Normalize the vector to unit length or not.
+
+    Returns
+    -------
+    np.ndarray
+        The hashed spectrum vectors.
+    """
+    vectors = np.zeros((len(spectra), dim), np.float32)
+    joblib.Parallel(n_jobs=-1, prefer='threads')(
+        joblib.delayed(to_vector)(spec, vectors[i, :], min_mz, max_mz,
+                                  bin_size, hash_lookup, False)
+        for i, spec in enumerate(spectra))
+    if norm:
+        # Normalize the vectors for inner product search.
+        faiss.normalize_L2(vectors)
+    return vectors

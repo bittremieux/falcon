@@ -1,4 +1,4 @@
-import copy
+import functools
 import logging
 import os
 import sys
@@ -6,6 +6,7 @@ from typing import List
 
 import joblib
 import natsort
+import numba as nb
 import numpy as np
 import pandas as pd
 import scipy.sparse as ss
@@ -50,35 +51,28 @@ def main():
             spectra[spec.precursor_charge].append(spec)
     # Make sure the spectra are sorted by precursor m/z for every charge state.
     for charge, spectra_charge in spectra.items():
-        spectra[charge] = sorted(
-            spectra_charge, key=lambda spec: spec.precursor_mz)
+        spectra[charge] = nb.typed.List(sorted(
+            spectra_charge, key=lambda spec: spec.precursor_mz))
 
     # Pre-compute index hash mappings.
     vec_len, min_mz, max_mz = spectrum.get_dim(config.min_mz, config.max_mz,
                                                config.fragment_mz_tolerance)
     hash_lookup = np.asarray([murmurhash3_32(i, 0, True) % config.hash_len
                               for i in range(vec_len)], np.uint32)
+    vectorize = functools.partial(
+        spectrum.to_vector_parallel, dim=config.hash_len, min_mz=min_mz,
+        max_mz=max_mz, bin_size=config.fragment_mz_tolerance,
+        hash_lookup=hash_lookup, norm=True)
 
     # Cluster the spectra per charge.
     clusters_all, current_label, representatives = [], 0, []
     for charge, spectra_charge in spectra.items():
         logger.info('Cluster %d spectra with precursor charge %d',
                     len(spectra_charge), charge)
-        # Convert the spectra to hashed vectors.
-        vectors = np.zeros((len(spectra_charge), config.hash_len), np.float32)
-        joblib.Parallel(n_jobs=-1, prefer='threads')(
-            joblib.delayed(spectrum.to_vector)(
-                spec, vectors[i, :], min_mz, max_mz,
-                config.fragment_mz_tolerance, hash_lookup, False)
-            for i, spec in enumerate(spectra_charge))
-
-        # Cluster the vectors.
-        precursor_mzs = np.asarray([spec.precursor_mz
-                                    for spec in spectra_charge])
         dist_filename = os.path.join(config.work_dir, f'dist_{charge}.npz')
         if not os.path.isfile(dist_filename):
             pairwise_dist_matrix = cluster.compute_pairwise_distances(
-                vectors, precursor_mzs, config.precursor_tol_mass,
+                spectra_charge, vectorize, config.precursor_tol_mass,
                 config.precursor_tol_mode, config.mz_interval,
                 config.n_neighbors, config.n_neighbors_ann,
                 config.precursor_tol_mass, config.precursor_tol_mode,
@@ -87,6 +81,8 @@ def main():
             ss.save_npz(dist_filename, pairwise_dist_matrix)
         else:
             pairwise_dist_matrix = ss.load_npz(dist_filename)
+        precursor_mzs = np.asarray([spec.precursor_mz
+                                    for spec in spectra_charge])
         clusters = cluster.generate_clusters(
             pairwise_dist_matrix, config.eps, config.min_samples,
             precursor_mzs, config.precursor_tol_mass,

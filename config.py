@@ -15,7 +15,7 @@ scaling = 'rank'
 
 # Spectrum to vector conversion.
 fragment_mz_tolerance = 0.05
-hash_len = 1600
+hash_len = 800
 
 # Spectrum matching.
 precursor_tol_mass, precursor_tol_mode = 20, 'ppm'
