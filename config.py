@@ -33,6 +33,7 @@ eps = 0.4
 min_samples = 2
 
 # Input/output.
+overwrite = False
 pxd = 'PXD000561'   # 'USI000000'
 peak_dir = '../data/interim'
 work_dir = os.path.abspath('../data/processed')

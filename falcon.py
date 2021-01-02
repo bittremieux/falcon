@@ -44,9 +44,22 @@ def main():
     os.makedirs(os.path.join(config.work_dir, 'spectra'), exist_ok=True)
     os.makedirs(os.path.join(config.work_dir, 'nn'), exist_ok=True)
 
+    # Clean all intermediate results if "overwrite" is specified.
+    if config.overwrite:
+        for filename in os.listdir(os.path.join(config.work_dir, 'spectra')):
+            os.remove(os.path.join(config.work_dir, 'spectra', filename))
+        for filename in os.listdir(os.path.join(config.work_dir, 'nn')):
+            os.remove(os.path.join(config.work_dir, 'nn', filename))
+        if os.path.isfile(os.path.join(config.work_dir, 'clusters.csv')):
+            os.remove(os.path.join(config.work_dir, 'clusters.csv'))
+        if os.path.isfile(os.path.join(config.work_dir, 'clusters.mgf')):
+            os.remove(os.path.join(config.work_dir, 'clusters.mgf'))
+
     # Read the spectra from the input files and partition them based on their
     # precursor m/z.
-    _prepare_spectra()
+    if not any([filename.endswith('.pkl') for filename in os.listdir(
+            os.path.join(config.work_dir, 'spectra'))]):
+        _prepare_spectra()
 
     # Pre-compute the index hash mappings.
     vec_len, min_mz, max_mz = spectrum.get_dim(config.min_mz, config.max_mz,
