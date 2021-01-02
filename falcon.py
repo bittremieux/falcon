@@ -1,12 +1,13 @@
 import functools
 import logging
+import math
 import os
+import pickle
 import sys
 from typing import List
 
 import joblib
 import natsort
-import numba as nb
 import numpy as np
 import pandas as pd
 import scipy.sparse as ss
@@ -38,17 +39,39 @@ def main():
     if os.path.isdir(config.work_dir):
         logging.warning('Working directory %s already exists, previous '
                         'results might get overwritten', config.work_dir)
-    else:
-        os.makedirs(config.work_dir)
+    os.makedirs(config.work_dir, exist_ok=True)
+    os.makedirs(os.path.join(config.work_dir, 'spectra'), exist_ok=True)
+    os.makedirs(os.path.join(config.work_dir, 'nn'), exist_ok=True)
 
-    # Read the spectra from the input files.
-    spectra = {charge: [] for charge in config.charges}
+    # FIXME
+    # Read the spectra from the input files and partition them based on their
+    # precursor m/z.
     logger.info('Read spectra from %d peak file(s)', len(config.filenames))
+    filehandles = {
+        (charge, mz): open(os.path.join(config.work_dir, 'spectra',
+                                        f'{charge}_{mz}.pkl'), 'wb')
+        for charge in config.charges for mz in config.mzs}
     for file_spectra in joblib.Parallel(n_jobs=-1)(
             joblib.delayed(_read_process_spectra)(filename)
             for filename in config.filenames):
         for spec in file_spectra:
-            spectra[spec.precursor_charge].append(spec)
+            # FIXME: Add nearby spectra to neighboring files.
+            pickle.dump(
+                spec,
+                filehandles[(
+                    spec.precursor_charge,
+                    math.floor(spec.precursor_mz / config.mz_interval)
+                    * config.mz_interval)],
+                protocol=5)
+    for filehandle in filehandles.values():
+        filehandle.close()
+    # Make sure the spectra in the individual files are sorted by their
+    # precursor m/z.
+    logger.debug('Order spectrum splits by precursor m/z')
+    joblib.Parallel(n_jobs=-1)(
+            joblib.delayed(_read_write_spectra_pkl)(
+                os.path.join(config.work_dir, 'spectra', f'{charge}_{mz}.pkl'))
+            for charge in config.charges for mz in config.mzs)
 
     # Pre-compute the index hash mappings.
     vec_len, min_mz, max_mz = spectrum.get_dim(config.min_mz, config.max_mz,
@@ -62,39 +85,35 @@ def main():
 
     # Cluster the spectra per charge.
     clusters_all, current_label, representatives = [], 0, []
-    for charge, spectra_charge in spectra.items():
-        logger.info('Cluster %d spectra with precursor charge %d',
-                    len(spectra_charge), charge)
-        dist_filename = os.path.join(config.work_dir, f'dist_{charge}.npz')
+    for charge in config.charges:
+        logger.info('Cluster spectra with precursor charge %d', charge)
+        dist_filename = os.path.join(config.work_dir, 'nn',
+                                     f'dist_{charge}.npz')
         if not os.path.isfile(dist_filename):
-            # Make sure the spectra are sorted by precursor m/z.
-            logger.debug('Sort the spectra by their precursor m/z')
-            spectra_charge.sort(key=lambda spec: spec.precursor_mz)
             pairwise_dist_matrix = cluster.compute_pairwise_distances(
-                nb.typed.List(spectra_charge), vectorize,
-                config.precursor_tol_mass, config.precursor_tol_mode,
-                config.mz_interval, config.n_neighbors, config.n_neighbors_ann,
-                config.precursor_tol_mass, config.precursor_tol_mode,
-                config.batch_size, config.n_probe,
-                os.path.join(config.work_dir, str(charge)))
+                charge, config.mzs, vectorize, config.precursor_tol_mass,
+                config.precursor_tol_mode, config.n_neighbors,
+                config.n_neighbors_ann, config.batch_size, config.n_probe,
+                config.work_dir)
             logger.debug('Export pairwise distance matrix to file %s',
                          dist_filename)
-            ss.save_npz(dist_filename, pairwise_dist_matrix)
-            # The spectra are already sorted.
-            precursor_mzs = np.asarray(([spec.precursor_mz
-                                         for spec in spectra_charge]))
-            identifiers = [spec.identifier for spec in spectra_charge]
+            ss.save_npz(dist_filename, pairwise_dist_matrix, False)
         else:
             logger.debug('Load previously computed pairwise distance matrix '
                          'from file %s', dist_filename)
             pairwise_dist_matrix = ss.load_npz(dist_filename)
-            precursor_mzs, identifiers = [], []
-            for spec in spectra_charge:
-                precursor_mzs.append(spec.precursor_mz)
-                identifiers.append(spec.identifier)
-            order = np.argsort(precursor_mzs)
-            precursor_mzs = np.asarray(precursor_mzs)[order]
-            identifiers = np.asarray(identifiers)[order]
+        # Get the spectrum identifiers and precursor m/z's.
+        identifiers, precursor_mzs = [], []
+        for mz in config.mzs:
+            pkl_filename = os.path.join(config.work_dir, 'spectra',
+                                        f'{charge}_{mz}.pkl')
+            if os.path.isfile(pkl_filename):
+                with open(pkl_filename, 'rb') as f_in:
+                    for spec in pickle.load(f_in):
+                        identifiers.append(spec.identifier)
+                        precursor_mzs.append(spec.precursor_mz)
+        precursor_mzs = np.asarray(precursor_mzs)
+        # Cluster using the pairwise distance matrix.
         clusters = cluster.generate_clusters(
             pairwise_dist_matrix, config.eps, config.min_samples,
             precursor_mzs, config.precursor_tol_mass,
@@ -157,6 +176,31 @@ def _read_process_spectra(filename: str) -> List[spectrum.MsmsSpectrumNb]:
             spectra.append(spec_processed)
     spectra.sort(key=lambda spec: spec.precursor_mz)
     return spectra
+
+
+def _read_write_spectra_pkl(filename: str):
+    """
+    Read the spectra from the pickled file and write them back to the same file
+    sorted by their precursor m/z.
+
+    Parameters
+    ----------
+    filename : str
+        The pickled spectrum file name.
+    """
+    spectra = []
+    with open(filename, 'rb') as f:
+        while True:
+            try:
+                spectra.append(pickle.load(f))
+            except EOFError:
+                break
+    if len(spectra) == 0:
+        os.remove(filename)
+    else:
+        spectra.sort(key=lambda spec: spec.precursor_mz)
+        with open(filename, 'wb') as f_out:
+            pickle.dump(spectra, f_out, protocol=5)
 
 
 if __name__ == '__main__':

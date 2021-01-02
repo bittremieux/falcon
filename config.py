@@ -1,8 +1,11 @@
 import os
 
+import numpy as np
 
-# Precursor charges considered.
-charges = 2, 3
+
+# Precursor charges and m/z's considered.
+mz_interval = 1
+charges, mzs = (2, 3), np.arange(50, 2501, mz_interval)
 
 # Spectrum preprocessing.
 min_peaks = 5
@@ -21,7 +24,6 @@ hash_len = 800
 precursor_tol_mass, precursor_tol_mode = 20, 'ppm'
 
 # NN index construction and querying.
-mz_interval = 1
 n_neighbors, n_neighbors_ann = 64, 128
 n_probe = 128
 batch_size = 2**16
@@ -36,4 +38,4 @@ peak_dir = '../data/interim'
 work_dir = os.path.abspath('../data/processed')
 filenames = [os.path.join(peak_dir, filename)
              for filename in os.listdir(peak_dir)
-             if filename.endswith('.mgf')]
+             if filename.endswith('.mzXML')]
