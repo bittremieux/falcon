@@ -68,7 +68,6 @@ def compute_pairwise_distances(
         precursor m/z).
     """
     n_probe, n_neighbors_ann = _check_ann_config(n_probe, n_neighbors_ann)
-    sparse_filename = os.path.join(work_dir, 'nn', '{}.npy')
     logger.info('Compute pairwise distances between similar spectra '
                 '(%d spectra, %d neighbors)', n_spectra, n_neighbors)
     max_num_embeddings = n_spectra * n_neighbors
@@ -82,18 +81,12 @@ def compute_pairwise_distances(
         n_neighbors_ann, precursor_tol_mass, precursor_tol_mode, distances,
         indices, indptr, work_dir)
     distances, indices = distances[:indptr[-1]], indices[:indptr[-1]]
-    np.save(sparse_filename.format('data'), distances)
-    np.save(sparse_filename.format('indices'), indices)
-    np.save(sparse_filename.format('indptr'), indptr)
     # Convert to a sparse pairwise distance matrix. This matrix might not be
     # entirely symmetrical, but that shouldn't matter too much.
     logger.debug('Construct pairwise distance matrix')
     pairwise_dist_matrix = ss.csr_matrix(
         (distances, indices, indptr), (n_spectra, n_spectra), np.float32,
         False)
-    os.remove(sparse_filename.format('data'))
-    os.remove(sparse_filename.format('indices'))
-    os.remove(sparse_filename.format('indptr'))
     return pairwise_dist_matrix, metadata
 
 
