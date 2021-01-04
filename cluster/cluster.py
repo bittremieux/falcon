@@ -2,13 +2,14 @@ import logging
 import math
 import os
 import pickle
-from typing import Callable, Iterable, List, Optional, Tuple
+from typing import Callable, Iterable, List, Tuple
 
 import faiss
 import fastcluster
 import joblib
 import numba as nb
 import numpy as np
+import pandas as pd
 import scipy.sparse as ss
 import tqdm
 from scipy.cluster.hierarchy import fcluster
@@ -22,10 +23,11 @@ logger = logging.getLogger('spectrum_clustering')
 
 
 def compute_pairwise_distances(
-        charge: int, mz_splits: np.ndarray, vectorize: Callable,
+        charge: int, n_spectra: int, mz_splits: np.ndarray,
+        vectorize: Callable,
         precursor_tol_mass: float, precursor_tol_mode: str, n_neighbors: int,
         n_neighbors_ann: int, batch_size: int, n_probe: int, work_dir: str) \
-        -> ss.csr_matrix:
+        -> Tuple[ss.csr_matrix, pd.DataFrame]:
     """
     Compute a pairwise distance matrix for the persisted spectra with the given
     precursor charge.
@@ -34,6 +36,8 @@ def compute_pairwise_distances(
     ----------
     charge : int
         Precursor charge of the spectra to be processed.
+    n_spectra: int
+        The total number of spectra to be processed.
     mz_splits : np.ndarray
         M/z intervals used to split the spectra on their precursor m/z.
     vectorize : Callable
@@ -57,35 +61,29 @@ def compute_pairwise_distances(
 
     Returns
     -------
-    ss.csr_matrix
-        A sparse pairwise distance matrix containing the cosine distances
-        between similar neighbors in the given vectors.
+    Tuple[ss.csr_matrix, pd.DataFrame]
+        A tuple with the sparse pairwise distance matrix containing the cosine
+        distances between similar neighbors for the given vectors, and the
+        corresponding spectrum metadata (identifier, precursor charge,
+        precursor m/z).
     """
     n_probe, n_neighbors_ann = _check_ann_config(n_probe, n_neighbors_ann)
-    # Create the ANN indexes (if this hasn't been done yet).
-    n_spectra = _build_ann_index(charge, mz_splits, vectorize, batch_size,
-                                 work_dir)
-    # Calculate pairwise distances.
-    logger.info('Compute pairwise distances between similar spectra '
-                '(%d spectra, %d neighbors)', n_spectra, n_neighbors)
-    if n_spectra > np.iinfo(np.int64).max:
-        raise OverflowError('Too many spectra to fit into int64, consider '
-                            'splitting up the input')
     sparse_filename = os.path.join(work_dir, 'nn', '{}.npy')
     if (not os.path.isfile(sparse_filename.format('data')) or
             not os.path.isfile(sparse_filename.format('indices')) or
             not os.path.isfile(sparse_filename.format('indptr'))):
+        logger.info('Compute pairwise distances between similar spectra '
+                    '(%d spectra, %d neighbors)', n_spectra, n_neighbors)
         max_num_embeddings = n_spectra * n_neighbors
         distances = np.zeros(max_num_embeddings, np.float32)
         indices = np.zeros(max_num_embeddings, np.int64)
         indptr = np.zeros(n_spectra + 1, np.int64)
-        spec_i = 0
-        for mz in tqdm.tqdm(mz_splits, desc='Distances calculated',
-                            unit='index'):
-            spec_i = _dist_mz_interval(
-                charge, mz, vectorize, n_probe, batch_size, n_neighbors,
-                n_neighbors_ann, precursor_tol_mass, precursor_tol_mode,
-                spec_i, distances, indices, indptr, work_dir)
+        # Create the ANN indexes (if this hasn't been done yet) and
+        # calculate pairwise distances.
+        metadata = _build_query_ann_index(
+            charge, mz_splits, vectorize, n_probe, batch_size, n_neighbors,
+            n_neighbors_ann, precursor_tol_mass, precursor_tol_mode,
+            distances, indices, indptr, work_dir)
         distances, indices = distances[:indptr[-1]], indices[:indptr[-1]]
         np.save(sparse_filename.format('data'), distances)
         np.save(sparse_filename.format('indices'), indices)
@@ -103,7 +101,7 @@ def compute_pairwise_distances(
     os.remove(sparse_filename.format('data'))
     os.remove(sparse_filename.format('indices'))
     os.remove(sparse_filename.format('indptr'))
-    return pairwise_dist_matrix
+    return pairwise_dist_matrix, metadata
 
 
 def _check_ann_config(n_probe: int, n_neighbors: int) -> Tuple[int, int]:
@@ -129,211 +127,6 @@ def _check_ann_config(n_probe: int, n_neighbors: int) -> Tuple[int, int]:
     return n_probe, n_neighbors
 
 
-def _build_ann_index(charge: int, mz_splits: np.ndarray, vectorize: Callable,
-                     batch_size: int, work_dir: str) -> int:
-    """
-    Create ANN index(es) for spectra with the given charge per precursor m/z
-    split.
-
-    Parameters
-    ----------
-    charge : int
-        Precursor charge of the spectra to be processed.
-    mz_splits : np.ndarray
-        M/z splits used to create separate ANN indexes.
-    vectorize : Callable
-        Function to convert the spectra to vectors.
-    batch_size : int
-        The number of vectors to be simultaneously added to the index.
-    work_dir : str
-        Directory to read and store (intermediate) results.
-
-    Returns
-    -------
-    int
-        The total number of spectra for which indexes were built.
-    """
-    n_spectra = 0
-    # Create separate indexes per specified precursor m/z interval.
-    index_filename = os.path.join(
-        work_dir, 'nn', f'ann_{charge}_' + '{}.faiss')
-    for mz in tqdm.tqdm(mz_splits, desc='Indexes built', unit='index'):
-        pkl_filename = os.path.join(work_dir, 'spectra', f'{charge}_{mz}.pkl')
-        if (os.path.isfile(index_filename.format(mz))
-                or not os.path.isfile(pkl_filename)):
-            continue
-        # Read the spectra for the m/z split.
-        with open(pkl_filename, 'rb') as f_in:
-            spectra_split = pickle.load(f_in)
-        # Convert the spectra to vectors.
-        vectors_split = vectorize(spectra_split)
-        n_split, dim = len(spectra_split), vectors_split.shape[1]
-        n_spectra += n_split
-        # Figure out a decent value for the n_list hyperparameter based on
-        # the number of vectors.
-        # Rules of thumb from the Faiss wiki:
-        # https://github.com/facebookresearch/faiss/wiki/Guidelines-to-choose-an-index#how-big-is-the-dataset
-        if n_split == 0:
-            continue
-        if n_split < 10e2:
-            # Use a brute-force index instead of an ANN index when there
-            # are only a few items.
-            n_list = -1
-        elif n_split < 10e5:
-            n_list = 2**math.floor(math.log2(n_split / 39))
-        elif n_split < 10e6:
-            n_list = 2**16
-        elif n_split < 10e7:
-            n_list = 2**18
-        else:
-            n_list = 2**20
-            if n_split > 10e8:
-                logger.warning('More than 1B vectors to be indexed, consider '
-                               'decreasing the ANN size')
-        logger.debug('Build the ANN index for precursor m/z %d '
-                     '(%d vectors, %d lists)', mz, n_split, n_list)
-        # Create an ANN index using the inner product (proxy for cosine
-        # distance) for fast NN queries.
-        if n_list <= 0:
-            index = faiss.IndexIDMap(faiss.IndexFlatIP(dim))
-        else:
-            index = faiss.IndexIVFFlat(faiss.IndexFlatIP(dim), dim, n_list,
-                                       faiss.METRIC_INNER_PRODUCT)
-        # Compute cluster centroids.
-        # noinspection PyArgumentList
-        index.train(vectors_split)
-        # Add the vectors to the index in batches.
-        logger.debug('Add %d vectors to the ANN index', n_split)
-        batch_size = min(n_split, batch_size)
-        for batch_start in range(0, n_split, batch_size):
-            batch_stop = min(batch_start + batch_size, n_split)
-            # noinspection PyArgumentList
-            index.add_with_ids(vectors_split[batch_start:batch_stop],
-                               np.arange(batch_start, batch_stop))
-        # Save the index to disk.
-        logger.debug('Save the ANN index to file %s',
-                     index_filename.format(mz))
-        faiss.write_index(index, index_filename.format(mz))
-        index.reset()
-    return n_spectra
-
-
-@nb.njit
-def _get_precursor_mz_interval_i(precursor_mzs: np.ndarray, start_mz: float,
-                                 mz_interval: float, mz_margin: float,
-                                 mz_margin_mode: Optional[str]) \
-        -> Tuple[int, int]:
-    """
-    Get the indexes of the spectra falling within the specified precursor m/z
-    interval (taking a small margin for overlapping intervals into account).
-
-    Parameters
-    ----------
-    precursor_mzs : np.ndarray
-        Array of sorted precursor m/z's.
-    start_mz : float
-        The lower end of the m/z interval.
-    mz_interval : float
-        The width of the m/z interval.
-    mz_margin : float
-        The value of the precursor m/z tolerance.
-    mz_margin_mode : Optional[str]
-        The unit of the precursor m/z tolerance ('Da' or 'ppm'). If not 'Da' or
-        'ppm' no margin around the m/z intervals will be used.
-
-    Returns
-    -------
-    Tuple[int, int]
-        The start and stop index of the spectrum indexes falling within
-        the specified precursor m/z interval.
-    """
-    if mz_margin_mode == 'Da':
-        pass
-    elif mz_margin_mode == 'ppm':
-        mz_margin = mz_margin * start_mz / 10 ** 6
-    else:
-        mz_margin = 0
-    mz_margin = max(mz_margin, mz_interval / 100) if mz_margin > 0 else 0
-    idx = np.searchsorted(precursor_mzs, [start_mz - mz_margin,
-                                          start_mz + mz_interval + mz_margin])
-    return idx[0], idx[1]
-
-
-def _dist_mz_interval(
-        charge: int, mz: int, vectorize: Callable, n_probe: int,
-        batch_size: int, n_neighbors: int, n_neighbors_ann: int,
-        precursor_tol_mass: float, precursor_tol_mode: str, spec_i: int,
-        distances: np.ndarray, indices: np.ndarray, indptr: np.ndarray,
-        work_dir: str) -> int:
-    """
-    Compute distances to the nearest neighbors for the given precursor m/z
-    interval.
-
-    Parameters
-    ----------
-    charge : int
-        Precursor charge of the spectra to be processed.
-    mz : int
-        The active precursor m/z split.
-    vectorize : Callable
-        Function to convert the spectra to vectors.
-    n_probe : int
-        The number of cells to visit during ANN querying.
-    batch_size : int
-        The number of vectors to be simultaneously queried.
-    n_neighbors : int
-        The final (maximum) number of neighbors to retrieve for each vector.
-    n_neighbors_ann : int
-        The number of neighbors to retrieve using the ANN index. This can
-        exceed the final number of neighbors (`n_neighbors`) to maximize the
-        number of neighbors within the precursor m/z tolerance.
-    precursor_tol_mass : float
-        The precursor tolerance mass for vectors to be considered as neighbors.
-    precursor_tol_mode : str
-        The unit of the precursor m/z tolerance ('Da' or 'ppm').
-    spec_i : int
-        The current index in `indptr`.
-    distances : np.ndarray
-        The nearest neighbor distances. See `scipy.sparse.csr_matrix` (`data`).
-    indices : np.ndarray
-        The column indices for the nearest neighbor distances. See
-        `scipy.sparse.csr_matrix`.
-    indptr : np.ndarray
-        The index pointers for the nearest neighbor distances. See
-        `scipy.sparse.csr_matrix`.
-    work_dir : str
-        Directory to read and store (intermediate) results.
-
-    Returns
-    -------
-    int
-        The updated index in `indptr`.
-    """
-    index_filename = os.path.join(work_dir, 'nn', f'ann_{charge}_{mz}.faiss')
-    if not os.path.isfile(index_filename):
-        return spec_i
-    index = _load_ann_index(index_filename, n_probe)
-    # Read the spectra for the m/z split.
-    with open(os.path.join(work_dir, 'spectra', f'{charge}_{mz}.pkl'),
-              'rb') as f_in:
-        spectra_split = pickle.load(f_in)
-    precursor_mzs = np.asarray([spec.precursor_mz for spec in spectra_split])
-    for batch_start in range(0, index.ntotal, batch_size):
-        batch_stop = min(batch_start + batch_size, index.ntotal)
-        # Find nearest neighbors using ANN index searching.
-        # noinspection PyArgumentList
-        nn_dists, nn_idx_ann = index.search(
-            vectorize(spectra_split[batch_start:batch_stop]), n_neighbors_ann)
-        # Filter the neighbors based on the precursor m/z tolerance and assign
-        # distances.
-        spec_i = _filter_neighbors_mz(
-            precursor_mzs, batch_start, batch_stop, precursor_tol_mass,
-            precursor_tol_mode, nn_dists, nn_idx_ann, n_neighbors, spec_i,
-            distances, indices, indptr)
-    index.reset()
-    return spec_i
-
-
 def _load_ann_index(index_filename: str, n_probe: int) -> faiss.Index:
     """
     Load the ANN index from the given file.
@@ -357,13 +150,174 @@ def _load_ann_index(index_filename: str, n_probe: int) -> faiss.Index:
     return index
 
 
+def _build_query_ann_index(
+        charge: int, mz_splits: np.ndarray, vectorize: Callable, n_probe: int,
+        batch_size: int, n_neighbors: int, n_neighbors_ann: int,
+        precursor_tol_mass: float, precursor_tol_mode: str,
+        distances: np.ndarray, indices: np.ndarray, indptr: np.ndarray,
+        work_dir: str) -> pd.DataFrame:
+    """
+    Create ANN index(es) for spectra with the given charge per precursor m/z
+    split.
+
+    Parameters
+    ----------
+    charge : int
+        Precursor charge of the spectra to be processed.
+    mz_splits : np.ndarray
+        M/z splits used to create separate ANN indexes.
+    vectorize : Callable
+        Function to convert the spectra to vectors.
+    batch_size : int
+        The number of vectors to be simultaneously added to the index.
+    work_dir : str
+        Directory to read and store (intermediate) results.
+
+    Returns
+    -------
+    pd.DataFrame
+        Metadata (identifier, precursor charge, precursor m/z) of the spectra
+        for which indexes were built.
+    """
+    identifiers, precursor_mzs = [], []
+    indptr_i = 0
+    # Create separate indexes per specified precursor m/z interval.
+    index_filename = os.path.join(
+        work_dir, 'nn', f'ann_{charge}_' + '{}.faiss')
+    for mz in tqdm.tqdm(mz_splits, desc='Indexes queried', unit='index'):
+        pkl_filename = os.path.join(work_dir, 'spectra', f'{charge}_{mz}.pkl')
+        if not os.path.isfile(pkl_filename):
+            continue
+        # Read the spectra for the m/z split.
+        with open(pkl_filename, 'rb') as f_in:
+            spectra_split = pickle.load(f_in)
+        precursor_mzs_split = []
+        for spec in spectra_split:
+            identifiers.append(spec.identifier)
+            precursor_mzs_split.append(spec.precursor_mz)
+        precursor_mzs.append(np.asarray(precursor_mzs_split))
+        # Convert the spectra to vectors.
+        vectors_split = vectorize(spectra_split)
+        n_split, dim = len(spectra_split), vectors_split.shape[1]
+        if not os.path.isfile(index_filename.format(mz)):
+            # Figure out a decent value for the n_list hyperparameter based on
+            # the number of vectors.
+            # Rules of thumb from the Faiss wiki:
+            # https://github.com/facebookresearch/faiss/wiki/Guidelines-to-choose-an-index#how-big-is-the-dataset
+            if n_split == 0:
+                continue
+            if n_split < 10e2:
+                # Use a brute-force index instead of an ANN index when there
+                # are only a few items.
+                n_list = -1
+            elif n_split < 10e5:
+                n_list = 2**math.floor(math.log2(n_split / 39))
+            elif n_split < 10e6:
+                n_list = 2**16
+            elif n_split < 10e7:
+                n_list = 2**18
+            else:
+                n_list = 2**20
+                if n_split > 10e8:
+                    logger.warning('More than 1B vectors to be indexed, '
+                                   'consider decreasing the ANN size')
+            logger.debug('Build the ANN index for precursor m/z %d '
+                         '(%d vectors, %d lists)', mz, n_split, n_list)
+            # Create an ANN index using the inner product (proxy for cosine
+            # distance) for fast NN queries.
+            if n_list <= 0:
+                index = faiss.IndexIDMap(faiss.IndexFlatIP(dim))
+            else:
+                index = faiss.IndexIVFFlat(faiss.IndexFlatIP(dim), dim, n_list,
+                                           faiss.METRIC_INNER_PRODUCT)
+                index.nprobe = min(math.ceil(index.nlist / 2), n_probe)
+            # Compute cluster centroids.
+            # noinspection PyArgumentList
+            index.train(vectors_split)
+            # Add the vectors to the index in batches.
+            batch_size = min(n_split, batch_size)
+            for batch_start in range(0, n_split, batch_size):
+                batch_stop = min(batch_start + batch_size, n_split)
+                # noinspection PyArgumentList
+                index.add_with_ids(vectors_split[batch_start:batch_stop],
+                                   np.arange(batch_start, batch_stop))
+            # Save the index to disk for efficient re-use.
+            faiss.write_index(index, index_filename.format(mz))
+        else:
+            index = _load_ann_index(index_filename.format(mz), n_probe)
+        # Query the index to calculate NN distances.
+        _dist_mz_interval(
+            index, vectors_split, precursor_mzs[-1], batch_size, n_neighbors,
+            n_neighbors_ann, precursor_tol_mass, precursor_tol_mode,
+            distances, indices, indptr, indptr_i)
+        indptr_i += vectors_split.shape[0]
+        index.reset()
+    return pd.DataFrame({'identifier': identifiers, 'precursor_charge': charge,
+                         'precursor_mz': np.hstack(precursor_mzs)})
+
+
+def _dist_mz_interval(
+        index: faiss.Index, vectors: np.ndarray, precursor_mzs: np.ndarray,
+        batch_size: int, n_neighbors: int, n_neighbors_ann: int,
+        precursor_tol_mass: float, precursor_tol_mode: str,
+        distances: np.ndarray, indices: np.ndarray, indptr: np.ndarray,
+        indptr_i: int) -> None:
+    """
+    Compute distances to the nearest neighbors for the given precursor m/z
+    interval.
+
+    Parameters
+    ----------
+    index : faiss.Index
+        The NN index used to efficiently find distances to similar spectra.
+    vectors : np.ndarray
+        The spectrum vectors to be queried against the NN index.
+    precursor_mzs : np.ndarray
+        Precorsor m/z's of the spectra corresponding to the given vectors.
+    batch_size : int
+        The number of vectors to be simultaneously queried.
+    n_neighbors : int
+        The final (maximum) number of neighbors to retrieve for each vector.
+    n_neighbors_ann : int
+        The number of neighbors to retrieve using the ANN index. This can
+        exceed the final number of neighbors (`n_neighbors`) to maximize the
+        number of neighbors within the precursor m/z tolerance.
+    precursor_tol_mass : float
+        The precursor tolerance mass for vectors to be considered as neighbors.
+    precursor_tol_mode : str
+        The unit of the precursor m/z tolerance ('Da' or 'ppm').
+    distances : np.ndarray
+        The nearest neighbor distances. See `scipy.sparse.csr_matrix` (`data`).
+    indices : np.ndarray
+        The column indices for the nearest neighbor distances. See
+        `scipy.sparse.csr_matrix`.
+    indptr : np.ndarray
+        The index pointers for the nearest neighbor distances. See
+        `scipy.sparse.csr_matrix`.
+    indptr_i : int
+        The current start index in `indptr`.
+    """
+    for batch_start in range(0, vectors.shape[0], batch_size):
+        batch_stop = min(batch_start + batch_size, index.ntotal)
+        # Find nearest neighbors using ANN index searching.
+        # noinspection PyArgumentList
+        nn_dists, nn_idx_ann = index.search(vectors[batch_start:batch_stop],
+                                            n_neighbors_ann)
+        # Filter the neighbors based on the precursor m/z tolerance and assign
+        # distances.
+        _filter_neighbors_mz(
+            precursor_mzs, batch_start, batch_stop, precursor_tol_mass,
+            precursor_tol_mode, nn_dists, nn_idx_ann, n_neighbors, distances,
+            indices, indptr, indptr_i + batch_start)
+
+
 @nb.njit(parallel=True)
 def _filter_neighbors_mz(
         precursor_mzs: np.ndarray, batch_start: int, batch_stop: int,
         precursor_tol_mass: float, precursor_tol_mode: str,
         nn_dists: np.ndarray, nn_idx_ann: np.ndarray, n_neighbors: int,
-        spec_i: int, distances: np.ndarray, indices: np.ndarray,
-        indptr: np.ndarray) -> int:
+        distances: np.ndarray, indices: np.ndarray, indptr: np.ndarray,
+        indptr_i: int) -> None:
     """
     Filter ANN neighbor indexes by precursor m/z tolerances and assign
     pairwise distances.
@@ -384,8 +338,6 @@ def _filter_neighbors_mz(
         Indexes of the nearest neighbors.
     n_neighbors : int
         The (maximum) number of neighbors to set for each vector.
-    spec_i : int
-        The current index in `indptr`.
     distances : np.ndarray
         The nearest neighbor distances. See `scipy.sparse.csr_matrix` (`data`).
     indices : np.ndarray
@@ -394,24 +346,22 @@ def _filter_neighbors_mz(
     indptr : np.ndarray
         The index pointers for the nearest neighbor distances. See
         `scipy.sparse.csr_matrix`.
-
-    Returns
-    -------
-    int
-        The updated index in `indptr`.
+    indptr_i : int
+        The current start index in `indptr`.
     """
     nn_idx_mz = _get_neighbors_idx(
         precursor_mzs, batch_start, batch_stop,
         precursor_tol_mass, precursor_tol_mode)
+    indptr_i_start = indptr_i
     for idx_ann, idx_mz, dists in zip(nn_idx_ann, nn_idx_mz, nn_dists):
         mask = _intersect_idx_ann_mz(idx_ann, idx_mz, n_neighbors)
-        indptr[spec_i + 1] = indptr[spec_i] + len(mask)
+        indptr[indptr_i + 1] = indptr[indptr_i] + len(mask)
         # Convert cosine similarity to cosine distance.
-        distances[indptr[spec_i]:indptr[spec_i + 1]] = \
+        distances[indptr[indptr_i]:indptr[indptr_i + 1]] = \
             np.maximum(1 - dists[mask], 0)
-        indices[indptr[spec_i]:indptr[spec_i + 1]] = idx_ann[mask]
-        spec_i += 1
-    return spec_i
+        indices[indptr[indptr_i]:indptr[indptr_i + 1]] = (indptr_i_start
+                                                          + idx_ann[mask])
+        indptr_i += 1
 
 
 @nb.njit(parallel=True)
@@ -439,16 +389,16 @@ def _get_neighbors_idx(mzs: np.ndarray, start_i: int, stop_i: int,
         A list of NumPy arrays with the indexes of the nearest neighbor
         candidates for each item.
     """
+    batch_mzs = mzs[start_i:stop_i].reshape((stop_i - start_i, 1))
     if precursor_tol_mode == 'Da':
-        min_mz = mzs[start_i] - precursor_tol_mass
-        max_mz = mzs[stop_i - 1] + precursor_tol_mass
+        min_mz = batch_mzs[0] - precursor_tol_mass
+        max_mz = batch_mzs[-1] + precursor_tol_mass
     elif precursor_tol_mode == 'ppm':
-        min_mz = mzs[start_i] - mzs[start_i] * precursor_tol_mass / 10**6
-        max_mz = mzs[stop_i - 1] + mzs[stop_i - 1] * precursor_tol_mass / 10**6
+        min_mz = batch_mzs[0] - batch_mzs[0] * precursor_tol_mass / 10**6
+        max_mz = batch_mzs[-1] + batch_mzs[-1] * precursor_tol_mass / 10**6
     else:
         raise ValueError('Unknown precursor tolerance filter')
-    batch_mzs = mzs[start_i:stop_i].reshape((stop_i - start_i, 1))
-    match_i = np.searchsorted(mzs, [min_mz, max_mz])
+    match_i = np.searchsorted(mzs, [min_mz[0], max_mz[0]])
     match_mzs = (mzs[match_i[0]:match_i[1]]
                  .reshape((1, match_i[1] - match_i[0])))
     match_mzs_i = np.arange(match_i[0], match_i[1])
