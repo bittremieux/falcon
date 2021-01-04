@@ -352,7 +352,7 @@ def _filter_neighbors_mz(
     nn_idx_mz = _get_neighbors_idx(
         precursor_mzs, batch_start, batch_stop,
         precursor_tol_mass, precursor_tol_mode)
-    indptr_i_start = indptr_i
+    indptr_i_start = indptr_i - batch_start
     for idx_ann, idx_mz, dists in zip(nn_idx_ann, nn_idx_mz, nn_dists):
         mask = _intersect_idx_ann_mz(idx_ann, idx_mz, n_neighbors)
         indptr[indptr_i + 1] = indptr[indptr_i] + len(mask)
