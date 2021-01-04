@@ -503,29 +503,33 @@ def generate_clusters(pairwise_dist_matrix: ss.csr_matrix, eps: float,
     # Refine initial clusters to make sure spectra within a cluster don't have
     # an excessive precursor m/z difference.
     order = np.argsort(clusters)
+    reverse_order = np.argsort(order)
     clusters, precursor_mzs = clusters[order], precursor_mzs[order]
     logger.debug('Finetune %d initial unique clusters to not exceed %.2f %s '
                  'precursor m/z tolerance', clusters[-1] + 1,
                  precursor_tol_mass, precursor_tol_mode)
     group_idx = _get_cluster_group_idx(clusters)
     if len(group_idx) == 0:     # Only noise samples.
-        return np.asarray([])
+        return -np.ones_like(precursor_mzs, dtype=np.int64)
     cluster_reassignments = nb.typed.List(joblib.Parallel(n_jobs=-1)(
         joblib.delayed(_postprocess_cluster)
         (precursor_mzs[start_i:stop_i], precursor_tol_mass,
          precursor_tol_mode) for start_i, stop_i in group_idx))
-    return _assign_unique_cluster_labels(
-        group_idx, cluster_reassignments, min_samples)
+    clusters = _assign_unique_cluster_labels(
+        group_idx, cluster_reassignments, min_samples)[reverse_order]
+    logger.debug('%d unique clusters after precursor m/z finetuning',
+                 np.amax(clusters) + 1)
+    return clusters
 
 
 @nb.njit
-def _get_cluster_group_idx(cluster_labels: np.ndarray) -> nb.typed.List:
+def _get_cluster_group_idx(clusters: np.ndarray) -> nb.typed.List:
     """
     Get start and stop indexes for unique cluster labels.
 
     Parameters
     ----------
-    cluster_labels : np.ndarray
+    clusters : np.ndarray
         The ordered cluster labels (noise points are -1).
 
     Returns
@@ -535,14 +539,12 @@ def _get_cluster_group_idx(cluster_labels: np.ndarray) -> nb.typed.List:
         the unique cluster labels.
     """
     start_i = 0
-    while cluster_labels[start_i] == -1:
+    while clusters[start_i] == -1:
         start_i += 1
-    stop_i, label = start_i, cluster_labels[start_i]
-    group_idx = nb.typed.List()
-    while stop_i < cluster_labels.shape[0]:
-        start_i, label = stop_i, cluster_labels[stop_i]
-        while (stop_i < cluster_labels.shape[0]
-               and cluster_labels[stop_i] == label):
+    group_idx, stop_i = nb.typed.List(), start_i
+    while stop_i < clusters.shape[0]:
+        start_i, label = stop_i, clusters[stop_i]
+        while stop_i < clusters.shape[0] and clusters[stop_i] == label:
             stop_i += 1
         group_idx.append((start_i, stop_i))
     return group_idx
@@ -586,14 +588,20 @@ def _postprocess_cluster(cluster_mzs: np.ndarray, precursor_tol_mass: float,
         # Precursor m/z's within a single group can't exceed the specified
         # precursor m/z tolerance (`distance_threshold`).
         # Subtract 1 because fcluster starts with cluster label 1 instead of 0
-        # (like sklearn does).
+        # (like scikit-learn does).
         cluster_assignments = fcluster(
             fastcluster.linkage(
                 squareform(pairwise_mz_diff, checks=False), 'complete'),
             precursor_tol_mass, 'distance') - 1
         n_clusters = cluster_assignments.max() + 1
         # Update cluster assignments.
-        if 1 < n_clusters < cluster_mzs.shape[0]:
+        if n_clusters == 1:
+            # Single homogeneous cluster.
+            cluster_labels[:] = 0
+        elif n_clusters == cluster_mzs.shape[0]:
+            # Only singletons.
+            n_clusters = 0
+        else:
             cluster_assignments = cluster_assignments.reshape(1, -1)
             label, labels = 0, np.arange(n_clusters).reshape(-1, 1)
             # noinspection PyTypeChecker
@@ -602,8 +610,6 @@ def _postprocess_cluster(cluster_mzs: np.ndarray, precursor_tol_mass: float,
                     cluster_labels[mask] = label
                     label += 1
             n_clusters = label
-        else:
-            n_clusters = 0
     return cluster_labels, n_clusters
 
 
