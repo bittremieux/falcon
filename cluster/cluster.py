@@ -664,7 +664,8 @@ def get_cluster_representatives(clusters: np.ndarray,
     List[int]
         The indexes of the medoid elements for all clusters.
     """
-    labels = np.arange(np.amin(clusters), np.amax(clusters))
+    labels = np.arange(np.amin(clusters[clusters != -1]),
+                       np.amax(clusters) + 1)
     # noinspection PyTypeChecker
     medoids = joblib.Parallel(n_jobs=-1, prefer='threads')(
         joblib.delayed(_get_cluster_medoid_index)(
@@ -701,21 +702,31 @@ def _get_cluster_medoid_index(cluster_mask: np.ndarray,
         The index of the cluster's medoid element.
     """
     cluster_mask = np.where(cluster_mask)[0]
+    if len(cluster_mask) <= 2:
+        # Pairwise distances will be identical.
+        return cluster_mask[0]
     min_i, min_avg = 0, np.inf
     for row_i in range(cluster_mask.shape[0]):
         indices = pairwise_indices[pairwise_indptr[cluster_mask[row_i]]:
                                    pairwise_indptr[cluster_mask[row_i] + 1]]
+        data = pairwise_data[pairwise_indptr[cluster_mask[row_i]]:
+                             pairwise_indptr[cluster_mask[row_i] + 1]]
         row_sum, row_count = 0, 0
         for col_i in range(cluster_mask.shape[0]):
-            for pairwise_i in indices:
-                if pairwise_i == cluster_mask[col_i]:
+            for pairwise_i, ind in enumerate(indices):
+                if ind == cluster_mask[col_i]:
                     break
             else:
                 continue
             # noinspection PyUnboundLocalVariable
-            row_sum += pairwise_data[pairwise_i]
+            row_sum += data[pairwise_i]
             row_count += 1
-        row_avg = row_sum / row_count
-        if row_avg < min_avg:
-            min_i, min_avg = row_i, row_avg
+        # The pairwise distance matrix is not fully symmetrical so some values
+        # might be missing. In the extreme case a point doesn't have any of the
+        # other cluster members as its row neighbors (but connected as neighbor
+        # of another point; i.e. column neighbor).
+        if row_count > 0:
+            row_avg = row_sum / row_count
+            if row_avg < min_avg:
+                min_i, min_avg = row_i, row_avg
     return cluster_mask[min_i]
