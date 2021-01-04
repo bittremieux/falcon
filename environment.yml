@@ -5,9 +5,7 @@ channels:
   - pytorch
   - defaults
 dependencies:
-  - cudatoolkit=10.0.130=hf841e97_6
   - faiss=1.6.5=py38hd79180b_0_cuda
-  - faiss-gpu=1.6.5=h5b0ac8e_0
   - fastcluster=1.1.26=py38hc5bc63f_2
   - joblib=1.0.0=pyhd8ed1ab_0
   - lxml=4.6.2=py38hf1fe3a4_0
