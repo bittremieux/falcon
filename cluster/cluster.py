@@ -69,29 +69,22 @@ def compute_pairwise_distances(
     """
     n_probe, n_neighbors_ann = _check_ann_config(n_probe, n_neighbors_ann)
     sparse_filename = os.path.join(work_dir, 'nn', '{}.npy')
-    if (not os.path.isfile(sparse_filename.format('data')) or
-            not os.path.isfile(sparse_filename.format('indices')) or
-            not os.path.isfile(sparse_filename.format('indptr'))):
-        logger.info('Compute pairwise distances between similar spectra '
-                    '(%d spectra, %d neighbors)', n_spectra, n_neighbors)
-        max_num_embeddings = n_spectra * n_neighbors
-        distances = np.zeros(max_num_embeddings, np.float32)
-        indices = np.zeros(max_num_embeddings, np.int64)
-        indptr = np.zeros(n_spectra + 1, np.int64)
-        # Create the ANN indexes (if this hasn't been done yet) and
-        # calculate pairwise distances.
-        metadata = _build_query_ann_index(
-            charge, mz_splits, vectorize, n_probe, batch_size, n_neighbors,
-            n_neighbors_ann, precursor_tol_mass, precursor_tol_mode,
-            distances, indices, indptr, work_dir)
-        distances, indices = distances[:indptr[-1]], indices[:indptr[-1]]
-        np.save(sparse_filename.format('data'), distances)
-        np.save(sparse_filename.format('indices'), indices)
-        np.save(sparse_filename.format('indptr'), indptr)
-    else:
-        distances = np.load(sparse_filename.format('data'))
-        indices = np.load(sparse_filename.format('indices'))
-        indptr = np.load(sparse_filename.format('indptr'))
+    logger.info('Compute pairwise distances between similar spectra '
+                '(%d spectra, %d neighbors)', n_spectra, n_neighbors)
+    max_num_embeddings = n_spectra * n_neighbors
+    distances = np.zeros(max_num_embeddings, np.float32)
+    indices = np.zeros(max_num_embeddings, np.int64)
+    indptr = np.zeros(n_spectra + 1, np.int64)
+    # Create the ANN indexes (if this hasn't been done yet) and calculate
+    # pairwise distances.
+    metadata = _build_query_ann_index(
+        charge, mz_splits, vectorize, n_probe, batch_size, n_neighbors,
+        n_neighbors_ann, precursor_tol_mass, precursor_tol_mode, distances,
+        indices, indptr, work_dir)
+    distances, indices = distances[:indptr[-1]], indices[:indptr[-1]]
+    np.save(sparse_filename.format('data'), distances)
+    np.save(sparse_filename.format('indices'), indices)
+    np.save(sparse_filename.format('indptr'), indptr)
     # Convert to a sparse pairwise distance matrix. This matrix might not be
     # entirely symmetrical, but that shouldn't matter too much.
     logger.debug('Construct pairwise distance matrix')
