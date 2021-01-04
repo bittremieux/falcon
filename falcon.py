@@ -114,11 +114,10 @@ def main():
         # Save cluster assignments.
         metadata['cluster'] = clusters
         clusters_all.append(metadata)
-        # FIXME
-        # # Extract identifiers for cluster representatives (medoids).
-        # if config.export_representatives:
-        #     representative_ids.extend(cluster.get_cluster_representatives(
-        #         clusters[mask_no_noise], pairwise_dist_matrix))
+        # Extract identifiers for cluster representatives (medoids).
+        if config.export_representatives:
+            representative_ids.extend(cluster.get_cluster_representatives(
+                clusters, pairwise_dist_matrix))
 
     # Export cluster memberships and representative spectra.
     n_clusters, n_spectra_clustered = 0, 0
@@ -133,17 +132,18 @@ def main():
     clusters_all.to_csv(os.path.join(config.work_dir, 'clusters.csv'),
                         index=False)
     if config.export_representatives:
-        logger.debug('Export %d cluster representative spectra',
-                     len(representative_ids))
-        representatives = []
-        for cluster_label, representative_i in representative_ids:
-            representative = None   # TODO
-            # representative.cluster = cluster_label
-            representatives.append(representative)
-
-        representatives.sort(key=lambda spec: spec.cluster)
-        ms_io.write_spectra(os.path.join(config.work_dir, 'clusters.mgf'),
-                            representatives)
+        raise NotImplementedError('It is not possible to export '
+                                  'representative spectra yet')
+        # logger.debug('Export %d cluster representative spectra',
+        #              len(representative_ids))
+        # representatives = []
+        # for cluster_label, representative_i in representative_ids:
+        #     representative = None   # TODO: Retrieve the original spectrum.
+        #     # representative.cluster = cluster_label
+        #     representatives.append(representative)
+        # representatives.sort(key=lambda spec: spec.cluster)
+        # ms_io.write_spectra(os.path.join(config.work_dir, 'clusters.mgf'),
+        #                     representatives)
 
     logging.shutdown()
 
