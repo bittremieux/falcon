@@ -167,10 +167,8 @@ def _build_query_ann_index(
     """
     identifiers, precursor_mzs = [], []
     indptr_i = 0
-    # Create separate indexes per specified precursor m/z interval.
-    index_filename = os.path.join(
-        work_dir, 'nn', f'ann_{charge}_' + '{}.faiss')
-    for mz in tqdm.tqdm(mz_splits, desc='Indexes queried', unit='index'):
+    # Find neighbors per specified precursor m/z interval.
+    for mz in tqdm.tqdm(mz_splits, desc='Intervals queried', unit='index'):
         pkl_filename = os.path.join(work_dir, 'spectra', f'{charge}_{mz}.pkl')
         if not os.path.isfile(pkl_filename):
             continue
@@ -185,59 +183,53 @@ def _build_query_ann_index(
         # Convert the spectra to vectors.
         vectors_split = vectorize(spectra_split)
         n_split, dim = len(spectra_split), vectors_split.shape[1]
-        if not os.path.isfile(index_filename.format(mz)):
-            # Figure out a decent value for the n_list hyperparameter based on
-            # the number of vectors.
-            # Rules of thumb from the Faiss wiki:
-            # https://github.com/facebookresearch/faiss/wiki/Guidelines-to-choose-an-index#how-big-is-the-dataset
-            if n_split == 0:
-                continue
-            if n_split < 10e2:
-                # Use a brute-force index instead of an ANN index when there
-                # are only a few items.
-                n_list = -1
-            elif n_split < 10e5:
-                n_list = 2**math.floor(math.log2(n_split / 39))
-            elif n_split < 10e6:
-                n_list = 2**16
-            elif n_split < 10e7:
-                n_list = 2**18
-            else:
-                n_list = 2**20
-                if n_split > 10e8:
-                    logger.warning('More than 1B vectors to be indexed, '
-                                   'consider decreasing the ANN size')
-            logger.debug('Build the ANN index for precursor m/z %d '
-                         '(%d vectors, %d lists)', mz, n_split, n_list)
-            # Create an ANN index using the inner product (proxy for cosine
-            # distance) for fast NN queries.
-            if n_list <= 0:
-                index = faiss.IndexIDMap(faiss.IndexFlatIP(dim))
-            else:
-                index = faiss.IndexIVFFlat(faiss.IndexFlatIP(dim), dim, n_list,
-                                           faiss.METRIC_INNER_PRODUCT)
-                index.nprobe = min(math.ceil(index.nlist / 2), n_probe)
-            # Compute cluster centroids.
-            # noinspection PyArgumentList
-            index.train(vectors_split)
-            # Add the vectors to the index in batches.
-            batch_size = min(n_split, batch_size)
-            for batch_start in range(0, n_split, batch_size):
-                batch_stop = min(batch_start + batch_size, n_split)
-                # noinspection PyArgumentList
-                index.add_with_ids(vectors_split[batch_start:batch_stop],
-                                   np.arange(batch_start, batch_stop))
-            # Save the index to disk for efficient re-use.
-            faiss.write_index(index, index_filename.format(mz))
+        # Figure out a decent value for the n_list hyperparameter based on
+        # the number of vectors.
+        # Rules of thumb from the Faiss wiki:
+        # https://github.com/facebookresearch/faiss/wiki/Guidelines-to-choose-an-index#how-big-is-the-dataset
+        if n_split == 0:
+            continue
+        if n_split < 10e2:
+            # Use a brute-force index instead of an ANN index when there
+            # are only a few items.
+            n_list = -1
+        elif n_split < 10e5:
+            n_list = 2**math.floor(math.log2(n_split / 39))
+        elif n_split < 10e6:
+            n_list = 2**16
+        elif n_split < 10e7:
+            n_list = 2**18
         else:
-            index = _load_ann_index(index_filename.format(mz), n_probe)
+            n_list = 2**20
+            if n_split > 10e8:
+                logger.warning('More than 1B vectors to be indexed, consider '
+                               'decreasing the ANN size')
+        # Create an ANN index using the inner product (proxy for cosine
+        # distance) for fast NN queries.
+        if n_list <= 0:
+            index = faiss.IndexIDMap(faiss.IndexFlatIP(dim))
+        else:
+            index = faiss.IndexIVFFlat(faiss.IndexFlatIP(dim), dim, n_list,
+                                       faiss.METRIC_INNER_PRODUCT)
+            print(index.nprobe)
+            index.nprobe = min(math.ceil(index.nlist / 8), n_probe)
+            print(index.nprobe)
+        # Compute cluster centroids.
+        # noinspection PyArgumentList
+        index.train(vectors_split)
+        # Add the vectors to the index in batches.
+        batch_size = min(n_split, batch_size)
+        for batch_start in range(0, n_split, batch_size):
+            batch_stop = min(batch_start + batch_size, n_split)
+            # noinspection PyArgumentList
+            index.add_with_ids(vectors_split[batch_start:batch_stop],
+                               np.arange(batch_start, batch_stop))
         # Query the index to calculate NN distances.
         _dist_mz_interval(
             index, vectors_split, precursor_mzs[-1], batch_size, n_neighbors,
             n_neighbors_ann, precursor_tol_mass, precursor_tol_mode,
             distances, indices, indptr, indptr_i)
         indptr_i += vectors_split.shape[0]
-        index.reset()
     return pd.DataFrame({'identifier': identifiers, 'precursor_charge': charge,
                          'precursor_mz': np.hstack(precursor_mzs)})
 
