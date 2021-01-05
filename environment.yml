@@ -14,6 +14,7 @@ dependencies:
   - numba=0.52.0=py38h51da96c_0
   - numpy=1.19.4=py38h18fd61f_2
   - pandas=1.2.0=py38h51da96c_0
+  - pyarrow=2.0.0=py38hf3b3a6d_11_cpu
   - pyteomics=4.4.0=pyh3252c3a_0
   - python=3.8.6=hffdb5ce_4_cpython
   - scikit-learn=0.24.0=py38h658cfdd_0
