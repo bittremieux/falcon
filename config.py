@@ -25,11 +25,11 @@ precursor_tol_mass, precursor_tol_mode = 20, 'ppm'
 
 # NN index construction and querying.
 n_neighbors, n_neighbors_ann = 64, 128
-n_probe = 128
+n_probe = 32
 batch_size = 2**16
 
 # DBSCAN clustering.
-eps = 0.4
+eps = 0.1
 min_samples = 2
 
 # Input/output.
@@ -40,4 +40,4 @@ peak_dir = '../data/interim'
 work_dir = os.path.abspath('../data/processed')
 filenames = [os.path.join(peak_dir, filename)
              for filename in os.listdir(peak_dir)
-             if filename.endswith('.mzXML')]
+             if filename.endswith('.mgf')]
