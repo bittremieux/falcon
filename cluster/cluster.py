@@ -211,9 +211,7 @@ def _build_query_ann_index(
         else:
             index = faiss.IndexIVFFlat(faiss.IndexFlatIP(dim), dim, n_list,
                                        faiss.METRIC_INNER_PRODUCT)
-            print(index.nprobe)
             index.nprobe = min(math.ceil(index.nlist / 8), n_probe)
-            print(index.nprobe)
         # Compute cluster centroids.
         # noinspection PyArgumentList
         index.train(vectors_split)
