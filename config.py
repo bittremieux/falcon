@@ -35,8 +35,8 @@ min_samples = 2
 # Input/output.
 overwrite = False
 export_representatives = False
-pxd = 'PXD000561'   # 'USI000000'
-peak_dir = '../data/interim'
+pxd = 'USI000000'
+peak_dir = os.path.abspath('../data/interim')
 work_dir = os.path.abspath('../data/processed')
 filenames = [os.path.join(peak_dir, filename)
              for filename in os.listdir(peak_dir)
