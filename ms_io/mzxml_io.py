@@ -58,7 +58,7 @@ def _parse_spectrum(spectrum_dict: Dict) -> sus.MsmsSpectrum:
     spectrum_id = spectrum_dict['id']
     mz_array = spectrum_dict['m/z array']
     intensity_array = spectrum_dict['intensity array']
-    retention_time = spectrum_dict['retentionTime']
+    retention_time = spectrum_dict.get('retentionTime')
 
     precursor_mz = spectrum_dict['precursorMz'][0]['precursorMz']
     if 'precursorCharge' in spectrum_dict['precursorMz'][0]:
