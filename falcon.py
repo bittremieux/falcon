@@ -120,7 +120,8 @@ def main():
         # Make sure that different charges have non-overlapping cluster labels.
         mask_no_noise = clusters != -1
         clusters[mask_no_noise] += current_label
-        current_label = np.amax(clusters[mask_no_noise]) + 1 if any(mask_no_noise) else current_label
+        current_label = (np.amax(clusters[mask_no_noise]) + 1
+                         if any(mask_no_noise) else current_label)
         # Save cluster assignments.
         metadata['cluster'] = clusters
         clusters_all.append(metadata)
