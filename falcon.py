@@ -4,7 +4,7 @@ import math
 import os
 import pickle
 import sys
-from typing import Dict, Iterable, List
+from typing import Dict, List
 
 import joblib
 import natsort
@@ -160,10 +160,12 @@ def main():
                 lambda row: os.path.join(config.work_dir, 'spectra',
                                          f'{row[0]}_{row[1]}.pkl'),
                 axis='columns')
-        representatives = [
-            spec for fn, spectra in representative_info.groupby('filename')
-            for spec in _find_spectra_pkl(
-                fn, spectra.set_index('identifier')['cluster'].to_dict())]
+        representatives = []
+        for spectra in joblib.Parallel(n_jobs=-1)(
+                joblib.delayed(_find_spectra_pkl)(
+                    fn, spectra.set_index('identifier')['cluster'].to_dict())
+                for fn, spectra in representative_info.groupby('filename')):
+            representatives.extend(spectra)
         representatives.sort(key=lambda spec: spec.cluster)
         ms_io.write_spectra(os.path.join(config.work_dir, 'clusters.mgf'),
                             representatives)
@@ -269,7 +271,7 @@ def _read_write_spectra_pkl(filename: str) -> int:
 
 
 def _find_spectra_pkl(filename: str, usis_to_read: Dict[str, int]) \
-        -> Iterable[MsmsSpectrum]:
+        -> List[MsmsSpectrum]:
     """
     Read spectra with the specified USIs from a pkl file.
 
@@ -286,18 +288,16 @@ def _find_spectra_pkl(filename: str, usis_to_read: Dict[str, int]) \
     Iterable[MsmsSpectrum]
         The spectra with the specified USIs.
     """
-    spectra_found = 0
+    spectra_found = []
     with open(filename, 'rb') as f_in:
         for spec in pickle.load(f_in):
             if spec.identifier in usis_to_read.keys():
                 spec.cluster = usis_to_read[spec.identifier]
-                yield spec
-                spectra_found += 1
-                if spectra_found == len(usis_to_read):
-                    return
-    if spectra_found < len(usis_to_read):
-        raise ValueError(f'{len(usis_to_read) - spectra_found} spectra not '
-                         'found in file {filename}')
+                spectra_found.append(spec)
+                if len(spectra_found) == len(usis_to_read):
+                    return spectra_found
+    raise ValueError(f'{len(usis_to_read) - len(spectra_found)} spectra not '
+                     f'found in file {filename}')
 
 
 if __name__ == '__main__':
