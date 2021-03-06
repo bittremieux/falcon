@@ -295,12 +295,19 @@ def _find_spectra_pkl(charge: int, mz: int, usis_to_read: Dict[str, int]) \
     Iterable[MsmsSpectrum]
         The spectra with the specified USIs.
     """
+    spectra_found = 0
     filename = os.path.join(config.work_dir, 'spectra', f'{charge}_{mz}.pkl')
     with open(filename, 'rb') as f_in:
         for spec in pickle.load(f_in):
             if spec.identifier in usis_to_read.keys():
                 spec.cluster = usis_to_read[spec.identifier]
                 yield spec
+                spectra_found += 1
+                if spectra_found == len(usis_to_read):
+                    return
+    if spectra_found < len(usis_to_read):
+        raise ValueError(f'{len(usis_to_read) - spectra_found} spectra not '
+                         'found in file {filename}')
 
 
 if __name__ == '__main__':
