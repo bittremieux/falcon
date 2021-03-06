@@ -24,7 +24,7 @@ logger = logging.getLogger('spectrum_clustering')
 
 def compute_pairwise_distances(
         charge: int, n_spectra: int, mz_splits: np.ndarray,
-        vectorize: Callable,
+        process_spectrum: Callable, vectorize: Callable,
         precursor_tol_mass: float, precursor_tol_mode: str, n_neighbors: int,
         n_neighbors_ann: int, batch_size: int, n_probe: int, work_dir: str) \
         -> Tuple[ss.csr_matrix, pd.DataFrame]:
@@ -40,6 +40,8 @@ def compute_pairwise_distances(
         The total number of spectra to be processed.
     mz_splits : np.ndarray
         M/z intervals used to split the spectra on their precursor m/z.
+    process_spectrum : Callable
+        Function to preprocess the spectra.
     vectorize : Callable
         Function to convert the spectra to vectors.
     precursor_tol_mass : float
@@ -77,9 +79,12 @@ def compute_pairwise_distances(
     # Create the ANN indexes (if this hasn't been done yet) and calculate
     # pairwise distances.
     metadata = _build_query_ann_index(
-        charge, mz_splits, vectorize, n_probe, batch_size, n_neighbors,
-        n_neighbors_ann, precursor_tol_mass, precursor_tol_mode, distances,
-        indices, indptr, work_dir)
+        charge, mz_splits, process_spectrum, vectorize, n_probe, batch_size,
+        n_neighbors, n_neighbors_ann, precursor_tol_mass, precursor_tol_mode,
+        distances, indices, indptr, work_dir)
+    # Update the number of spectra because of skipped low-quality spectra.
+    n_spectra = len(metadata)
+    indptr = indptr[:n_spectra + 1]
     distances, indices = distances[:indptr[-1]], indices[:indptr[-1]]
     # Convert to a sparse pairwise distance matrix. This matrix might not be
     # entirely symmetrical, but that shouldn't matter too much.
@@ -137,11 +142,11 @@ def _load_ann_index(index_filename: str, n_probe: int) -> faiss.Index:
 
 
 def _build_query_ann_index(
-        charge: int, mz_splits: np.ndarray, vectorize: Callable, n_probe: int,
-        batch_size: int, n_neighbors: int, n_neighbors_ann: int,
-        precursor_tol_mass: float, precursor_tol_mode: str,
-        distances: np.ndarray, indices: np.ndarray, indptr: np.ndarray,
-        work_dir: str) -> pd.DataFrame:
+        charge: int, mz_splits: np.ndarray, process_spectrum: Callable,
+        vectorize: Callable, n_probe: int, batch_size: int, n_neighbors: int,
+        n_neighbors_ann: int, precursor_tol_mass: float,
+        precursor_tol_mode: str, distances: np.ndarray, indices: np.ndarray,
+        indptr: np.ndarray, work_dir: str) -> pd.DataFrame:
     """
     Create ANN index(es) for spectra with the given charge per precursor m/z
     split.
@@ -152,6 +157,8 @@ def _build_query_ann_index(
         Precursor charge of the spectra to be processed.
     mz_splits : np.ndarray
         M/z splits used to create separate ANN indexes.
+    process_spectrum : Callable
+        Function to preprocess the spectra.
     vectorize : Callable
         Function to convert the spectra to vectors.
     batch_size : int
@@ -173,16 +180,21 @@ def _build_query_ann_index(
         if not os.path.isfile(pkl_filename):
             continue
         # Read the spectra for the m/z split.
+        spectra_split, precursor_mzs_split = [], []
         with open(pkl_filename, 'rb') as f_in:
-            spectra_split = pickle.load(f_in)
-        precursor_mzs_split = []
-        for spec in spectra_split:
-            identifiers.append(spec.identifier)
-            precursor_mzs_split.append(spec.precursor_mz)
+            for spec in pickle.load(f_in):
+                spec = process_spectrum(spec)
+                # Discard low-quality spectra.
+                if spec is not None:
+                    spectra_split.append(spec)
+                    identifiers.append(spec.identifier)
+                    precursor_mzs_split.append(spec.precursor_mz)
+        if len(spectra_split) == 0:
+            continue
         precursor_mzs.append(np.asarray(precursor_mzs_split))
         # Convert the spectra to vectors.
         vectors_split = vectorize(spectra_split)
-        n_split, dim = len(spectra_split), vectors_split.shape[1]
+        n_split, dim = vectors_split.shape
         # Figure out a decent value for the n_list hyperparameter based on
         # the number of vectors.
         # Rules of thumb from the Faiss wiki:
@@ -227,7 +239,7 @@ def _build_query_ann_index(
             index, vectors_split, precursor_mzs[-1], batch_size, n_neighbors,
             n_neighbors_ann, precursor_tol_mass, precursor_tol_mode,
             distances, indices, indptr, indptr_i)
-        indptr_i += vectors_split.shape[0]
+        indptr_i += n_split
     return pd.DataFrame({'identifier': identifiers, 'precursor_charge': charge,
                          'precursor_mz': np.hstack(precursor_mzs)})
 

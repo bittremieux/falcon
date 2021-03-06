@@ -65,6 +65,16 @@ def main():
     else:
         charge_count = joblib.load(os.path.join(config.work_dir, 'spectra',
                                                 'info.joblib'))
+    process_spectrum = functools.partial(
+        spectrum.process_spectrum,
+        min_peaks=config.min_peaks,
+        min_mz_range=config.min_mz_range,
+        mz_min=config.min_mz,
+        mz_max=config.max_mz,
+        remove_precursor_tolerance=config.remove_precursor_tolerance,
+        min_intensity=config.min_intensity,
+        max_peaks_used=config.max_peaks_used,
+        scaling=config.scaling)
 
     # Pre-compute the index hash mappings.
     vec_len, min_mz, max_mz = spectrum.get_dim(config.min_mz, config.max_mz,
@@ -89,7 +99,7 @@ def main():
                 or not os.path.isfile(metadata_filename)):
             pairwise_dist_matrix, metadata = \
                 cluster.compute_pairwise_distances(
-                    charge, n_spectra, config.mzs, vectorize,
+                    charge, n_spectra, config.mzs, process_spectrum, vectorize,
                     config.precursor_tol_mass, config.precursor_tol_mode,
                     config.n_neighbors, config.n_neighbors_ann,
                     config.batch_size, config.n_probe, config.work_dir)
@@ -163,7 +173,7 @@ def _prepare_spectra() -> Dict[int, int]:
                                                    f'{charge}_{mz}.pkl'), 'wb')
                    for charge in config.charges for mz in config.mzs}
     for file_spectra in joblib.Parallel(n_jobs=-1)(
-            joblib.delayed(_read_process_spectra)(filename)
+            joblib.delayed(_read_spectra)(filename)
             for filename in config.filenames):
         for spec in file_spectra:
             # FIXME: Add nearby spectra to neighboring files.
@@ -190,7 +200,7 @@ def _prepare_spectra() -> Dict[int, int]:
     return charge_count
 
 
-def _read_process_spectra(filename: str) -> List[spectrum.MsmsSpectrumNb]:
+def _read_spectra(filename: str) -> List[spectrum.MsmsSpectrumNb]:
     """
     Get high-quality processed MS/MS spectra from the given file.
 
@@ -205,16 +215,10 @@ def _read_process_spectra(filename: str) -> List[spectrum.MsmsSpectrumNb]:
         The processed spectra in the given file.
     """
     spectra = []
-    for spec_raw in ms_io.get_spectra(filename):
-        spec_raw.identifier = f'mzspec:{config.pxd}:{spec_raw.identifier}'
-        # Discard low-quality spectra.
-        spec_processed = spectrum.process_spectrum(
-            spec_raw, config.min_peaks, config.min_mz_range, config.min_mz,
-            config.max_mz, config.remove_precursor_tolerance,
-            config.min_intensity, config.max_peaks_used, config.scaling)
-        if (spec_processed is not None
-                and spec_processed.precursor_charge in config.charges):
-            spectra.append(spec_processed)
+    for spec in ms_io.get_spectra(filename):
+        if spec.precursor_charge in config.charges:
+            spec.identifier = f'mzspec:{config.pxd}:{spec.identifier}'
+            spectra.append(spec)
     spectra.sort(key=lambda spec: spec.precursor_mz)
     return spectra
 
