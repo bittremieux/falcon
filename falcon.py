@@ -151,26 +151,19 @@ def main():
         logger.debug('Export %d cluster representative spectra',
                      len(representative_info))
         # Get the spectra corresponding to the cluster representatives.
-        representatives = []
-        current_charge = representative_info.at[0, 'precursor_charge']
-        file_mz = representative_info['precursor_mz'].apply(
-            lambda mz: (math.floor(mz / config.mz_interval)
-                        * config.mz_interval))
-        current_mz = file_mz.at[0]
-        usis_to_read = {}
-        for usi, charge, mz, label in zip(
-                representative_info['identifier'],
-                representative_info['precursor_charge'],
-                file_mz,
-                representative_info['cluster']):
-            if mz != current_mz or charge != current_charge:
-                representatives.extend(_find_spectra_pkl(
-                    current_charge, current_mz, usis_to_read))
-                current_charge, current_mz, usis_to_read = charge, mz, {}
-            usis_to_read[usi] = label
-        # Add the final representative(s) as well.
-        representatives.extend(_find_spectra_pkl(
-            current_charge, current_mz, usis_to_read))
+        representative_info['file_mz'] = \
+            representative_info['precursor_mz'].apply(
+                lambda mz: (math.floor(mz / config.mz_interval)
+                            * config.mz_interval))
+        representative_info['filename'] = \
+            representative_info[['precursor_charge', 'file_mz']].apply(
+                lambda row: os.path.join(config.work_dir, 'spectra',
+                                         f'{row[0]}_{row[1]}.pkl'),
+                axis='columns')
+        representatives = [
+            spec for fn, spectra in representative_info.groupby('filename')
+            for spec in _find_spectra_pkl(
+                fn, spectra.set_index('identifier')['cluster'].to_dict())]
         representatives.sort(key=lambda spec: spec.cluster)
         ms_io.write_spectra(os.path.join(config.work_dir, 'clusters.mgf'),
                             representatives)
@@ -275,17 +268,15 @@ def _read_write_spectra_pkl(filename: str) -> int:
         return len(spectra)
 
 
-def _find_spectra_pkl(charge: int, mz: int, usis_to_read: Dict[str, int]) \
+def _find_spectra_pkl(filename: str, usis_to_read: Dict[str, int]) \
         -> Iterable[MsmsSpectrum]:
     """
     Read spectra with the specified USIs from a pkl file.
 
     Parameters
     ----------
-    charge : int
-        The charge index of the pkl file.
-    mz : int
-        The m/z index of the pkl file.
+    filename : str
+        Name of the pkl file from which the spectra are read.
     usis_to_read : Dict[str, int]
         Dict with as keys the USIs of the spectra to read from the pkl file,
         and as values the cluster labels that will be assigned to the spectra.
@@ -296,7 +287,6 @@ def _find_spectra_pkl(charge: int, mz: int, usis_to_read: Dict[str, int]) \
         The spectra with the specified USIs.
     """
     spectra_found = 0
-    filename = os.path.join(config.work_dir, 'spectra', f'{charge}_{mz}.pkl')
     with open(filename, 'rb') as f_in:
         for spec in pickle.load(f_in):
             if spec.identifier in usis_to_read.keys():
