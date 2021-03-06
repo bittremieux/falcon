@@ -655,12 +655,11 @@ def get_cluster_representatives(clusters: np.ndarray,
     labels = np.arange(np.amin(clusters[clusters != -1]),
                        np.amax(clusters) + 1)
     # noinspection PyTypeChecker
-    medoids = joblib.Parallel(n_jobs=-1, prefer='threads')(
+    yield from joblib.Parallel(n_jobs=-1, prefer='threads')(
         joblib.delayed(_get_cluster_medoid_index)(
             mask, pairwise_dist_matrix.indptr, pairwise_dist_matrix.indices,
             pairwise_dist_matrix.data)
         for mask in clusters.reshape(1, -1) == labels.reshape(-1, 1))
-    yield from zip(labels, medoids)
 
 
 @nb.njit(fastmath=True)

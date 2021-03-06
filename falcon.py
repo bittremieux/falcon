@@ -4,7 +4,7 @@ import math
 import os
 import pickle
 import sys
-from typing import Dict, List
+from typing import Dict, Iterable, List
 
 import joblib
 import natsort
@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as ss
 from sklearn.utils import murmurhash3_32
+from spectrum_utils.spectrum import MsmsSpectrum
 
 import config
 from cluster import cluster, spectrum
@@ -87,7 +88,7 @@ def main():
         hash_lookup=hash_lookup, norm=True)
 
     # Cluster the spectra per charge.
-    clusters_all, current_label, representative_ids = [], 0, []
+    clusters_all, current_label, representative_info = [], 0, []
     for charge, n_spectra in charge_count.items():
         logger.info('Cluster %d spectra with precursor charge %d',
                     n_spectra, charge)
@@ -127,8 +128,9 @@ def main():
         clusters_all.append(metadata)
         # Extract identifiers for cluster representatives (medoids).
         if config.export_representatives:
-            representative_ids.extend(cluster.get_cluster_representatives(
-                clusters, pairwise_dist_matrix))
+            representative_info.append(
+                metadata.iloc[list(cluster.get_cluster_representatives(
+                    clusters, pairwise_dist_matrix))])
 
     # Export cluster memberships and representative spectra.
     n_clusters, n_spectra_clustered = 0, 0
@@ -143,18 +145,35 @@ def main():
     clusters_all.to_csv(os.path.join(config.work_dir, 'clusters.csv'),
                         index=False)
     if config.export_representatives:
-        raise NotImplementedError('It is not possible to export '
-                                  'representative spectra yet')
-        # logger.debug('Export %d cluster representative spectra',
-        #              len(representative_ids))
-        # representatives = []
-        # for cluster_label, representative_i in representative_ids:
-        #     representative = None   # TODO: Retrieve the original spectrum.
-        #     # representative.cluster = cluster_label
-        #     representatives.append(representative)
-        # representatives.sort(key=lambda spec: spec.cluster)
-        # ms_io.write_spectra(os.path.join(config.work_dir, 'clusters.mgf'),
-        #                     representatives)
+        representative_info = (
+            pd.concat(representative_info, ignore_index=True)
+            .sort_values(['precursor_charge', 'precursor_mz']))
+        logger.debug('Export %d cluster representative spectra',
+                     len(representative_info))
+        # Get the spectra corresponding to the cluster representatives.
+        representatives = []
+        current_charge = representative_info.at[0, 'precursor_charge']
+        file_mz = representative_info['precursor_mz'].apply(
+            lambda mz: (math.floor(mz / config.mz_interval)
+                        * config.mz_interval))
+        current_mz = file_mz.at[0]
+        usis_to_read = {}
+        for usi, charge, mz, label in zip(
+                representative_info['identifier'],
+                representative_info['precursor_charge'],
+                file_mz,
+                representative_info['cluster']):
+            if mz != current_mz or charge != current_charge:
+                representatives.extend(_find_spectra_pkl(
+                    current_charge, current_mz, usis_to_read))
+                current_charge, current_mz, usis_to_read = charge, mz, {}
+            usis_to_read[usi] = label
+        # Add the final representative(s) as well.
+        representatives.extend(_find_spectra_pkl(
+            current_charge, current_mz, usis_to_read))
+        representatives.sort(key=lambda spec: spec.cluster)
+        ms_io.write_spectra(os.path.join(config.work_dir, 'clusters.mgf'),
+                            representatives)
 
     logging.shutdown()
 
@@ -201,7 +220,7 @@ def _prepare_spectra() -> Dict[int, int]:
     return charge_count
 
 
-def _read_spectra(filename: str) -> List[spectrum.MsmsSpectrumNb]:
+def _read_spectra(filename: str) -> List[MsmsSpectrum]:
     """
     Get high-quality processed MS/MS spectra from the given file.
 
@@ -212,8 +231,8 @@ def _read_spectra(filename: str) -> List[spectrum.MsmsSpectrumNb]:
 
     Returns
     -------
-    List[spectrum.MsmsSpectrumNb]
-        The processed spectra in the given file.
+    List[MsmsSpectrum]
+        The spectra in the given file.
     """
     spectra = []
     for spec in ms_io.get_spectra(filename):
@@ -254,6 +273,34 @@ def _read_write_spectra_pkl(filename: str) -> int:
         with open(filename, 'wb') as f_out:
             pickle.dump(spectra, f_out, protocol=5)
         return len(spectra)
+
+
+def _find_spectra_pkl(charge: int, mz: int, usis_to_read: Dict[str, int]) \
+        -> Iterable[MsmsSpectrum]:
+    """
+    Read spectra with the specified USIs from a pkl file.
+
+    Parameters
+    ----------
+    charge : int
+        The charge index of the pkl file.
+    mz : int
+        The m/z index of the pkl file.
+    usis_to_read : Dict[str, int]
+        Dict with as keys the USIs of the spectra to read from the pkl file,
+        and as values the cluster labels that will be assigned to the spectra.
+
+    Returns
+    -------
+    Iterable[MsmsSpectrum]
+        The spectra with the specified USIs.
+    """
+    filename = os.path.join(config.work_dir, 'spectra', f'{charge}_{mz}.pkl')
+    with open(filename, 'rb') as f_in:
+        for spec in pickle.load(f_in):
+            if spec.identifier in usis_to_read.keys():
+                spec.cluster = usis_to_read[spec.identifier]
+                yield spec
 
 
 if __name__ == '__main__':
