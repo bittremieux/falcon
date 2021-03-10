@@ -73,9 +73,11 @@ def compute_pairwise_distances(
     logger.info('Compute pairwise distances between similar spectra '
                 '(%d spectra, %d neighbors)', n_spectra, n_neighbors)
     max_num_embeddings = n_spectra * n_neighbors
+    dtype = (np.int32 if max_num_embeddings < np.iinfo(np.int32).max
+             else np.int64)
     distances = np.zeros(max_num_embeddings, np.float32)
-    indices = np.zeros(max_num_embeddings, np.int64)
-    indptr = np.zeros(n_spectra + 1, np.int64)
+    indices = np.zeros(max_num_embeddings, dtype)
+    indptr = np.zeros(n_spectra + 1, dtype)
     # Create the ANN indexes (if this hasn't been done yet) and calculate
     # pairwise distances.
     metadata = _build_query_ann_index(
