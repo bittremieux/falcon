@@ -191,14 +191,13 @@ def _prepare_spectra() -> Dict[int, int]:
             joblib.delayed(_read_spectra)(filename)
             for filename in config.filenames):
         for spec in file_spectra:
+            filehandle = filehandles.get(
+                (spec.precursor_charge,
+                 math.floor(spec.precursor_mz / config.mz_interval)
+                 * config.mz_interval))
+            if filehandle is not None:
+                pickle.dump(spec, filehandle, protocol=5)
             # FIXME: Add nearby spectra to neighboring files.
-            pickle.dump(
-                spec,
-                filehandles[(
-                    spec.precursor_charge,
-                    math.floor(spec.precursor_mz / config.mz_interval)
-                    * config.mz_interval)],
-                protocol=5)
     for filehandle in filehandles.values():
         filehandle.close()
     # Make sure the spectra in the individual files are sorted by their
