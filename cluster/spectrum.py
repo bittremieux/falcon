@@ -183,7 +183,7 @@ def to_vector(spectrum: MsmsSpectrumNb, vector: np.ndarray,
     ----------
     spectrum : MsmsSpectrumNb
         The spectrum to be converted to a vector.
-    vector : np.ndarray, optional
+    vector : np.ndarray
         A pre-allocated vector to store the output.
     min_mz : float
         The minimum m/z to include in the vector.
