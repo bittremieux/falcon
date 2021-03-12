@@ -14,7 +14,7 @@ min_mz, max_mz = 101., 1500.
 remove_precursor_tolerance = 0.5
 min_intensity = 0.01
 max_peaks_used = 50
-scaling = 'rank'
+scaling = None
 
 # Spectrum to vector conversion.
 fragment_mz_tolerance = 0.05
