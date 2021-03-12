@@ -23,21 +23,6 @@ logger = logging.getLogger('spectrum_clustering')
 
 
 def main():
-    # Configure logging.
-    logging.captureWarnings(True)
-    root = logging.getLogger()
-    root.setLevel(logging.DEBUG)
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setLevel(logging.DEBUG)
-    handler.setFormatter(logging.Formatter(
-        '{asctime} {levelname} [{name}/{processName}] {module}.{funcName} : '
-        '{message}', style='{'))
-    root.addHandler(handler)
-    # Disable dependency non-critical log messages.
-    logging.getLogger('faiss').setLevel(logging.WARNING)
-    logging.getLogger('numba').setLevel(logging.WARNING)
-    logging.getLogger('numexpr').setLevel(logging.WARNING)
-
     if os.path.isdir(config.work_dir):
         logging.warning('Working directory %s already exists, previous '
                         'results might get overwritten', config.work_dir)
@@ -300,4 +285,19 @@ def _find_spectra_pkl(filename: str, usis_to_read: Dict[str, int]) \
 
 
 if __name__ == '__main__':
+    # Configure logging.
+    logging.captureWarnings(True)
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(logging.Formatter(
+        '{asctime} {levelname} [{name}/{processName}] {module}.{funcName} : '
+        '{message}', style='{'))
+    root.addHandler(handler)
+    # Disable dependency non-critical log messages.
+    logging.getLogger('faiss').setLevel(logging.WARNING)
+    logging.getLogger('numba').setLevel(logging.WARNING)
+    logging.getLogger('numexpr').setLevel(logging.WARNING)
+
     main()
