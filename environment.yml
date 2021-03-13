@@ -5,21 +5,21 @@ channels:
   - pytorch
   - defaults
 dependencies:
-  - faiss=1.6.5=py38hd79180b_0_cuda
-  - fastcluster=1.1.26=py38hc5bc63f_2
-  - joblib=1.0.0=pyhd8ed1ab_0
-  - lxml=4.6.2=py38hf1fe3a4_0
-  - matplotlib-base=3.3.3=py38h5c7f4ab_0
-  - natsort=7.1.0=pyhd8ed1ab_0
-  - numba=0.52.0=py38h51da96c_0
-  - numpy=1.19.4=py38h18fd61f_2
-  - pandas=1.2.0=py38h51da96c_0
-  - pyarrow=2.0.0=py38hf3b3a6d_11_cpu
-  - pyteomics=4.4.0=pyh3252c3a_0
-  - python=3.8.6=hffdb5ce_4_cpython
-  - scikit-learn=0.24.0=py38h658cfdd_0
-  - scipy=1.5.3=py38hb2138dd_0
-  - spectrum_utils=0.3.4=py_0
-  - tqdm=4.55.0=pyhd8ed1ab_0
+  - faiss=1.6.5
+  - fastcluster=1.1.26
+  - joblib=1.0.0
+  - lxml=4.6.2
+  - matplotlib-base=3.3.3
+  - natsort=7.1.0
+  - numba=0.52.0
+  - numpy=1.19.4
+  - pandas=1.2.0
+  - pyarrow=2.0.0
+  - pyteomics=4.4.0
+  - python=3.8.6
+  - scikit-learn=0.24.0
+  - scipy=1.5.3
+  - spectrum_utils=0.3.4
+  - tqdm=4.55.0
 prefix: ~/.conda/envs/falcon
 
