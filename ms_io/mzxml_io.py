@@ -35,7 +35,7 @@ def get_spectra(source: Union[IO, str]) -> Iterable[sus.MsmsSpectrum]:
                     spectrum_dict['id'] = f'{filename}:scan:{scan_nr}'
                     try:
                         yield _parse_spectrum(spectrum_dict)
-                    except ValueError:
+                    except (ValueError, KeyError):
                         pass
         except LxmlError as e:
             logger.warning('Failed to read file %s: %s', source, e)

@@ -34,7 +34,7 @@ def get_spectra(source: Union[IO, str]) -> Iterable[sus.MsmsSpectrum]:
                     f'{filename}:index:{spectrum_i}'
             try:
                 yield _parse_spectrum(spectrum_dict)
-            except ValueError:
+            except (ValueError, KeyError):
                 pass
 
 
