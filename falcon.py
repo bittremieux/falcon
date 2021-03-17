@@ -87,7 +87,7 @@ def main():
                 cluster.compute_pairwise_distances(
                     charge, n_spectra, config.mzs, process_spectrum, vectorize,
                     config.precursor_tol_mass, config.precursor_tol_mode,
-                    config.n_neighbors, config.n_neighbors_ann,
+                    config.rt_tol, config.n_neighbors, config.n_neighbors_ann,
                     config.batch_size, config.n_probe, config.work_dir)
             logger.debug('Export pairwise distance matrix to file %s',
                          dist_filename)

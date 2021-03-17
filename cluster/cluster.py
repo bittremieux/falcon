@@ -25,9 +25,9 @@ logger = logging.getLogger('spectrum_clustering')
 def compute_pairwise_distances(
         charge: int, n_spectra: int, mz_splits: np.ndarray,
         process_spectrum: Callable, vectorize: Callable,
-        precursor_tol_mass: float, precursor_tol_mode: str, n_neighbors: int,
-        n_neighbors_ann: int, batch_size: int, n_probe: int, work_dir: str) \
-        -> Tuple[ss.csr_matrix, pd.DataFrame]:
+        precursor_tol_mass: float, precursor_tol_mode: str, rt_tol: float,
+        n_neighbors: int, n_neighbors_ann: int, batch_size: int, n_probe: int,
+        work_dir: str) -> Tuple[ss.csr_matrix, pd.DataFrame]:
     """
     Compute a pairwise distance matrix for the persisted spectra with the given
     precursor charge.
@@ -48,6 +48,9 @@ def compute_pairwise_distances(
         The precursor tolerance mass for vectors to be considered as neighbors.
     precursor_tol_mode : str
         The unit of the precursor m/z tolerance ('Da' or 'ppm').
+    rt_tol : float
+        The retention time tolerance for vectors to be considered as neighbors.
+        If `None`, do not filter neighbors on retention time.
     n_neighbors : int
         The final (maximum) number of neighbors to retrieve for each vector.
     n_neighbors_ann : int
@@ -83,7 +86,7 @@ def compute_pairwise_distances(
     metadata = _build_query_ann_index(
         charge, mz_splits, process_spectrum, vectorize, n_probe, batch_size,
         n_neighbors, n_neighbors_ann, precursor_tol_mass, precursor_tol_mode,
-        distances, indices, indptr, work_dir)
+        rt_tol, distances, indices, indptr, work_dir)
     # Update the number of spectra because of skipped low-quality spectra.
     n_spectra = len(metadata)
     indptr = indptr[:n_spectra + 1]
@@ -147,8 +150,9 @@ def _build_query_ann_index(
         charge: int, mz_splits: np.ndarray, process_spectrum: Callable,
         vectorize: Callable, n_probe: int, batch_size: int, n_neighbors: int,
         n_neighbors_ann: int, precursor_tol_mass: float,
-        precursor_tol_mode: str, distances: np.ndarray, indices: np.ndarray,
-        indptr: np.ndarray, work_dir: str) -> pd.DataFrame:
+        precursor_tol_mode: str, rt_tol: float, distances: np.ndarray,
+        indices: np.ndarray, indptr: np.ndarray, work_dir: str) \
+        -> pd.DataFrame:
     """
     Create ANN index(es) for spectra with the given charge per precursor m/z
     split.
@@ -163,18 +167,41 @@ def _build_query_ann_index(
         Function to preprocess the spectra.
     vectorize : Callable
         Function to convert the spectra to vectors.
+    n_probe : int
+        The number of cells to consider during NN index querying.
     batch_size : int
         The number of vectors to be simultaneously added to the index.
+    n_neighbors : int
+        The final (maximum) number of neighbors to retrieve for each vector.
+    n_neighbors_ann : int
+        The number of neighbors to retrieve using the ANN index. This can
+        exceed the final number of neighbors (`n_neighbors`) to maximize the
+        number of neighbors within the precursor m/z tolerance.
+    precursor_tol_mass : float
+        The precursor tolerance mass for vectors to be considered as neighbors.
+    precursor_tol_mode : str
+        The unit of the precursor m/z tolerance ('Da' or 'ppm').
+    rt_tol : float
+        The retention time tolerance for vectors to be considered as neighbors.
+        If `None`, do not filter neighbors on retention time.
+    distances : np.ndarray
+        The nearest neighbor distances. See `scipy.sparse.csr_matrix` (`data`).
+    indices : np.ndarray
+        The column indices for the nearest neighbor distances. See
+        `scipy.sparse.csr_matrix`.
+    indptr : np.ndarray
+        The index pointers for the nearest neighbor distances. See
+        `scipy.sparse.csr_matrix`.
     work_dir : str
         Directory to read and store (intermediate) results.
 
     Returns
     -------
     pd.DataFrame
-        Metadata (identifier, precursor charge, precursor m/z) of the spectra
-        for which indexes were built.
+        Metadata (identifier, precursor charge, precursor m/z, retention time)
+        of the spectra for which indexes were built.
     """
-    identifiers, precursor_mzs = [], []
+    identifiers, precursor_mzs, rts = [], [], []
     indptr_i = 0
     # Find neighbors per specified precursor m/z interval.
     for mz in tqdm.tqdm(mz_splits, desc='Intervals queried', unit='index'):
@@ -182,7 +209,7 @@ def _build_query_ann_index(
         if not os.path.isfile(pkl_filename):
             continue
         # Read the spectra for the m/z split.
-        spectra_split, precursor_mzs_split = [], []
+        spectra_split, precursor_mzs_split, rts_split = [], [], []
         with open(pkl_filename, 'rb') as f_in:
             for spec in pickle.load(f_in):
                 spec = process_spectrum(spec)
@@ -191,9 +218,11 @@ def _build_query_ann_index(
                     spectra_split.append(spec)
                     identifiers.append(spec.identifier)
                     precursor_mzs_split.append(spec.precursor_mz)
+                    rts_split.append(spec.retention_time)
         if len(spectra_split) == 0:
             continue
         precursor_mzs.append(np.asarray(precursor_mzs_split))
+        rts.append(np.asarray(rts_split))
         # Convert the spectra to vectors.
         vectors_split = vectorize(spectra_split)
         n_split, dim = vectors_split.shape
@@ -238,20 +267,21 @@ def _build_query_ann_index(
                                np.arange(batch_start, batch_stop))
         # Query the index to calculate NN distances.
         _dist_mz_interval(
-            index, vectors_split, precursor_mzs[-1], batch_size, n_neighbors,
-            n_neighbors_ann, precursor_tol_mass, precursor_tol_mode,
-            distances, indices, indptr, indptr_i)
+            index, vectors_split, precursor_mzs[-1], rts[-1], batch_size,
+            n_neighbors, n_neighbors_ann, precursor_tol_mass,
+            precursor_tol_mode, rt_tol, distances, indices, indptr, indptr_i)
         indptr_i += n_split
     return pd.DataFrame({'identifier': identifiers, 'precursor_charge': charge,
-                         'precursor_mz': np.hstack(precursor_mzs)})
+                         'precursor_mz': np.hstack(precursor_mzs),
+                         'retention_time': np.hstack(rts)})
 
 
 def _dist_mz_interval(
         index: faiss.Index, vectors: np.ndarray, precursor_mzs: np.ndarray,
-        batch_size: int, n_neighbors: int, n_neighbors_ann: int,
-        precursor_tol_mass: float, precursor_tol_mode: str,
-        distances: np.ndarray, indices: np.ndarray, indptr: np.ndarray,
-        indptr_i: int) -> None:
+        rts: np.ndarray, batch_size: int, n_neighbors: int,
+        n_neighbors_ann: int, precursor_tol_mass: float,
+        precursor_tol_mode: str, rt_tol: float, distances: np.ndarray,
+        indices: np.ndarray, indptr: np.ndarray, indptr_i: int) -> None:
     """
     Compute distances to the nearest neighbors for the given precursor m/z
     interval.
@@ -264,6 +294,8 @@ def _dist_mz_interval(
         The spectrum vectors to be queried against the NN index.
     precursor_mzs : np.ndarray
         Precorsor m/z's of the spectra corresponding to the given vectors.
+    rts : np.ndarray
+        Retention times corresponding to the vectors.
     batch_size : int
         The number of vectors to be simultaneously queried.
     n_neighbors : int
@@ -276,6 +308,9 @@ def _dist_mz_interval(
         The precursor tolerance mass for vectors to be considered as neighbors.
     precursor_tol_mode : str
         The unit of the precursor m/z tolerance ('Da' or 'ppm').
+    rt_tol : float
+        The retention time tolerance for vectors to be considered as neighbors.
+        If `None`, do not filter neighbors on retention time.
     distances : np.ndarray
         The nearest neighbor distances. See `scipy.sparse.csr_matrix` (`data`).
     indices : np.ndarray
@@ -296,18 +331,18 @@ def _dist_mz_interval(
         # Filter the neighbors based on the precursor m/z tolerance and assign
         # distances.
         _filter_neighbors_mz(
-            precursor_mzs, batch_start, batch_stop, precursor_tol_mass,
-            precursor_tol_mode, nn_dists, nn_idx_ann, n_neighbors, distances,
-            indices, indptr, indptr_i + batch_start)
+            precursor_mzs, rts, batch_start, batch_stop, precursor_tol_mass,
+            precursor_tol_mode, rt_tol, nn_dists, nn_idx_ann, n_neighbors,
+            distances, indices, indptr, indptr_i + batch_start)
 
 
 @nb.njit(parallel=True)
 def _filter_neighbors_mz(
-        precursor_mzs: np.ndarray, batch_start: int, batch_stop: int,
-        precursor_tol_mass: float, precursor_tol_mode: str,
-        nn_dists: np.ndarray, nn_idx_ann: np.ndarray, n_neighbors: int,
-        distances: np.ndarray, indices: np.ndarray, indptr: np.ndarray,
-        indptr_i: int) -> None:
+        precursor_mzs: np.ndarray, rts: np.ndarray, batch_start: int,
+        batch_stop: int, precursor_tol_mass: float, precursor_tol_mode: str,
+        rt_tol: float, nn_dists: np.ndarray, nn_idx_ann: np.ndarray,
+        n_neighbors: int, distances: np.ndarray, indices: np.ndarray,
+        indptr: np.ndarray, indptr_i: int) -> None:
     """
     Filter ANN neighbor indexes by precursor m/z tolerances and assign
     pairwise distances.
@@ -316,12 +351,17 @@ def _filter_neighbors_mz(
     ----------
     precursor_mzs : np.ndarray
         Precursor m/z's corresponding to the vectors.
+    rts : np.ndarray
+        Retention times corresponding to the vectors.
     batch_start, batch_stop : int
         The indexes in the precursor m/z's of the current batch.
     precursor_tol_mass : float
         The precursor tolerance mass for vectors to be considered as neighbors.
     precursor_tol_mode : str
         The unit of the precursor m/z tolerance ('Da' or 'ppm').
+    rt_tol : float
+        The retention time tolerance for vectors to be considered as neighbors.
+        If `None`, do not filter neighbors on retention time.
     nn_dists : np.ndarray
         Distances of the nearest neighbors.
     nn_idx_ann : np.ndarray
@@ -342,6 +382,11 @@ def _filter_neighbors_mz(
     nn_idx_mz = _get_neighbors_idx(
         precursor_mzs, batch_start, batch_stop,
         precursor_tol_mass, precursor_tol_mode)
+    if rt_tol is not None:
+        nn_idx_rt = _get_neighbors_idx(rts, batch_start, batch_stop, rt_tol,
+                                       'rt')
+        nn_idx_mz = [_intersect_idx_ann_mz(idx_mz, idx_rt, None, True)
+                     for idx_mz, idx_rt in zip(nn_idx_mz, nn_idx_rt)]
     indptr_i_start = indptr_i - batch_start
     for idx_ann, idx_mz, dists in zip(nn_idx_ann, nn_idx_mz, nn_dists):
         mask = _intersect_idx_ann_mz(idx_ann, idx_mz, n_neighbors)
@@ -355,55 +400,63 @@ def _filter_neighbors_mz(
 
 
 @nb.njit(parallel=True)
-def _get_neighbors_idx(mzs: np.ndarray, start_i: int, stop_i: int,
-                       precursor_tol_mass: float, precursor_tol_mode: str) \
+def _get_neighbors_idx(values: np.ndarray, start_i: int, stop_i: int,
+                       tol: float, tol_mode: str) \
         -> List[np.ndarray]:
     """
-    Filter nearest neighbor candidates on precursor m/z.
+    Filter nearest neighbor candidates on precursor m/z or retention time.
 
     Parameters
     ----------
-    mzs : np.ndarray
-        The precursor m/z's of the nearest neighbor candidates.
+    values : np.ndarray
+        The precursor m/z or retention time values of the candidates.
     start_i, stop_i : int
-        Indexes used to slice the m/z's to be considered in the batch
+        Indexes used to slice the values to be considered in the batch
         (inclusive start_i, exclusive stop_i).
-    precursor_tol_mass : float
-        The precursor tolerance mass for vectors to be considered as neighbors.
-    precursor_tol_mode : str
-        The unit of the precursor m/z tolerance ('Da' or 'ppm').
+    tol : float
+        The tolerance for vectors to be considered as neighbors.
+    tol_mode : str
+        The unit of the tolerance ('Da' or 'ppm' for precursor m/z, 'rt' for
+        retention time).
 
     Returns
     -------
     List[np.ndarray]
-        A list of NumPy arrays with the indexes of the nearest neighbor
+        A list of sorted NumPy arrays with the indexes of the nearest neighbor
         candidates for each item.
     """
-    batch_mzs = mzs[start_i:stop_i].reshape((stop_i - start_i, 1))
-    if precursor_tol_mode == 'Da':
-        min_mz = batch_mzs[0] - precursor_tol_mass
-        max_mz = batch_mzs[-1] + precursor_tol_mass
-    elif precursor_tol_mode == 'ppm':
-        min_mz = batch_mzs[0] - batch_mzs[0] * precursor_tol_mass / 10**6
-        max_mz = batch_mzs[-1] + batch_mzs[-1] * precursor_tol_mass / 10**6
+    batch_values = values[start_i:stop_i]
+    if tol_mode == 'Da':
+        min_value = batch_values[0] - tol
+        max_value = batch_values[-1] + tol
+    elif tol_mode == 'ppm':
+        min_value = batch_values[0] - batch_values[0] * tol / 10 ** 6
+        max_value = batch_values[-1] + batch_values[-1] * tol / 10 ** 6
+    elif tol_mode == 'rt':
+        # RT values are not sorted.
+        min_value = batch_values.min() - tol
+        max_value = batch_values.max() + tol
     else:
-        raise ValueError('Unknown precursor tolerance filter')
-    match_i = np.searchsorted(mzs, [min_mz[0], max_mz[0]])
-    match_mzs = (mzs[match_i[0]:match_i[1]]
-                 .reshape((1, match_i[1] - match_i[0])))
-    match_mzs_i = np.arange(match_i[0], match_i[1])
-    if precursor_tol_mode == 'Da':
-        masks = np.abs(batch_mzs - match_mzs) < precursor_tol_mass
-    elif precursor_tol_mode == 'ppm':
-        masks = (np.abs(batch_mzs - match_mzs) / match_mzs * 10**6
-                 < precursor_tol_mass)
+        raise ValueError('Unknown tolerance filter')
+    min_value, max_value = max(0, min_value), max(0, max_value)
+    match_i = np.searchsorted(values, [min_value, max_value])
+    match_values = (values[match_i[0]:match_i[1]]
+                    .reshape((1, match_i[1] - match_i[0])))
+    match_values_i = np.arange(match_i[0], match_i[1])
+    batch_values = batch_values.reshape((stop_i - start_i, 1))
+    if tol_mode in ('Da', 'rt'):
+        masks = np.abs(batch_values - match_values) < tol
+    elif tol_mode == 'ppm':
+        masks = (np.abs(batch_values - match_values) / match_values * 10 ** 6
+                 < tol)
     # noinspection PyUnboundLocalVariable
-    return [match_mzs_i[mask] for mask in masks]
+    return [np.sort(match_values_i[mask]) for mask in masks]
 
 
 @nb.njit
 def _intersect_idx_ann_mz(idx_ann: np.ndarray, idx_mz: np.ndarray,
-                          max_neighbors: int) -> np.ndarray:
+                          max_neighbors: int = None, is_sorted: bool = False) \
+        -> np.ndarray:
     """
     Find the intersection between identifiers from ANN filtering and precursor
     m/z filtering.
@@ -413,17 +466,20 @@ def _intersect_idx_ann_mz(idx_ann: np.ndarray, idx_mz: np.ndarray,
     idx_ann : np.ndarray
         Identifiers from ANN filtering.
     idx_mz : np.ndarray
-        Identifiers from precursor m/z filtering.
+        SORTED identifiers from precursor m/z filtering.
     max_neighbors : int
         The maximum number of best matching neighbors to retain.
+    is_sorted : bool
+        Flag indicating whether the first array is sorted or not.
 
     Returns
     -------
     np.ndarray
         A mask to select the joint identifiers in the `idx_ann` array.
     """
-    idx_mz, i_mz = np.sort(idx_mz), 0
-    idx_ann_order = np.argsort(idx_ann)
+    i_mz = 0
+    idx_ann_order = (np.argsort(idx_ann) if not is_sorted
+                     else np.arange(len(idx_ann)))
     idx_ann_intersect = []
     for i_order, i_ann in enumerate(idx_ann_order):
         if idx_ann[i_ann] != -1:
@@ -437,8 +493,8 @@ def _intersect_idx_ann_mz(idx_ann: np.ndarray, idx_mz: np.ndarray,
     # FIXME: Sorting could be avoided here using np.argpartition, but this is
     #        currently not supported by Numba.
     #        https://github.com/numba/numba/issues/2445
-    return (np.sort(idx_ann_order[np.asarray(idx_ann_intersect)])
-            [:max_neighbors])
+    idx = np.sort(idx_ann_order[np.asarray(idx_ann_intersect)])
+    return idx[:max_neighbors] if max_neighbors is not None else idx
 
 
 def generate_clusters(pairwise_dist_matrix: ss.csr_matrix, eps: float,

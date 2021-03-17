@@ -22,6 +22,7 @@ hash_len = 800
 
 # Spectrum matching.
 precursor_tol_mass, precursor_tol_mode = 20, 'ppm'
+rt_tol = None
 
 # NN index construction and querying.
 n_neighbors, n_neighbors_ann = 64, 128
