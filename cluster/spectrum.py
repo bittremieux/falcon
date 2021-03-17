@@ -10,8 +10,8 @@ import spectrum_utils.spectrum as sus
 
 
 MsmsSpectrumNb = collections.namedtuple(
-    'MsmsSpectrumNb', ['identifier', 'precursor_mz', 'precursor_charge', 'mz',
-                       'intensity'])
+    'MsmsSpectrumNb', ['identifier', 'precursor_mz', 'precursor_charge',
+                       'retention_time', 'mz', 'intensity'])
 
 
 @nb.njit
@@ -113,7 +113,7 @@ def process_spectrum(spectrum: sus.MsmsSpectrum,
 
     Returns
     -------
-    MsmsSpectrum
+    MsmsSpectrumNb
         The processed cluster.
     """
     spectrum = spectrum.set_mz_range(mz_min, mz_max)
@@ -136,7 +136,8 @@ def process_spectrum(spectrum: sus.MsmsSpectrum,
     intensity = _norm_intensity(spectrum.intensity)
 
     return MsmsSpectrumNb(spectrum.identifier, spectrum.precursor_mz,
-                          spectrum.precursor_charge, spectrum.mz, intensity)
+                          spectrum.precursor_charge, spectrum.retention_time,
+                          spectrum.mz, intensity)
 
 
 @nb.njit('Tuple((u4, f4, f4))(f4, f4, f4)')
