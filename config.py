@@ -1,44 +1,181 @@
-import os
+import argparse
+import math
+import textwrap
 
+import configargparse
 import numpy as np
 
 
-# Precursor charges and m/z's considered.
-mz_interval = 1
-charges, mzs = (2, 3), np.arange(50, 2501, mz_interval)
+class NewlineTextHelpFormatter(argparse.HelpFormatter):
 
-# Spectrum preprocessing.
-min_peaks = 5
-min_mz_range = 250.
-min_mz, max_mz = 101., 1500.
-remove_precursor_tolerance = 0.5
-min_intensity = 0.01
-max_peaks_used = 50
-scaling = None
+    def _fill_text(self, text, width, indent):
+        return '\n'.join(
+            textwrap.fill(line, width, initial_indent=indent,
+                          subsequent_indent=indent,
+                          replace_whitespace=False).strip()
+            for line in text.splitlines(keepends=True))
 
-# Spectrum to vector conversion.
-fragment_mz_tolerance = 0.05
-hash_len = 800
 
-# Spectrum matching.
-precursor_tol_mass, precursor_tol_mode = 20, 'ppm'
-rt_tol = None
+class Config:
+    """
+    Commandline and file-based configuration.
 
-# NN index construction and querying.
-n_neighbors, n_neighbors_ann = 64, 128
-n_probe = 32
-batch_size = 2**16
+    Configuration settings can be specified in a config.ini file (by default in
+    the working directory), or as command-line arguments.
+    """
 
-# DBSCAN clustering.
-eps = 0.1
-min_samples = 2
+    def __init__(self) -> None:
+        """
+        Initialize the configuration settings and provide sensible default
+        values if possible.
+        """
 
-# Input/output.
-overwrite = False
-export_representatives = True
-pxd = 'USI000000'
-peak_dir = os.path.abspath('../data/interim')
-work_dir = os.path.abspath('../data/processed')
-filenames = [os.path.join(peak_dir, filename)
-             for filename in os.listdir(peak_dir)
-             if filename.endswith('.mgf')]
+        self._parser = configargparse.ArgParser(
+            description='falcon: Fast spectrum clustering using nearest '
+                        'neighbor searching\n'
+                        '==============================================='
+                        '==================\n\n'
+                        'Official code website: '
+                        'https://github.com/bittremieux/falcon\n\n',
+            default_config_files=['config.ini'],
+            args_for_setting_config_path=['-c', '--config'],
+            formatter_class=NewlineTextHelpFormatter)
+
+        # IO
+        self._parser.add_argument(
+            'input_filenames', nargs='+',
+            help='Input peak files (supported formats: .mzML, .mzXML, .MGF).')
+        self._parser.add_argument(
+            'output_filename', help='Output file name.')
+        self._parser.add_argument(
+            '--work_dir', default=None,
+            help='Working directory (default: temporary directory).')
+        self._parser.add_argument(
+            '--overwrite', default=False, type=bool,
+            help='Overwrite existing results (default: %(default)s).')
+        self._parser.add_argument(
+            '--export_representatives', default=True, type=bool,
+            help='Export cluster representatives to an MGF file '
+                 '(default: %(default)s).')
+        self._parser.add_argument(
+            '--usi_pxd', default='USI000000',
+            help='ProteomeXchange dataset identifier to create Universal '
+                 'Spectrum Identifier references (default: %(default)s).')
+
+        # PREPROCESSING
+        self._parser.add_argument(
+            '--precursor_charges', nargs='+', default=(2, 3),
+            help='Cluster spectra with the specified precursor charge '
+                 '(default: %(default)s).')
+        self._parser.add_argument(
+            '--precursor_mzs', nargs=2, default=(50, 2501),
+            help='Cluster spectra with precursor m/z within the specified '
+                 'interval (default: %(default)s).')
+        self._parser.add_argument(
+            '--mz_interval', type=int, default=1,
+            help='Precursor m/z interval to process spectra simultaneously '
+                 '(default: %(default)s m/z).')
+        self._parser.add_argument(
+            '--min_peaks', default=5, type=int,
+            help='Discard spectra with fewer than this number of peaks '
+                 '(default: %(default)s).')
+        self._parser.add_argument(
+            '--min_mz_range', default=250., type=float,
+            help='Discard spectra with a smaller mass range '
+                 '(default: %(default)s m/z).')
+        self._parser.add_argument(
+            '--min_mz', default=101., type=float,
+            help='Minimum peak m/z value (inclusive, '
+                 'default: %(default)s m/z).')
+        self._parser.add_argument(
+            '--max_mz', default=1500., type=float,
+            help='Maximum peak m/z value (inclusive, '
+                 'default: %(default)s m/z).')
+        self._parser.add_argument(
+            '--remove_precursor_tol', default=0.5, type=float,
+            help='Window around the precursor mass to remove peaks '
+                 '(default: %(default)s m/z).')
+        self._parser.add_argument(
+            '--min_intensity', default=0.01, type=float,
+            help='Remove peaks with a lower intensity relative to the base '
+                 'intensity (default: %(default)s).')
+        self._parser.add_argument(
+            '--max_peaks_used', default=50, type=int,
+            help='Only use the specified most intense peaks in the spectra '
+                 '(default: %(default)s).')
+        self._parser.add_argument(
+            '--scaling', default='off', type=str,
+            choices=['off', 'root', 'log', 'rank'],
+            help='Peak scaling method used to reduce the influence of very '
+                 'intense peaks (default: %(default)s).')
+
+        # CLUSTERING
+        self._parser.add_argument(
+            '--precursor_tol', nargs=2, default=(20, 'ppm'),
+            help='Precursor tolerance mass and mode (default: 20 ppm). '
+                 'Mode should be either "ppm" or "Da".')
+        self._parser.add_argument(
+            '--rt_tol', type=float, default=None,
+            help='Retention time tolerance (default: no retention time '
+                 'filtering).')
+        self._parser.add_argument(
+            '--fragment_tol', type=float, default=0.05,
+            help='Fragment mass tolerance in m/z (default: %(default)s m/z).')
+        self._parser.add_argument(
+            '--hash_len', default=800, type=int,
+            help='Hashed vector length (default: %(default)s).')
+        self._parser.add_argument(
+            '--n_neighbors', default=64, type=int,
+            help='Number of neighbors to include in the pairwise distance '
+                 'matrix for each spectrum (default: %(default)s).')
+        self._parser.add_argument(
+            '--n_neighbors_ann', default=128, type=int,
+            help='Number of neighbors to retrieve from the nearest neighbor '
+                 'indexes prior to precursor tolerance filtering '
+                 '(default: %(default)s).')
+        self._parser.add_argument(
+            '--batch_size', default=2**16, type=int,
+            help='Number of spectra to process simultaneously '
+                 '(default: %(default)s).')
+        self._parser.add_argument(
+            '--n_probe', default=32, type=int,
+            help='Maximum number of lists in the inverted index to inspect '
+                 'during querying (default: %(default)s).')
+        self._parser.add_argument(
+            '--eps', type=float, default=0.1,
+            help='The eps parameter for DBSCAN clustering (default: '
+                 '%(default)s m/z). Relevant cosine distance thresholds are '
+                 'typically between 0.05 and 0.30.')
+        self._parser.add_argument(
+            '--min_samples', type=int, default=2,
+            help='The min_samples parameter for DBSCAN clustering (default: '
+                 '%(default)s).')
+
+        # Filled in 'parse', contains the specified settings.
+        self._namespace = None
+
+    def parse(self, args_str: str = None) -> None:
+        """
+        Parse the configuration settings.
+
+        Parameters
+        ----------
+        args_str : str
+            If None, the arguments are taken from sys.argv. Arguments that are
+            not explicitly specified are taken from the configuration file.
+        """
+        self._namespace = vars(self._parser.parse_args(args_str))
+
+        config.precursor_mzs = np.arange(math.floor(config.precursor_mzs[0]),
+                                         math.ceil(config.precursor_mzs[1]))
+
+    def __getattr__(self, option):
+        if self._namespace is None:
+            raise RuntimeError('The configuration has not been initialized')
+        return self._namespace[option]
+
+    def __getitem__(self, item):
+        return self.__getattr__(item)
+
+
+config = Config()

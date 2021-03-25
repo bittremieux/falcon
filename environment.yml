@@ -5,6 +5,7 @@ channels:
   - pytorch
   - defaults
 dependencies:
+  - configargparse=1.4
   - faiss=1.6.5
   - fastcluster=1.1.26
   - joblib=1.0.0

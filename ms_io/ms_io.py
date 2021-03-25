@@ -1,10 +1,8 @@
 import os
-import pickle
 from typing import Iterable, Iterator, List
 
 from spectrum_utils.spectrum import MsmsSpectrum
 
-from cluster import spectrum
 from ms_io import mgf_io, mzml_io, mzxml_io
 
 

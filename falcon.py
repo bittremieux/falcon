@@ -1,10 +1,13 @@
 import functools
+import glob
 import logging
 import math
 import os
 import pickle
+import shutil
 import sys
-from typing import Dict, List
+import tempfile
+from typing import Dict, List, Tuple, Union
 
 import joblib
 import natsort
@@ -14,16 +17,23 @@ import scipy.sparse as ss
 from sklearn.utils import murmurhash3_32
 from spectrum_utils.spectrum import MsmsSpectrum
 
-import config
 from cluster import cluster, spectrum
+from config import config
 from ms_io import ms_io
 
 
 logger = logging.getLogger('spectrum_clustering')
 
 
-def main():
-    if os.path.isdir(config.work_dir):
+def main(args: Union[str, List[str]] = None) -> int:
+    # Load the configuration.
+    config.parse(args)
+
+    rm_work_dir = False
+    if config.work_dir is None:
+        config.work_dir = tempfile.mkdtemp()
+        rm_work_dir = True
+    elif os.path.isdir(config.work_dir):
         logging.warning('Working directory %s already exists, previous '
                         'results might get overwritten', config.work_dir)
     os.makedirs(config.work_dir, exist_ok=True)
@@ -57,20 +67,20 @@ def main():
         min_mz_range=config.min_mz_range,
         mz_min=config.min_mz,
         mz_max=config.max_mz,
-        remove_precursor_tolerance=config.remove_precursor_tolerance,
+        remove_precursor_tolerance=config.remove_precursor_tol,
         min_intensity=config.min_intensity,
         max_peaks_used=config.max_peaks_used,
-        scaling=config.scaling)
+        scaling=None if config.scaling == 'off' else config.scaling)
 
     # Pre-compute the index hash mappings.
     vec_len, min_mz, max_mz = spectrum.get_dim(config.min_mz, config.max_mz,
-                                               config.fragment_mz_tolerance)
+                                               config.fragment_tol)
     hash_lookup = np.asarray([murmurhash3_32(i, 0, True) % config.hash_len
                               for i in range(vec_len)], np.uint32)
     vectorize = functools.partial(
         spectrum.to_vector_parallel, dim=config.hash_len, min_mz=min_mz,
-        max_mz=max_mz, bin_size=config.fragment_mz_tolerance,
-        hash_lookup=hash_lookup, norm=True)
+        max_mz=max_mz, bin_size=config.fragment_tol, hash_lookup=hash_lookup,
+        norm=True)
 
     # Cluster the spectra per charge.
     clusters_all, current_label, representative_info = [], 0, []
@@ -85,10 +95,11 @@ def main():
                 or not os.path.isfile(metadata_filename)):
             pairwise_dist_matrix, metadata = \
                 cluster.compute_pairwise_distances(
-                    charge, n_spectra, config.mzs, process_spectrum, vectorize,
-                    config.precursor_tol_mass, config.precursor_tol_mode,
-                    config.rt_tol, config.n_neighbors, config.n_neighbors_ann,
-                    config.batch_size, config.n_probe, config.work_dir)
+                    charge, n_spectra, config.precursor_mzs, process_spectrum,
+                    vectorize, config.precursor_tol[0],
+                    config.precursor_tol[1], config.rt_tol, config.n_neighbors,
+                    config.n_neighbors_ann, config.batch_size, config.n_probe,
+                    config.work_dir)
             logger.debug('Export pairwise distance matrix to file %s',
                          dist_filename)
             ss.save_npz(dist_filename, pairwise_dist_matrix, False)
@@ -101,8 +112,8 @@ def main():
         # Cluster using the pairwise distance matrix.
         clusters = cluster.generate_clusters(
             pairwise_dist_matrix, config.eps, config.min_samples,
-            metadata['precursor_mz'].values, config.precursor_tol_mass,
-            config.precursor_tol_mode)
+            metadata['precursor_mz'].values, config.precursor_tol[0],
+            config.precursor_tol[1])
         # Make sure that different charges have non-overlapping cluster labels.
         mask_no_noise = clusters != -1
         clusters[mask_no_noise] += current_label
@@ -155,7 +166,12 @@ def main():
         ms_io.write_spectra(os.path.join(config.work_dir, 'clusters.mgf'),
                             representatives)
 
+    if rm_work_dir:
+        shutil.rmtree(config.work_dir)
+
     logging.shutdown()
+
+    return 0
 
 
 def _prepare_spectra() -> Dict[int, int]:
@@ -168,13 +184,18 @@ def _prepare_spectra() -> Dict[int, int]:
     Dict[int, int]
         A dictionary with the number of spectra per precursor charge.
     """
-    logger.info('Read spectra from %d peak file(s)', len(config.filenames))
+    input_filenames = [fn for pattern in config.input_filenames
+                       for fn in glob.glob(pattern)]
+    logger.info('Read spectra from %d peak file(s)',
+                len(input_filenames))
     filehandles = {(charge, mz): open(os.path.join(config.work_dir, 'spectra',
                                                    f'{charge}_{mz}.pkl'), 'wb')
-                   for charge in config.charges for mz in config.mzs}
+                   for charge in config.precursor_charges
+                   for mz in config.precursor_mzs}
     for file_spectra in joblib.Parallel(n_jobs=-1)(
-            joblib.delayed(_read_spectra)(filename)
-            for filename in config.filenames):
+            joblib.delayed(_read_spectra)(filename, config.precursor_charges,
+                                          config.usi_pxd)
+            for filename in input_filenames):
         for spec in file_spectra:
             filehandle = filehandles.get(
                 (spec.precursor_charge,
@@ -188,18 +209,19 @@ def _prepare_spectra() -> Dict[int, int]:
     # Make sure the spectra in the individual files are sorted by their
     # precursor m/z and count the number of spectra per precursor charge.
     logger.debug('Order spectrum splits by precursor m/z')
-    charge_count = {charge: 0 for charge in config.charges}
-    for charge in config.charges:
+    charge_count = {charge: 0 for charge in config.precursor_charges}
+    for charge in config.precursor_charges:
         for count in joblib.Parallel(n_jobs=-1)(
                 joblib.delayed(_read_write_spectra_pkl)(
                     os.path.join(config.work_dir, 'spectra',
                                  f'{charge}_{mz}.pkl'))
-                for mz in config.mzs):
+                for mz in config.precursor_mzs):
             charge_count[charge] += count
     return charge_count
 
 
-def _read_spectra(filename: str) -> List[MsmsSpectrum]:
+def _read_spectra(filename: str, precursor_charge_to_include: Tuple,
+                  usi_pxd: str) -> List[MsmsSpectrum]:
     """
     Get high-quality processed MS/MS spectra from the given file.
 
@@ -207,6 +229,10 @@ def _read_spectra(filename: str) -> List[MsmsSpectrum]:
     ----------
     filename : str
         The path of the peak file to be read.
+    precursor_charge_to_include : Tuple
+        Include spectra with the given precursor charges.
+    usi_pxd : str
+        ProteomeXchange dataset identifier to create USI references.
 
     Returns
     -------
@@ -215,10 +241,10 @@ def _read_spectra(filename: str) -> List[MsmsSpectrum]:
     """
     spectra = []
     for spec in ms_io.get_spectra(filename):
-        if spec.precursor_charge in config.charges:
-            spec.identifier = f'mzspec:{config.pxd}:{spec.identifier}'
+        if spec.precursor_charge in precursor_charge_to_include:
+            spec.identifier = f'mzspec:{usi_pxd}:{spec.identifier}'
             spectra.append(spec)
-    spectra.sort(key=lambda spec: spec.precursor_mz)
+    spectra.sort(key=lambda s: s.precursor_mz)
     return spectra
 
 
