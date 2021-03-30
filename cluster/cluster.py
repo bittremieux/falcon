@@ -710,8 +710,10 @@ def get_cluster_representatives(clusters: np.ndarray,
     List[int]
         The indexes of the medoid elements for all clusters.
     """
-    labels = np.arange(np.amin(clusters[clusters != -1]),
-                       np.amax(clusters) + 1)
+    clusters_no_noise = clusters[clusters != -1]
+    if len(clusters_no_noise) == 0:
+        return
+    labels = np.arange(np.amin(clusters_no_noise), np.amax(clusters) + 1)
     # noinspection PyTypeChecker
     yield from joblib.Parallel(n_jobs=-1, prefer='threads')(
         joblib.delayed(_get_cluster_medoid_index)(
