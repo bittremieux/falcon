@@ -138,8 +138,7 @@ def main(args: Union[str, List[str]] = None) -> int:
                 'clusters', n_spectra_clustered, n_clusters)
     clusters_all = (pd.concat(clusters_all, ignore_index=True)
                     .sort_values('identifier', key=natsort.natsort_keygen()))
-    clusters_all.to_csv(os.path.join(config.work_dir, 'clusters.csv'),
-                        index=False)
+    clusters_all.to_csv(f'{config.output_filename}.csv', index=False)
     if config.export_representatives:
         representative_info = (
             pd.concat(representative_info, ignore_index=True)
@@ -163,8 +162,7 @@ def main(args: Union[str, List[str]] = None) -> int:
                 for fn, spectra in representative_info.groupby('filename')):
             representatives.extend(spectra)
         representatives.sort(key=lambda spec: spec.cluster)
-        ms_io.write_spectra(os.path.join(config.work_dir, 'clusters.mgf'),
-                            representatives)
+        ms_io.write_spectra(f'{config.output_filename}.mgf', representatives)
 
     if rm_work_dir:
         shutil.rmtree(config.work_dir)
