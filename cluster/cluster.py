@@ -480,7 +480,7 @@ def _intersect_idx_ann_mz(idx_ann: np.ndarray, idx_mz: np.ndarray,
     i_mz = 0
     idx_ann_order = (np.argsort(idx_ann) if not is_sorted
                      else np.arange(len(idx_ann)))
-    idx_ann_intersect = []
+    idx = []
     for i_order, i_ann in enumerate(idx_ann_order):
         if idx_ann[i_ann] != -1:
             while i_mz < len(idx_mz) and idx_mz[i_mz] < idx_ann[i_ann]:
@@ -488,13 +488,13 @@ def _intersect_idx_ann_mz(idx_ann: np.ndarray, idx_mz: np.ndarray,
             if i_mz == len(idx_mz):
                 break
             if idx_ann[i_ann] == idx_mz[i_mz]:
-                idx_ann_intersect.append(i_order)
+                idx.append(idx_ann_order[i_order])
                 i_mz += 1
-    # FIXME: Sorting could be avoided here using np.argpartition, but this is
-    #        currently not supported by Numba.
-    #        https://github.com/numba/numba/issues/2445
-    idx = np.sort(idx_ann_order[np.asarray(idx_ann_intersect)])
-    return idx[:max_neighbors] if max_neighbors is not None else idx
+    idx = np.asarray(idx)
+    if max_neighbors is None or max_neighbors >= len(idx):
+        return idx
+    else:
+        return np.partition(idx, max_neighbors)
 
 
 def generate_clusters(pairwise_dist_matrix: ss.csr_matrix, eps: float,
