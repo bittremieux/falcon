@@ -23,7 +23,7 @@ logger = logging.getLogger('spectrum_clustering')
 
 
 def compute_pairwise_distances(
-        charge: int, n_spectra: int, bucket_filenames: List[str],
+        n_spectra: int, bucket_filenames: List[str],
         process_spectrum: Callable, vectorize: Callable,
         precursor_tol_mass: float, precursor_tol_mode: str, rt_tol: float,
         n_neighbors: int, n_neighbors_ann: int, batch_size: int, n_probe: int)\
@@ -34,8 +34,6 @@ def compute_pairwise_distances(
 
     Parameters
     ----------
-    charge : int
-        Precursor charge of the spectra to be processed.
     n_spectra: int
         The total number of spectra to be processed.
     bucket_filenames : List[str]
@@ -82,9 +80,9 @@ def compute_pairwise_distances(
     # Create the ANN indexes (if this hasn't been done yet) and calculate
     # pairwise distances.
     metadata = _build_query_ann_index(
-        charge, bucket_filenames, process_spectrum, vectorize, n_probe,
-        batch_size, n_neighbors, n_neighbors_ann, precursor_tol_mass,
-        precursor_tol_mode, rt_tol, distances, indices, indptr)
+        bucket_filenames, process_spectrum, vectorize, n_probe, batch_size,
+        n_neighbors, n_neighbors_ann, precursor_tol_mass, precursor_tol_mode,
+        rt_tol, distances, indices, indptr)
     # Update the number of spectra because of skipped low-quality spectra.
     n_spectra = len(metadata)
     indptr = indptr[:n_spectra + 1]
@@ -145,7 +143,7 @@ def _load_ann_index(index_filename: str, n_probe: int) -> faiss.Index:
 
 
 def _build_query_ann_index(
-        charge: int, bucket_filenames: List[str], process_spectrum: Callable,
+        bucket_filenames: List[str], process_spectrum: Callable,
         vectorize: Callable, n_probe: int, batch_size: int, n_neighbors: int,
         n_neighbors_ann: int, precursor_tol_mass: float,
         precursor_tol_mode: str, rt_tol: float, distances: np.ndarray,
@@ -157,8 +155,6 @@ def _build_query_ann_index(
 
     Parameters
     ----------
-    charge : int
-        Precursor charge of the spectra to be processed.
     bucket_filenames : List[str]
         List of bucket file names.
     process_spectrum : Callable
@@ -265,7 +261,7 @@ def _build_query_ann_index(
             n_neighbors, n_neighbors_ann, precursor_tol_mass,
             precursor_tol_mode, rt_tol, distances, indices, indptr, indptr_i)
         indptr_i += n_split
-    return pd.DataFrame({'identifier': identifiers, 'precursor_charge': charge,
+    return pd.DataFrame({'identifier': identifiers,
                          'precursor_mz': np.hstack(precursor_mzs),
                          'retention_time': np.hstack(rts)})
 

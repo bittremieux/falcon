@@ -96,10 +96,11 @@ def main(args: Union[str, List[str]] = None) -> int:
                 or not os.path.isfile(metadata_filename)):
             pairwise_dist_matrix, metadata = \
                 cluster.compute_pairwise_distances(
-                    charge, n_spectra, bucket_filenames, process_spectrum,
-                    vectorize, config.precursor_tol[0],
-                    config.precursor_tol[1], config.rt_tol, config.n_neighbors,
-                    config.n_neighbors_ann, config.batch_size, config.n_probe)
+                    n_spectra, bucket_filenames, process_spectrum, vectorize,
+                    config.precursor_tol[0], config.precursor_tol[1],
+                    config.rt_tol, config.n_neighbors, config.n_neighbors_ann,
+                    config.batch_size, config.n_probe)
+            metadata.insert(1, 'precursor_charge', charge)
             logger.debug('Export pairwise distance matrix to file %s',
                          dist_filename)
             ss.save_npz(dist_filename, pairwise_dist_matrix, False)
