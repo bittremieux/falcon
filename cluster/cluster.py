@@ -1,7 +1,7 @@
 import logging
 import math
-import os
 import pickle
+import sys
 from typing import Callable, Iterable, List, Tuple
 
 import faiss
@@ -69,8 +69,8 @@ def compute_pairwise_distances(
         precursor m/z).
     """
     n_probe, n_neighbors_ann = _check_ann_config(n_probe, n_neighbors_ann)
-    logger.info('Compute pairwise distances between similar spectra '
-                '(%d spectra, %d neighbors)', n_spectra, n_neighbors)
+    logger.debug('Compute nearest neighbor pairwise distances (%d spectra, %d'
+                 ' neighbors)', n_spectra, n_neighbors)
     max_num_embeddings = n_spectra * n_neighbors
     dtype = (np.int32 if max_num_embeddings < np.iinfo(np.int32).max
              else np.int64)
@@ -89,7 +89,8 @@ def compute_pairwise_distances(
     distances, indices = distances[:indptr[-1]], indices[:indptr[-1]]
     # Convert to a sparse pairwise distance matrix. This matrix might not be
     # entirely symmetrical, but that shouldn't matter too much.
-    logger.debug('Construct pairwise distance matrix')
+    logger.debug('Construct %d-by-%d sparse pairwise distance matrix with %d '
+                 'non-zero values', n_spectra, n_spectra, len(distances))
     pairwise_dist_matrix = ss.csr_matrix(
         (distances, indices, indptr), (n_spectra, n_spectra), np.float32,
         False)
@@ -197,7 +198,7 @@ def _build_query_ann_index(
     indptr_i = 0
     # Find neighbors per specified precursor m/z interval.
     for pkl_filename in tqdm.tqdm(bucket_filenames, desc='Buckets queried',
-                                  unit='bucket'):
+                                  unit='bucket', file=sys.stdout):
         # Read the spectra for the m/z split.
         spectra_split, precursor_mzs_split, rts_split = [], [], []
         with open(pkl_filename, 'rb') as f_in:
@@ -517,8 +518,8 @@ def generate_clusters(pairwise_dist_matrix: ss.csr_matrix, eps: float,
         Cluster labels. Noisy samples are given the label -1.
     """
     # DBSCAN clustering using the precomputed pairwise distance matrix.
-    logger.info('DBSCAN clustering (eps=%.4f, min_samples=%d) of precomputed '
-                'pairwise distance matrix', eps, min_samples)
+    logger.debug('DBSCAN clustering (eps=%.4f, min_samples=%d) of precomputed '
+                 'pairwise distance matrix', eps, min_samples)
     # Reimplement DBSCAN preprocessing to avoid unnecessary memory consumption.
     # Find the eps-neighborhoods for all points.
     mask = pairwise_dist_matrix.data <= eps

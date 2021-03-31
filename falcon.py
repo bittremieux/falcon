@@ -136,7 +136,8 @@ def main(args: Union[str, List[str]] = None) -> int:
         n_clusters += clust_no_noise['cluster'].nunique()
         n_spectra_clustered += len(clust_no_noise)
     logger.info('Export cluster assignments of %d spectra to %d unique '
-                'clusters', n_spectra_clustered, n_clusters)
+                'clusters to output file %s', n_spectra_clustered, n_clusters,
+                f'{config.output_filename}.csv')
     clusters_all = (pd.concat(clusters_all, ignore_index=True)
                     .sort_values('identifier', key=natsort.natsort_keygen()))
     clusters_all.to_csv(f'{config.output_filename}.csv', index=False)
@@ -144,8 +145,9 @@ def main(args: Union[str, List[str]] = None) -> int:
         representative_info = (
             pd.concat(representative_info, ignore_index=True)
             .sort_values(['precursor_charge', 'precursor_mz']))
-        logger.debug('Export %d cluster representative spectra',
-                     len(representative_info))
+        logger.info('Export %d cluster representative spectra to output file '
+                    '%s', len(representative_info),
+                    f'{config.output_filename}.mgf')
         # Get the spectra corresponding to the cluster representatives.
         representative_info['file_mz'] = \
             representative_info['precursor_mz'].apply(
@@ -186,8 +188,7 @@ def _prepare_spectra() -> Dict[int, Tuple[int, List[str]]]:
     """
     input_filenames = [fn for pattern in config.input_filenames
                        for fn in glob.glob(pattern)]
-    logger.info('Read spectra from %d peak file(s)',
-                len(input_filenames))
+    logger.info('Read spectra from %d peak file(s)', len(input_filenames))
     filehandles = collections.defaultdict(dict)
     for file_spectra in joblib.Parallel(n_jobs=-1)(
             joblib.delayed(_read_spectra)(filename, config.usi_pxd)
@@ -207,8 +208,7 @@ def _prepare_spectra() -> Dict[int, Tuple[int, List[str]]]:
             filehandle.close()
     # Make sure the spectra in the individual files are sorted by their
     # precursor m/z and count the number of spectra per precursor charge.
-    logger.debug('Order spectrum splits by precursor m/z')
-    buckets = {}
+    buckets, n_spectra, n_buckets = {}, 0, 0
     for charge, filehandles_charge in sorted(filehandles.items()):
         count, filenames = 0, []
         for mz, filehandles_charge_mz in sorted(filehandles_charge.items()):
@@ -218,6 +218,10 @@ def _prepare_spectra() -> Dict[int, Tuple[int, List[str]]]:
             count += _read_write_spectra_pkl(filename)
             filenames.append(filename)
         buckets[charge] = count, filenames
+        n_spectra += count
+        n_buckets += len(filenames)
+    logger.debug('%d spectra written to %d buckets by precursor charge and '
+                 'precursor m/z', n_spectra, n_buckets)
     return buckets
 
 
