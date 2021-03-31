@@ -1,3 +1,4 @@
+import codecs
 import collections
 import functools
 import glob
@@ -29,6 +30,30 @@ logger = logging.getLogger('spectrum_clustering')
 def main(args: Union[str, List[str]] = None) -> int:
     # Load the configuration.
     config.parse(args)
+    logger.info('falcon v%s', _get_version('__init__.py'))
+    logger.debug('work_dir = %s', config.work_dir)
+    logger.debug('overwrite = %s', config.overwrite)
+    logger.debug('export_representatives = %s', config.export_representatives)
+    logger.debug('usi_pxd = %s', config.usi_pxd)
+    logger.debug('mz_interval = %d', config.mz_interval)
+    logger.debug('min_peaks = %d', config.min_peaks)
+    logger.debug('min_mz_range = %.2f', config.min_mz_range)
+    logger.debug('min_mz = %.2f', config.min_mz)
+    logger.debug('max_mz = %.2f', config.max_mz)
+    logger.debug('remove_precursor_tol = %.2f', config.remove_precursor_tol)
+    logger.debug('min_intensity = %.2f', config.min_intensity)
+    logger.debug('max_peaks_used = %d', config.max_peaks_used)
+    logger.debug('scaling = %s', config.scaling)
+    logger.debug('precursor_tol = %.2f %s', *config.precursor_tol)
+    logger.debug('rt_tol = %s', config.rt_tol)
+    logger.debug('fragment_tol = %.2f', config.fragment_tol)
+    logger.debug('hash_len = %d', config.hash_len)
+    logger.debug('n_neighbors = %d', config.n_neighbors)
+    logger.debug('n_neighbors_ann = %d', config.n_neighbors_ann)
+    logger.debug('batch_size = %d', config.batch_size)
+    logger.debug('n_probe = %d', config.n_probe)
+    logger.debug('eps = %.3f', config.eps)
+    logger.debug('min_samples = %d', config.min_samples)
 
     rm_work_dir = False
     if config.work_dir is None:
@@ -173,6 +198,23 @@ def main(args: Union[str, List[str]] = None) -> int:
     logging.shutdown()
 
     return 0
+
+
+def _get_version(rel_path):
+    for line in _read(rel_path).splitlines():
+        if line.startswith('__version__'):
+            delim = '"' if '"' in line else "'"
+            return line.split(delim)[1]
+    else:
+        raise RuntimeError('Unable to find version string')
+
+
+def _read(rel_path):
+    here = os.path.abspath(os.path.dirname(__file__))
+    # Intentionally *not* adding an encoding option to open, See:
+    #   https://github.com/pypa/virtualenv/issues/201#issuecomment-3145690
+    with codecs.open(os.path.join(here, rel_path), 'r') as fp:
+        return fp.read()
 
 
 def _prepare_spectra() -> Dict[int, Tuple[int, List[str]]]:
