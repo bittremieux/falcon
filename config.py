@@ -64,14 +64,6 @@ class Config:
 
         # PREPROCESSING
         self._parser.add_argument(
-            '--precursor_charges', nargs='+', default=(2, 3),
-            help='Cluster spectra with the specified precursor charge '
-                 '(default: %(default)s).')
-        self._parser.add_argument(
-            '--precursor_mzs', nargs=2, default=(50, 2501),
-            help='Cluster spectra with precursor m/z within the specified '
-                 'interval (default: %(default)s).')
-        self._parser.add_argument(
             '--mz_interval', type=int, default=1,
             help='Precursor m/z interval to process spectra simultaneously '
                  '(default: %(default)s m/z).')
@@ -165,9 +157,6 @@ class Config:
             not explicitly specified are taken from the configuration file.
         """
         self._namespace = vars(self._parser.parse_args(args_str))
-
-        config.precursor_mzs = np.arange(math.floor(config.precursor_mzs[0]),
-                                         math.ceil(config.precursor_mzs[1]))
 
     def __getattr__(self, option):
         if self._namespace is None:

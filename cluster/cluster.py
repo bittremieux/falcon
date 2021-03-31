@@ -23,11 +23,11 @@ logger = logging.getLogger('spectrum_clustering')
 
 
 def compute_pairwise_distances(
-        charge: int, n_spectra: int, mz_splits: np.ndarray,
+        charge: int, n_spectra: int, bucket_filenames: List[str],
         process_spectrum: Callable, vectorize: Callable,
         precursor_tol_mass: float, precursor_tol_mode: str, rt_tol: float,
-        n_neighbors: int, n_neighbors_ann: int, batch_size: int, n_probe: int,
-        work_dir: str) -> Tuple[ss.csr_matrix, pd.DataFrame]:
+        n_neighbors: int, n_neighbors_ann: int, batch_size: int, n_probe: int)\
+        -> Tuple[ss.csr_matrix, pd.DataFrame]:
     """
     Compute a pairwise distance matrix for the persisted spectra with the given
     precursor charge.
@@ -38,8 +38,8 @@ def compute_pairwise_distances(
         Precursor charge of the spectra to be processed.
     n_spectra: int
         The total number of spectra to be processed.
-    mz_splits : np.ndarray
-        M/z intervals used to split the spectra on their precursor m/z.
+    bucket_filenames : List[str]
+        List of bucket file names.
     process_spectrum : Callable
         Function to preprocess the spectra.
     vectorize : Callable
@@ -61,8 +61,6 @@ def compute_pairwise_distances(
         The number of vectors to be simultaneously processed.
     n_probe : int
         The number of cells to visit during ANN querying.
-    work_dir : str
-        Directory to read and store (intermediate) results.
 
     Returns
     -------
@@ -84,9 +82,9 @@ def compute_pairwise_distances(
     # Create the ANN indexes (if this hasn't been done yet) and calculate
     # pairwise distances.
     metadata = _build_query_ann_index(
-        charge, mz_splits, process_spectrum, vectorize, n_probe, batch_size,
-        n_neighbors, n_neighbors_ann, precursor_tol_mass, precursor_tol_mode,
-        rt_tol, distances, indices, indptr, work_dir)
+        charge, bucket_filenames, process_spectrum, vectorize, n_probe,
+        batch_size, n_neighbors, n_neighbors_ann, precursor_tol_mass,
+        precursor_tol_mode, rt_tol, distances, indices, indptr)
     # Update the number of spectra because of skipped low-quality spectra.
     n_spectra = len(metadata)
     indptr = indptr[:n_spectra + 1]
@@ -147,11 +145,11 @@ def _load_ann_index(index_filename: str, n_probe: int) -> faiss.Index:
 
 
 def _build_query_ann_index(
-        charge: int, mz_splits: np.ndarray, process_spectrum: Callable,
+        charge: int, bucket_filenames: List[str], process_spectrum: Callable,
         vectorize: Callable, n_probe: int, batch_size: int, n_neighbors: int,
         n_neighbors_ann: int, precursor_tol_mass: float,
         precursor_tol_mode: str, rt_tol: float, distances: np.ndarray,
-        indices: np.ndarray, indptr: np.ndarray, work_dir: str) \
+        indices: np.ndarray, indptr: np.ndarray) \
         -> pd.DataFrame:
     """
     Create ANN index(es) for spectra with the given charge per precursor m/z
@@ -161,8 +159,8 @@ def _build_query_ann_index(
     ----------
     charge : int
         Precursor charge of the spectra to be processed.
-    mz_splits : np.ndarray
-        M/z splits used to create separate ANN indexes.
+    bucket_filenames : List[str]
+        List of bucket file names.
     process_spectrum : Callable
         Function to preprocess the spectra.
     vectorize : Callable
@@ -192,8 +190,6 @@ def _build_query_ann_index(
     indptr : np.ndarray
         The index pointers for the nearest neighbor distances. See
         `scipy.sparse.csr_matrix`.
-    work_dir : str
-        Directory to read and store (intermediate) results.
 
     Returns
     -------
@@ -204,10 +200,8 @@ def _build_query_ann_index(
     identifiers, precursor_mzs, rts = [], [], []
     indptr_i = 0
     # Find neighbors per specified precursor m/z interval.
-    for mz in tqdm.tqdm(mz_splits, desc='Intervals queried', unit='index'):
-        pkl_filename = os.path.join(work_dir, 'spectra', f'{charge}_{mz}.pkl')
-        if not os.path.isfile(pkl_filename):
-            continue
+    for pkl_filename in tqdm.tqdm(bucket_filenames, desc='Buckets queried',
+                                  unit='bucket'):
         # Read the spectra for the m/z split.
         spectra_split, precursor_mzs_split, rts_split = [], [], []
         with open(pkl_filename, 'rb') as f_in:

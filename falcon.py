@@ -1,3 +1,4 @@
+import collections
 import functools
 import glob
 import logging
@@ -55,12 +56,12 @@ def main(args: Union[str, List[str]] = None) -> int:
     # precursor m/z.
     if not any([filename.endswith('.pkl') for filename in os.listdir(
             os.path.join(config.work_dir, 'spectra'))]):
-        charge_count = _prepare_spectra()
-        joblib.dump(charge_count, os.path.join(config.work_dir, 'spectra',
-                                               'info.joblib'))
+        buckets = _prepare_spectra()
+        joblib.dump(buckets, os.path.join(config.work_dir, 'spectra',
+                                          'buckets.joblib'))
     else:
-        charge_count = joblib.load(os.path.join(config.work_dir, 'spectra',
-                                                'info.joblib'))
+        buckets = joblib.load(os.path.join(config.work_dir, 'spectra',
+                                           'buckets.joblib'))
     process_spectrum = functools.partial(
         spectrum.process_spectrum,
         min_peaks=config.min_peaks,
@@ -84,7 +85,7 @@ def main(args: Union[str, List[str]] = None) -> int:
 
     # Cluster the spectra per charge.
     clusters_all, current_label, representative_info = [], 0, []
-    for charge, n_spectra in charge_count.items():
+    for charge, (n_spectra, bucket_filenames) in buckets.items():
         logger.info('Cluster %d spectra with precursor charge %d',
                     n_spectra, charge)
         dist_filename = os.path.join(
@@ -95,11 +96,10 @@ def main(args: Union[str, List[str]] = None) -> int:
                 or not os.path.isfile(metadata_filename)):
             pairwise_dist_matrix, metadata = \
                 cluster.compute_pairwise_distances(
-                    charge, n_spectra, config.precursor_mzs, process_spectrum,
+                    charge, n_spectra, bucket_filenames, process_spectrum,
                     vectorize, config.precursor_tol[0],
                     config.precursor_tol[1], config.rt_tol, config.n_neighbors,
-                    config.n_neighbors_ann, config.batch_size, config.n_probe,
-                    config.work_dir)
+                    config.n_neighbors_ann, config.batch_size, config.n_probe)
             logger.debug('Export pairwise distance matrix to file %s',
                          dist_filename)
             ss.save_npz(dist_filename, pairwise_dist_matrix, False)
@@ -172,54 +172,55 @@ def main(args: Union[str, List[str]] = None) -> int:
     return 0
 
 
-def _prepare_spectra() -> Dict[int, int]:
+def _prepare_spectra() -> Dict[int, Tuple[int, List[str]]]:
     """
     Read the spectra from the input peak files and partition to intermediate
     files split and sorted by precursor m/z.
 
     Returns
     -------
-    Dict[int, int]
-        A dictionary with the number of spectra per precursor charge.
+    Dict[int, Tuple[int, List[str]]]
+        A dictionary with per precursor charge the total number of spectra and
+        a list of file names of the spectrum buckets.
     """
     input_filenames = [fn for pattern in config.input_filenames
                        for fn in glob.glob(pattern)]
     logger.info('Read spectra from %d peak file(s)',
                 len(input_filenames))
-    filehandles = {(charge, mz): open(os.path.join(config.work_dir, 'spectra',
-                                                   f'{charge}_{mz}.pkl'), 'wb')
-                   for charge in config.precursor_charges
-                   for mz in config.precursor_mzs}
+    filehandles = collections.defaultdict(dict)
     for file_spectra in joblib.Parallel(n_jobs=-1)(
-            joblib.delayed(_read_spectra)(filename, config.precursor_charges,
-                                          config.usi_pxd)
+            joblib.delayed(_read_spectra)(filename, config.usi_pxd)
             for filename in input_filenames):
         for spec in file_spectra:
-            filehandle = filehandles.get(
-                (spec.precursor_charge,
-                 math.floor(spec.precursor_mz / config.mz_interval)
-                 * config.mz_interval))
-            if filehandle is not None:
-                pickle.dump(spec, filehandle, protocol=5)
+            charge = spec.precursor_charge
+            mz = (math.floor(spec.precursor_mz / config.mz_interval)
+                  * config.mz_interval)
+            filename = os.path.join(config.work_dir, 'spectra',
+                                    f'{charge}_{mz}.pkl')
+            if mz not in filehandles[charge]:
+                filehandles[charge][mz] = open(filename, 'wb')
+            pickle.dump(spec, filehandles[charge][mz], protocol=5)
             # FIXME: Add nearby spectra to neighboring files.
-    for filehandle in filehandles.values():
-        filehandle.close()
+    for filehandles_charge in filehandles.values():
+        for filehandle in filehandles_charge.values():
+            filehandle.close()
     # Make sure the spectra in the individual files are sorted by their
     # precursor m/z and count the number of spectra per precursor charge.
     logger.debug('Order spectrum splits by precursor m/z')
-    charge_count = {charge: 0 for charge in config.precursor_charges}
-    for charge in config.precursor_charges:
-        for count in joblib.Parallel(n_jobs=-1)(
-                joblib.delayed(_read_write_spectra_pkl)(
-                    os.path.join(config.work_dir, 'spectra',
-                                 f'{charge}_{mz}.pkl'))
-                for mz in config.precursor_mzs):
-            charge_count[charge] += count
-    return charge_count
+    buckets = {}
+    for charge, filehandles_charge in sorted(filehandles.items()):
+        count, filenames = 0, []
+        for mz, filehandles_charge_mz in sorted(filehandles_charge.items()):
+            # TODO: Parallelize.
+            filename = os.path.join(config.work_dir, 'spectra',
+                                    f'{charge}_{mz}.pkl')
+            count += _read_write_spectra_pkl(filename)
+            filenames.append(filename)
+        buckets[charge] = count, filenames
+    return buckets
 
 
-def _read_spectra(filename: str, precursor_charge_to_include: Tuple,
-                  usi_pxd: str) -> List[MsmsSpectrum]:
+def _read_spectra(filename: str, usi_pxd: str) -> List[MsmsSpectrum]:
     """
     Get high-quality processed MS/MS spectra from the given file.
 
@@ -227,8 +228,6 @@ def _read_spectra(filename: str, precursor_charge_to_include: Tuple,
     ----------
     filename : str
         The path of the peak file to be read.
-    precursor_charge_to_include : Tuple
-        Include spectra with the given precursor charges.
     usi_pxd : str
         ProteomeXchange dataset identifier to create USI references.
 
@@ -239,9 +238,8 @@ def _read_spectra(filename: str, precursor_charge_to_include: Tuple,
     """
     spectra = []
     for spec in ms_io.get_spectra(filename):
-        if spec.precursor_charge in precursor_charge_to_include:
-            spec.identifier = f'mzspec:{usi_pxd}:{spec.identifier}'
-            spectra.append(spec)
+        spec.identifier = f'mzspec:{usi_pxd}:{spec.identifier}'
+        spectra.append(spec)
     spectra.sort(key=lambda s: s.precursor_mz)
     return spectra
 
