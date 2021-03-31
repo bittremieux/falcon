@@ -1,9 +1,11 @@
 import os
-from typing import Iterable, Iterator, List
+from typing import Iterable, Iterator
 
 from spectrum_utils.spectrum import MsmsSpectrum
 
-from ms_io import mgf_io, mzml_io, mzxml_io
+from . import mzxml_io
+from . import mgf_io
+from . import mzml_io
 
 
 def get_spectra(filename: str) -> Iterator[MsmsSpectrum]:

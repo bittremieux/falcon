@@ -19,9 +19,9 @@ import scipy.sparse as ss
 from sklearn.utils import murmurhash3_32
 from spectrum_utils.spectrum import MsmsSpectrum
 
-from cluster import cluster, spectrum
-from config import config
-from ms_io import ms_io
+from .cluster import cluster, spectrum
+from .config import config
+from .ms_io import ms_io
 
 
 logger = logging.getLogger('spectrum_clustering')
