@@ -1,9 +1,7 @@
 import argparse
-import math
 import textwrap
 
 import configargparse
-import numpy as np
 
 
 class NewlineTextHelpFormatter(argparse.HelpFormatter):
