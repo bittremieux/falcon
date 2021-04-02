@@ -1,4 +1,3 @@
-import codecs
 import collections
 import functools
 import glob
@@ -19,6 +18,7 @@ import scipy.sparse as ss
 from sklearn.utils import murmurhash3_32
 from spectrum_utils.spectrum import MsmsSpectrum
 
+from . import __version__
 from .cluster import cluster, spectrum
 from .config import config
 from .ms_io import ms_io
@@ -30,7 +30,7 @@ logger = logging.getLogger('spectrum_clustering')
 def main(args: Union[str, List[str]] = None) -> int:
     # Load the configuration.
     config.parse(args)
-    logger.info('falcon v%s', _get_version('__init__.py'))
+    logger.info('falcon version %s', str(__version__))
     logger.debug('work_dir = %s', config.work_dir)
     logger.debug('overwrite = %s', config.overwrite)
     logger.debug('export_representatives = %s', config.export_representatives)
@@ -198,23 +198,6 @@ def main(args: Union[str, List[str]] = None) -> int:
     logging.shutdown()
 
     return 0
-
-
-def _get_version(rel_path):
-    for line in _read(rel_path).splitlines():
-        if line.startswith('__version__'):
-            delim = '"' if '"' in line else "'"
-            return line.split(delim)[1]
-    else:
-        raise RuntimeError('Unable to find version string')
-
-
-def _read(rel_path):
-    here = os.path.abspath(os.path.dirname(__file__))
-    # Intentionally *not* adding an encoding option to open, See:
-    #   https://github.com/pypa/virtualenv/issues/201#issuecomment-3145690
-    with codecs.open(os.path.join(here, rel_path), 'r') as fp:
-        return fp.read()
 
 
 def _prepare_spectra() -> Dict[int, Tuple[int, List[str]]]:

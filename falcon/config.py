@@ -3,6 +3,8 @@ import textwrap
 
 import configargparse
 
+from falcon import __version__
+
 
 class NewlineTextHelpFormatter(argparse.HelpFormatter):
 
@@ -29,12 +31,13 @@ class Config:
         """
 
         self._parser = configargparse.ArgParser(
-            description='falcon: Fast spectrum clustering using nearest '
-                        'neighbor searching\n'
-                        '==============================================='
-                        '==================\n\n'
-                        'Official code website: '
-                        'https://github.com/bittremieux/falcon\n\n',
+            description=f'falcon: Fast spectrum clustering using nearest '
+                        f'neighbor searching\n'
+                        f'==============================================='
+                        f'==================\n\n'
+                        f'falcon version {__version__}\n\n'
+                        f'Official code website: '
+                        f'https://github.com/bittremieux/falcon\n\n',
             default_config_files=['config.ini'],
             args_for_setting_config_path=['-c', '--config'],
             formatter_class=NewlineTextHelpFormatter)
