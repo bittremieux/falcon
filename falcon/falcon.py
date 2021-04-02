@@ -24,7 +24,7 @@ from .config import config
 from .ms_io import ms_io
 
 
-logger = logging.getLogger('spectrum_clustering')
+logger = logging.getLogger('falcon')
 
 
 def main(args: Union[str, List[str]] = None) -> int:

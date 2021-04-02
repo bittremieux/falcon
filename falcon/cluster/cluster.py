@@ -19,7 +19,7 @@ from sklearn.cluster._dbscan_inner import dbscan_inner
 from sklearn.metrics import pairwise_distances
 
 
-logger = logging.getLogger('spectrum_clustering')
+logger = logging.getLogger('falcon')
 
 
 def compute_pairwise_distances(

@@ -7,7 +7,7 @@ import spectrum_utils.spectrum as sus
 from lxml.etree import LxmlError
 
 
-logger = logging.getLogger('spectrum_clustering')
+logger = logging.getLogger('falcon')
 
 
 def get_spectra(source: Union[IO, str]) -> Iterable[sus.MsmsSpectrum]:
