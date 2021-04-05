@@ -66,8 +66,8 @@ class Config:
         # PREPROCESSING
         self._parser.add_argument(
             '--mz_interval', type=int, default=1,
-            help='Precursor m/z interval to process spectra simultaneously '
-                 '(default: %(default)s m/z).')
+            help='Precursor m/z interval (centered around x.5 Da) to process '
+                 'spectra simultaneously (default: %(default)s m/z).')
         self._parser.add_argument(
             '--min_peaks', default=5, type=int,
             help='Discard spectra with fewer than this number of peaks '

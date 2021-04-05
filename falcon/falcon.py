@@ -235,14 +235,12 @@ def _prepare_spectra() -> Dict[int, Tuple[int, List[str]]]:
             for filename in input_filenames):
         for spec in file_spectra:
             charge = spec.precursor_charge
-            mz = (math.floor(spec.precursor_mz / config.mz_interval)
-                  * config.mz_interval)
+            interval = int((spec.precursor_mz - 0.5) / config.mz_interval)
             filename = os.path.join(config.work_dir, 'spectra',
-                                    f'{charge}_{mz}.pkl')
-            if mz not in filehandles[charge]:
-                filehandles[charge][mz] = open(filename, 'wb')
-            pickle.dump(spec, filehandles[charge][mz], protocol=5)
-            # FIXME: Add nearby spectra to neighboring files.
+                                    f'{charge}_{interval}.pkl')
+            if interval not in filehandles[charge]:
+                filehandles[charge][interval] = open(filename, 'wb')
+            pickle.dump(spec, filehandles[charge][interval], protocol=5)
     for filehandles_charge in filehandles.values():
         for filehandle in filehandles_charge.values():
             filehandle.close()
