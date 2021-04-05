@@ -250,13 +250,12 @@ def _prepare_spectra() -> Dict[int, Tuple[int, List[str]]]:
     # precursor m/z and count the number of spectra per precursor charge.
     buckets, n_spectra, n_buckets = {}, 0, 0
     for charge, filehandles_charge in sorted(filehandles.items()):
-        count, filenames = 0, []
-        for mz, filehandles_charge_mz in sorted(filehandles_charge.items()):
-            # TODO: Parallelize.
-            filename = os.path.join(config.work_dir, 'spectra',
-                                    f'{charge}_{mz}.pkl')
-            count += _read_write_spectra_pkl(filename)
-            filenames.append(filename)
+        filenames = [
+            os.path.join(config.work_dir, 'spectra', f'{charge}_{mz}.pkl')
+            for mz in sorted(filehandles_charge.keys())]
+        count = sum(joblib.Parallel(n_jobs=-1)
+                    (joblib.delayed(_read_write_spectra_pkl)
+                     (filename) for filename in filenames))
         buckets[charge] = count, filenames
         n_spectra += count
         n_buckets += len(filenames)
