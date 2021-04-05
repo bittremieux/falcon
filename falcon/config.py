@@ -52,12 +52,12 @@ class Config:
             '--work_dir', default=None,
             help='Working directory (default: temporary directory).')
         self._parser.add_argument(
-            '--overwrite', default=False, type=bool,
-            help='Overwrite existing results (default: %(default)s).')
+            '--overwrite', action='store_true',
+            help="Overwrite existing results (default: don't overwrite).")
         self._parser.add_argument(
-            '--export_representatives', default=True, type=bool,
+            '--export_representatives', action='store_true',
             help='Export cluster representatives to an MGF file '
-                 '(default: %(default)s).')
+                 '(default: no export).')
         self._parser.add_argument(
             '--usi_pxd', default='USI000000',
             help='ProteomeXchange dataset identifier to create Universal '
