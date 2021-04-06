@@ -379,15 +379,17 @@ def _filter_neighbors_mz(
         nn_idx_mz = [_intersect_idx_ann_mz(idx_mz, idx_rt, None, True)
                      for idx_mz, idx_rt in zip(nn_idx_mz, nn_idx_rt)]
     indptr_i_start = indptr_i - batch_start
-    for idx_ann, idx_mz, dists in zip(nn_idx_ann, nn_idx_mz, nn_dists):
+    for indptr_i, (idx_ann, idx_mz, dists) in enumerate(
+            zip(nn_idx_ann, nn_idx_mz, nn_dists), indptr_i):
         mask = _intersect_idx_ann_mz(idx_ann, idx_mz, n_neighbors)
         indptr[indptr_i + 1] = indptr[indptr_i] + len(mask)
+        if len(mask) == 0:
+            continue
         # Convert cosine similarity to cosine distance.
         distances[indptr[indptr_i]:indptr[indptr_i + 1]] = \
-            np.maximum(1 - dists[mask], 0)
+            np.maximum(1 - dists[mask], np.zeros((len(mask),)))
         indices[indptr[indptr_i]:indptr[indptr_i + 1]] = (indptr_i_start
                                                           + idx_ann[mask])
-        indptr_i += 1
 
 
 @nb.njit(parallel=True)
