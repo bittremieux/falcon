@@ -383,11 +383,9 @@ def _filter_neighbors_mz(
             zip(nn_idx_ann, nn_idx_mz, nn_dists), indptr_i):
         mask = _intersect_idx_ann_mz(idx_ann, idx_mz, n_neighbors)
         indptr[indptr_i + 1] = indptr[indptr_i] + len(mask)
-        if len(mask) == 0:
-            continue
         # Convert cosine similarity to cosine distance.
         distances[indptr[indptr_i]:indptr[indptr_i + 1]] = \
-            np.maximum(1 - dists[mask], np.zeros((len(mask),)))
+            np.maximum(1 - dists[mask], 0)
         indices[indptr[indptr_i]:indptr[indptr_i + 1]] = (indptr_i_start
                                                           + idx_ann[mask])
 
@@ -487,7 +485,7 @@ def _intersect_idx_ann_mz(idx_ann: np.ndarray, idx_mz: np.ndarray,
     if max_neighbors is None or max_neighbors >= len(idx):
         return idx
     else:
-        return np.partition(idx, max_neighbors)
+        return np.partition(idx, max_neighbors)[:max_neighbors]
 
 
 def generate_clusters(pairwise_dist_matrix: ss.csr_matrix, eps: float,
