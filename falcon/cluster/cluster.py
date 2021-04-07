@@ -576,7 +576,7 @@ def _get_cluster_group_idx(clusters: np.ndarray) -> nb.typed.List:
         the unique cluster labels.
     """
     start_i = 0
-    while clusters[start_i] == -1:
+    while clusters[start_i] == -1 and start_i < clusters.shape[0]:
         start_i += 1
     group_idx, stop_i = nb.typed.List(), start_i
     while stop_i < clusters.shape[0]:
