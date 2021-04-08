@@ -161,6 +161,9 @@ class Config:
         """
         self._namespace = vars(self._parser.parse_args(args_str))
 
+        self._namespace['precursor_tol'][0] = \
+            float(self._namespace['precursor_tol'][0])
+
     def __getattr__(self, option):
         if self._namespace is None:
             raise RuntimeError('The configuration has not been initialized')
