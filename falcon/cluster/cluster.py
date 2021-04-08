@@ -280,7 +280,7 @@ def _dist_mz_interval(
             distances, indices, indptr, indptr_i + batch_start)
 
 
-@nb.njit(parallel=True)
+@nb.njit
 def _filter_neighbors_mz(
         precursor_mzs: np.ndarray, rts: np.ndarray, batch_start: int,
         batch_stop: int, precursor_tol_mass: float, precursor_tol_mode: str,
@@ -343,7 +343,7 @@ def _filter_neighbors_mz(
                                                           + idx_ann[mask])
 
 
-@nb.njit(parallel=True)
+@nb.njit
 def _get_neighbors_idx(values: np.ndarray, start_i: int, stop_i: int,
                        tol: float, tol_mode: str) \
         -> List[np.ndarray]:
