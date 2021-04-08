@@ -63,11 +63,55 @@ class Config:
             help='ProteomeXchange dataset identifier to create Universal '
                  'Spectrum Identifier references (default: %(default)s).')
 
-        # PREPROCESSING
+        # CLUSTERING
+        self._parser.add_argument(
+            '--precursor_tol', nargs=2, default=(20, 'ppm'),
+            help='Precursor tolerance mass and mode (default: 20 ppm). '
+                 'Mode should be either "ppm" or "Da".')
+        self._parser.add_argument(
+            '--rt_tol', type=float, default=None,
+            help='Retention time tolerance (default: no retention time '
+                 'filtering).')
+        self._parser.add_argument(
+            '--fragment_tol', type=float, default=0.05,
+            help='Fragment mass tolerance in m/z (default: %(default)s m/z).')
+
+        self._parser.add_argument(
+            '--eps', type=float, default=0.1,
+            help='The eps parameter for DBSCAN clustering (default: '
+                 '%(default)s m/z). Relevant cosine distance thresholds are '
+                 'typically between 0.05 and 0.30.')
+        self._parser.add_argument(
+            '--min_samples', type=int, default=2,
+            help='The min_samples parameter for DBSCAN clustering (default: '
+                 '%(default)s).')
+
         self._parser.add_argument(
             '--mz_interval', type=int, default=1,
             help='Precursor m/z interval (centered around x.5 Da) to process '
                  'spectra simultaneously (default: %(default)s m/z).')
+        self._parser.add_argument(
+            '--hash_len', default=800, type=int,
+            help='Hashed vector length (default: %(default)s).')
+        self._parser.add_argument(
+            '--n_neighbors', default=64, type=int,
+            help='Number of neighbors to include in the pairwise distance '
+                 'matrix for each spectrum (default: %(default)s).')
+        self._parser.add_argument(
+            '--n_neighbors_ann', default=128, type=int,
+            help='Number of neighbors to retrieve from the nearest neighbor '
+                 'indexes prior to precursor tolerance filtering '
+                 '(default: %(default)s).')
+        self._parser.add_argument(
+            '--batch_size', default=2**16, type=int,
+            help='Number of spectra to process simultaneously '
+                 '(default: %(default)s).')
+        self._parser.add_argument(
+            '--n_probe', default=32, type=int,
+            help='Maximum number of lists in the inverted index to inspect '
+                 'during querying (default: %(default)s).')
+
+        # PREPROCESSING
         self._parser.add_argument(
             '--min_peaks', default=5, type=int,
             help='Discard spectra with fewer than this number of peaks '
@@ -101,48 +145,6 @@ class Config:
             choices=['off', 'root', 'log', 'rank'],
             help='Peak scaling method used to reduce the influence of very '
                  'intense peaks (default: %(default)s).')
-
-        # CLUSTERING
-        self._parser.add_argument(
-            '--precursor_tol', nargs=2, default=(20, 'ppm'),
-            help='Precursor tolerance mass and mode (default: 20 ppm). '
-                 'Mode should be either "ppm" or "Da".')
-        self._parser.add_argument(
-            '--rt_tol', type=float, default=None,
-            help='Retention time tolerance (default: no retention time '
-                 'filtering).')
-        self._parser.add_argument(
-            '--fragment_tol', type=float, default=0.05,
-            help='Fragment mass tolerance in m/z (default: %(default)s m/z).')
-        self._parser.add_argument(
-            '--hash_len', default=800, type=int,
-            help='Hashed vector length (default: %(default)s).')
-        self._parser.add_argument(
-            '--n_neighbors', default=64, type=int,
-            help='Number of neighbors to include in the pairwise distance '
-                 'matrix for each spectrum (default: %(default)s).')
-        self._parser.add_argument(
-            '--n_neighbors_ann', default=128, type=int,
-            help='Number of neighbors to retrieve from the nearest neighbor '
-                 'indexes prior to precursor tolerance filtering '
-                 '(default: %(default)s).')
-        self._parser.add_argument(
-            '--batch_size', default=2**16, type=int,
-            help='Number of spectra to process simultaneously '
-                 '(default: %(default)s).')
-        self._parser.add_argument(
-            '--n_probe', default=32, type=int,
-            help='Maximum number of lists in the inverted index to inspect '
-                 'during querying (default: %(default)s).')
-        self._parser.add_argument(
-            '--eps', type=float, default=0.1,
-            help='The eps parameter for DBSCAN clustering (default: '
-                 '%(default)s m/z). Relevant cosine distance thresholds are '
-                 'typically between 0.05 and 0.30.')
-        self._parser.add_argument(
-            '--min_samples', type=int, default=2,
-            help='The min_samples parameter for DBSCAN clustering (default: '
-                 '%(default)s).')
 
         # Filled in 'parse', contains the specified settings.
         self._namespace = None
