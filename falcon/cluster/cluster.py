@@ -68,7 +68,6 @@ def compute_pairwise_distances(
         corresponding spectrum metadata (identifier, precursor charge,
         precursor m/z).
     """
-    n_probe, n_neighbors_ann = _check_ann_config(n_probe, n_neighbors_ann)
     logger.debug('Compute nearest neighbor pairwise distances (%d spectra, %d'
                  ' neighbors)', n_spectra, n_neighbors)
     max_num_embeddings = n_spectra * n_neighbors
@@ -95,52 +94,6 @@ def compute_pairwise_distances(
         (distances, indices, indptr), (n_spectra, n_spectra), np.float32,
         False)
     return pairwise_dist_matrix, metadata
-
-
-def _check_ann_config(n_probe: int, n_neighbors: int) -> Tuple[int, int]:
-    """
-    Make sure that the configuration values adhere to the limitations imposed
-    by running Faiss on a GPU.
-
-    GPU indexes can only handle maximum 2048 probes and neighbors.
-    https://github.com/facebookresearch/faiss/wiki/Faiss-on-the-GPU#limitations
-
-    Parameters
-    ----------
-    """
-    if n_probe > 2048:
-        logger.warning('Using num_probe=2048 (maximum supported value for '
-                       'GPU-enabled ANN indexing), %d was supplied', n_probe)
-        n_probe = 2048
-    if n_neighbors > 2048:
-        logger.warning('Using num_neighbours=2048 (maximum supported value '
-                       'for GPU-enabled ANN indexing), %d was supplied',
-                       n_neighbors)
-        n_neighbors = 2048
-    return n_probe, n_neighbors
-
-
-def _load_ann_index(index_filename: str, n_probe: int) -> faiss.Index:
-    """
-    Load the ANN index from the given file.
-
-    Parameters
-    ----------
-    index_filename : str
-        The ANN index filename.
-    n_probe : int
-        The number of cells to visit during ANN querying.
-
-    Returns
-    -------
-    faiss.Index
-        The Faiss `Index`.
-    """
-    index = faiss.read_index(index_filename)
-    # IndexIVF has a `nprobe` hyperparameter, flat indexes don't.
-    if hasattr(index, 'nprobe'):
-        index.nprobe = min(math.ceil(index.nlist / 2), n_probe)
-    return index
 
 
 def _build_query_ann_index(
@@ -314,7 +267,7 @@ def _dist_mz_interval(
         The current start index in `indptr`.
     """
     for batch_start in range(0, vectors.shape[0], batch_size):
-        batch_stop = min(batch_start + batch_size, index.ntotal)
+        batch_stop = min(batch_start + batch_size, vectors.shape[0])
         # Find nearest neighbors using ANN index searching.
         # noinspection PyArgumentList
         nn_dists, nn_idx_ann = index.search(vectors[batch_start:batch_stop],
