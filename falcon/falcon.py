@@ -2,7 +2,6 @@ import collections
 import functools
 import glob
 import logging
-import math
 import os
 import pickle
 import shutil
@@ -191,8 +190,7 @@ def main(args: Union[str, List[str]] = None) -> int:
         # Get the spectra corresponding to the cluster representatives.
         representative_info['file_mz'] = \
             representative_info['precursor_mz'].apply(
-                lambda mz: (math.floor(mz / config.mz_interval)
-                            * config.mz_interval))
+                lambda mz: int((mz - 0.5) / config.mz_interval))
         representative_info['filename'] = \
             representative_info[['precursor_charge', 'file_mz']].apply(
                 lambda row: os.path.join(config.work_dir, 'spectra',
