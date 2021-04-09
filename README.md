@@ -50,7 +50,6 @@ Here we provide information on the most important settings that influence the _f
 **Nearest neighbor indexing** (see below)
 
 - `n_probe`: The maximum number of lists in the inverted index to inspect during querying. Inspecting fewer lists will run faster but will give slightly less accurate clustering results.
-- `mz_interval`: The precursor _m_/_z_ interval used to split spectra over buckets that will be processed simultaneously. Using larger intervals can potentially result in some speed-ups at the expense of slightly less accurate clustering results.
 - `n_neighbors` and `n_neighbors_ann`: The final number of neighbors to consider for each spectrum and during nearest neighbor searching. Querying less neighbors will run faster but will give slightly less accurate clustering results. `n_neighbors_ann` should be equal or greater than `n_neighbors`.
 - `hash_len`: The length of the hashed vectors used for nearest neighbor searching. Larger vectors will minimize the number of hash collisions and more accurately approximate the true cosine distance, at the expense of longer nearest neighbor searching and memory requirements.
 
