@@ -1,7 +1,6 @@
 import logging
 import math
 import pickle
-import sys
 from typing import Callable, Iterable, List, Tuple
 
 import faiss
@@ -151,7 +150,7 @@ def _build_query_ann_index(
     indptr_i = 0
     # Find neighbors per specified precursor m/z interval.
     for pkl_filename in tqdm.tqdm(bucket_filenames, desc='Buckets queried',
-                                  unit='bucket', file=sys.stdout):
+                                  unit='bucket'):
         # Read the spectra for the m/z split.
         spectra_split, precursor_mzs_split, rts_split = [], [], []
         with open(pkl_filename, 'rb') as f_in:
