@@ -175,19 +175,19 @@ def _build_query_ann_index(
         # https://github.com/facebookresearch/faiss/wiki/Guidelines-to-choose-an-index#how-big-is-the-dataset
         if n_split == 0:
             continue
-        if n_split < 10e2:
+        if n_split < 10**2:
             # Use a brute-force index instead of an ANN index when there
             # are only a few items.
             n_list = -1
-        elif n_split < 10e5:
+        elif n_split < 10**6:
             n_list = 2**math.floor(math.log2(n_split / 39))
-        elif n_split < 10e6:
+        elif n_split < 10**7:
             n_list = 2**16
-        elif n_split < 10e7:
+        elif n_split < 10**8:
             n_list = 2**18
         else:
             n_list = 2**20
-            if n_split > 10e8:
+            if n_split > 10**9:
                 logger.warning('More than 1B vectors to be indexed, consider '
                                'decreasing the ANN size')
         # Create an ANN index using the inner product (proxy for cosine
@@ -331,15 +331,13 @@ def _filter_neighbors_mz(
         nn_idx_mz = [_intersect_idx_ann_mz(idx_mz, idx_rt, None, True)
                      for idx_mz, idx_rt in zip(nn_idx_mz, nn_idx_rt)]
     indptr_i_start = indptr_i - batch_start
-    for indptr_i, (idx_ann, idx_mz, dists) in enumerate(
+    for i, (idx_ann, idx_mz, dists) in enumerate(
             zip(nn_idx_ann, nn_idx_mz, nn_dists), indptr_i):
         mask = _intersect_idx_ann_mz(idx_ann, idx_mz, n_neighbors)
-        indptr[indptr_i + 1] = indptr[indptr_i] + len(mask)
+        indptr[i + 1] = indptr[i] + len(mask)
         # Convert cosine similarity to cosine distance.
-        distances[indptr[indptr_i]:indptr[indptr_i + 1]] = \
-            np.maximum(1 - dists[mask], 0)
-        indices[indptr[indptr_i]:indptr[indptr_i + 1]] = (indptr_i_start
-                                                          + idx_ann[mask])
+        distances[indptr[i]:indptr[i + 1]] = np.maximum(1 - dists[mask], 0)
+        indices[indptr[i]:indptr[i + 1]] = indptr_i_start + idx_ann[mask]
 
 
 @nb.njit
