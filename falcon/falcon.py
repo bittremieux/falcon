@@ -11,6 +11,7 @@ from typing import Dict, List, Tuple, Union
 
 import joblib
 import natsort
+import numba as nb
 import numpy as np
 import pandas as pd
 import scipy.sparse as ss
@@ -188,9 +189,19 @@ def main(args: Union[str, List[str]] = None) -> int:
                     '%s', len(representative_info),
                     f'{config.output_filename}.mgf')
         # Get the spectra corresponding to the cluster representatives.
-        representative_info['file_mz'] = \
-            representative_info['precursor_mz'].apply(
-                lambda mz: int((mz - 0.5) / config.mz_interval))
+        representative_info['filename'] = representative_info.apply(
+            lambda row: os.path.join(
+                config.work_dir, 'spectra',
+                f"""{row.precursor_charge}_
+                {_precursor_to_interval(row.precursor_mz,
+                                        row.precursor_charge,
+                                        config.mz_interval)}.pkl"""),
+            axis='columns')
+        representative_info['file_mz'] = representative_info.apply(
+            lambda row: _precursor_to_interval(row['precursor_mz'],
+                                               row['precursor_charge'],
+                                               config.mz_interval),
+            axis='columns')
         representative_info['filename'] = \
             representative_info[['precursor_charge', 'file_mz']].apply(
                 lambda row: os.path.join(config.work_dir, 'spectra',
@@ -233,7 +244,8 @@ def _prepare_spectra() -> Dict[int, Tuple[int, List[str]]]:
             for filename in input_filenames):
         for spec in file_spectra:
             charge = spec.precursor_charge
-            interval = int((spec.precursor_mz - 0.5) / config.mz_interval)
+            interval = _precursor_to_interval(
+                spec.precursor_mz, spec.precursor_charge, config.mz_interval)
             filename = os.path.join(config.work_dir, 'spectra',
                                     f'{charge}_{interval}.pkl')
             if interval not in filehandles[charge]:
@@ -282,6 +294,31 @@ def _read_spectra(filename: str, usi_pxd: str) -> List[MsmsSpectrum]:
         spectra.append(spec)
     spectra.sort(key=lambda s: s.precursor_mz)
     return spectra
+
+
+@nb.njit
+def _precursor_to_interval(mz: float, charge: int, interval_width: int) -> int:
+    """
+    Convert the precursor m/z to the neutral mass and get the interval index.
+
+    Parameters
+    ----------
+    mz : float
+        The precursor m/z.
+    charge : int
+        The precursor charge.
+    interval_width : int
+        The width of each m/z interval.
+
+    Returns
+    -------
+    int
+        The index of the interval to which a spectrum with the given m/z and
+        charge belongs.
+    """
+    hydrogen_mass, cluster_width = 1.00794, 1.0005079
+    neutral_mass = (mz - hydrogen_mass) * charge
+    return round(neutral_mass / cluster_width) // interval_width
 
 
 def _read_write_spectra_pkl(filename: str) -> int:
