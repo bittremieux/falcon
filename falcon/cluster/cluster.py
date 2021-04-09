@@ -213,6 +213,7 @@ def _build_query_ann_index(
             index, vectors_split, precursor_mzs[-1], rts[-1], batch_size,
             n_neighbors, n_neighbors_ann, precursor_tol_mass,
             precursor_tol_mode, rt_tol, distances, indices, indptr, indptr_i)
+        index.reset()
         indptr_i += n_split
     return pd.DataFrame({'identifier': identifiers,
                          'precursor_mz': np.hstack(precursor_mzs),
