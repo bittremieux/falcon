@@ -65,7 +65,7 @@ class Config:
 
         # CLUSTERING
         self._parser.add_argument(
-            '--precursor_tol', nargs=2, default=(20, 'ppm'),
+            '--precursor_tol', nargs=2, default=[20, 'ppm'],
             help='Precursor tolerance mass and mode (default: 20 ppm). '
                  'Mode should be either "ppm" or "Da".')
         self._parser.add_argument(
