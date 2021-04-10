@@ -243,17 +243,17 @@ def _prepare_spectra() -> Dict[int, Tuple[int, List[str]]]:
             joblib.delayed(_read_spectra)(filename, config.usi_pxd,
                                           config.mz_interval, config.work_dir)
             for filename in input_filenames):
-        for charge, filename, spec in file_spectra:
-            spectra[charge][filename].append(spec)
+        for spec, pkl_filename in file_spectra:
+            spectra[spec.precursor_charge][pkl_filename].append(spec)
     # Make sure the spectra in the individual files are sorted by their
     # precursor m/z and count the number of spectra per precursor charge.
     buckets, n_spectra, n_buckets = {}, 0, 0
     for charge in sorted(spectra.keys()):
         spectra_charge = spectra[charge]
-        n_spectra_charge = sum([
-            n_spectra_file for n_spectra_file in joblib.Parallel(n_jobs=-1)
+        n_spectra_charge = sum(
+            joblib.Parallel(n_jobs=-1)
             (joblib.delayed(_write_spectra_pkl)(filename, file_spectra)
-             for filename, file_spectra in spectra_charge.items())])
+             for filename, file_spectra in spectra_charge.items()))
         buckets[charge] = (n_spectra_charge,
                            natsort.natsorted(spectra_charge.keys()))
         n_spectra += n_spectra_charge
@@ -264,7 +264,7 @@ def _prepare_spectra() -> Dict[int, Tuple[int, List[str]]]:
 
 
 def _read_spectra(filename: str, usi_pxd: str, mz_interval: int,
-                  work_dir: str) -> List[Tuple[int, str, MsmsSpectrum]]:
+                  work_dir: str) -> List[Tuple[MsmsSpectrum, str]]:
     """
     Get MS/MS spectra from the given file.
 
@@ -282,19 +282,18 @@ def _read_spectra(filename: str, usi_pxd: str, mz_interval: int,
 
     Returns
     -------
-    List[Tuple[int, str, MsmsSpectrum]]
-        The spectra in the given file, with their keys to assign them to
-        buckets (precursor charge and bucket filename).
+    List[Tuple[MsmsSpectrum, str]]
+        The spectra read from the given file and their bucket filenames
+        (based on precursor charge and m/z).
     """
     spectra = []
     for spec in ms_io.get_spectra(filename):
         spec.identifier = f'mzspec:{usi_pxd}:{spec.identifier}'
-        charge = spec.precursor_charge
         interval = _precursor_to_interval(
             spec.precursor_mz, spec.precursor_charge, mz_interval)
         pkl_filename = os.path.join(work_dir, 'spectra',
-                                    f'{charge}_{interval}.pkl')
-        spectra.append((charge, pkl_filename, spec))
+                                    f'{spec.precursor_charge}_{interval}.pkl')
+        spectra.append((spec, pkl_filename))
     return spectra
 
 
