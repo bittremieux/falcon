@@ -240,19 +240,16 @@ def _prepare_spectra() -> Dict[int, Tuple[int, List[str]]]:
     logger.info('Read spectra from %d peak file(s)', len(input_filenames))
     spectra = collections.defaultdict(lambda: collections.defaultdict(list))
     for file_spectra in joblib.Parallel(n_jobs=-1)(
-            joblib.delayed(_read_spectra)(filename, config.usi_pxd)
+            joblib.delayed(_read_spectra)(filename, config.usi_pxd,
+                                          config.mz_interval, config.work_dir)
             for filename in input_filenames):
-        for spec in file_spectra:
-            charge = spec.precursor_charge
-            interval = _precursor_to_interval(
-                spec.precursor_mz, spec.precursor_charge, config.mz_interval)
-            filename = os.path.join(config.work_dir, 'spectra',
-                                    f'{charge}_{interval}.pkl')
+        for charge, filename, spec in file_spectra:
             spectra[charge][filename].append(spec)
     # Make sure the spectra in the individual files are sorted by their
     # precursor m/z and count the number of spectra per precursor charge.
     buckets, n_spectra, n_buckets = {}, 0, 0
-    for charge, spectra_charge in spectra.items():
+    for charge in sorted(spectra.keys()):
+        spectra_charge = spectra[charge]
         n_spectra_charge = sum([
             n_spectra_file for n_spectra_file in joblib.Parallel(n_jobs=-1)
             (joblib.delayed(_write_spectra_pkl)(filename, file_spectra)
@@ -266,9 +263,10 @@ def _prepare_spectra() -> Dict[int, Tuple[int, List[str]]]:
     return buckets
 
 
-def _read_spectra(filename: str, usi_pxd: str) -> List[MsmsSpectrum]:
+def _read_spectra(filename: str, usi_pxd: str, mz_interval: int,
+                  work_dir: str) -> List[Tuple[int, str, MsmsSpectrum]]:
     """
-    Get high-quality processed MS/MS spectra from the given file.
+    Get MS/MS spectra from the given file.
 
     Parameters
     ----------
@@ -276,17 +274,27 @@ def _read_spectra(filename: str, usi_pxd: str) -> List[MsmsSpectrum]:
         The path of the peak file to be read.
     usi_pxd : str
         ProteomeXchange dataset identifier to create USI references.
+    mz_interval : int
+        The width of each m/z interval.
+    work_dir : str
+        The directory in which the spectrum buckets will be stored.
+
 
     Returns
     -------
-    List[MsmsSpectrum]
-        The spectra in the given file.
+    List[Tuple[int, str, MsmsSpectrum]]
+        The spectra in the given file, with their keys to assign them to
+        buckets (precursor charge and bucket filename).
     """
     spectra = []
     for spec in ms_io.get_spectra(filename):
         spec.identifier = f'mzspec:{usi_pxd}:{spec.identifier}'
-        spectra.append(spec)
-    spectra.sort(key=lambda s: s.precursor_mz)
+        charge = spec.precursor_charge
+        interval = _precursor_to_interval(
+            spec.precursor_mz, spec.precursor_charge, mz_interval)
+        pkl_filename = os.path.join(work_dir, 'spectra',
+                                    f'{charge}_{interval}.pkl')
+        spectra.append((charge, pkl_filename, spec))
     return spectra
 
 
@@ -331,9 +339,12 @@ def _write_spectra_pkl(filename: str, spectra: List[MsmsSpectrum]) -> int:
     int
         The number of spectra in the file.
     """
-    spectra.sort(key=lambda spec: spec.precursor_mz)
+    # Radix sort on integers with O(n) time complexity.
+    order = np.argsort(np.asarray([int(spec.precursor_mz * 10000)
+                                   for spec in spectra], dtype=np.int32),
+                       kind='stable')
     with open(filename, 'wb') as f_in:
-        pickle.dump(spectra, f_in, protocol=5)
+        pickle.dump([spectra[i] for i in order], f_in, protocol=5)
     return len(spectra)
 
 
