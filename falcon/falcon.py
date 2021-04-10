@@ -257,7 +257,7 @@ def _prepare_spectra() -> Dict[int, Tuple[int, List[str]]]:
             n_spectra_file for n_spectra_file in joblib.Parallel(n_jobs=-1)
             (joblib.delayed(_write_spectra_pkl)(filename, file_spectra)
              for filename, file_spectra in spectra_charge.items())])
-        buckets[charge] = n_spectra_charge, list(spectra_charge.keys())
+        buckets[charge] = n_spectra_charge, sorted(spectra_charge.keys())
         n_spectra += n_spectra_charge
         n_buckets += len(spectra_charge.keys())
     logger.debug('%d spectra written to %d buckets by precursor charge and '
