@@ -24,12 +24,13 @@ def get_spectra(source: Union[IO, str]) -> Iterable[sus.MsmsSpectrum]:
         filename = os.path.splitext(os.path.basename(f_in.name))[0]
         for spectrum_i, spectrum_dict in enumerate(f_in):
             # USI-inspired cluster identifier.
-            if ('scan' in spectrum_dict['params'] or
-                    'scans' in spectrum_dict['params']):
-                scan = spectrum_dict['params'].get(
-                    'scan', spectrum_dict['params']['scans'])
+            if 'scans' in spectrum_dict['params']:
                 # Use a scan number as identifier.
-                spectrum_dict['params']['title'] = f'{filename}:scan:{scan}'
+                spectrum_dict['params']['title'] = \
+                    f'{filename}:scan:{spectrum_dict["params"]["scans"]}'
+            elif 'scan' in spectrum_dict['params']:
+                spectrum_dict['params']['title'] = \
+                    f'{filename}:scan:{spectrum_dict["params"]["scan"]}'
             else:
                 # Use the index in the MGF file as identifier.
                 spectrum_dict['params']['title'] = \
