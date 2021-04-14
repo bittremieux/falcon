@@ -502,7 +502,7 @@ def generate_clusters(pairwise_dist_matrix: ss.csr_matrix, eps: float,
     cluster_reassignments = nb.typed.List(joblib.Parallel(n_jobs=-1)(
         joblib.delayed(_postprocess_cluster)
         (precursor_mzs[start_i:stop_i], precursor_tol_mass,
-         precursor_tol_mode) for start_i, stop_i in group_idx))
+         precursor_tol_mode, min_samples) for start_i, stop_i in group_idx))
     clusters = _assign_unique_cluster_labels(
         group_idx, cluster_reassignments, min_samples)[reverse_order]
     logger.debug('%d unique clusters after precursor m/z finetuning',
@@ -539,7 +539,8 @@ def _get_cluster_group_idx(clusters: np.ndarray) -> nb.typed.List:
 
 
 def _postprocess_cluster(cluster_mzs: np.ndarray, precursor_tol_mass: float,
-                         precursor_tol_mode: str) -> Tuple[np.ndarray, int]:
+                         precursor_tol_mode: str, min_samples: int) \
+        -> Tuple[np.ndarray, int]:
     """
     Agglomerative clustering of the precursor m/z's within each initial
     cluster to avoid that spectra within a cluster have an excessive precursor
@@ -553,6 +554,8 @@ def _postprocess_cluster(cluster_mzs: np.ndarray, precursor_tol_mass: float,
         Maximum precursor mass tolerance for points to be clustered together.
     precursor_tol_mode : str
         The unit of the precursor m/z tolerance ('Da' or 'ppm').
+    min_samples : int
+        The minimum number of samples in a cluster.
 
     Returns
     -------
@@ -561,10 +564,10 @@ def _postprocess_cluster(cluster_mzs: np.ndarray, precursor_tol_mass: float,
         clusters.
     """
     cluster_labels = -np.ones_like(cluster_mzs, np.int64)
-    # No splitting possible if only 1 item in cluster.
+    # No splitting needed if there are too few items in cluster.
     # This seems to happen sometimes despite that DBSCAN requires a higher
     # `min_samples`.
-    if cluster_labels.shape[0] == 1:
+    if cluster_labels.shape[0] < min_samples:
         n_clusters = 0
     else:
         cluster_mzs = cluster_mzs.reshape(-1, 1)
@@ -594,7 +597,7 @@ def _postprocess_cluster(cluster_mzs: np.ndarray, precursor_tol_mass: float,
             label, labels = 0, np.arange(n_clusters).reshape(-1, 1)
             # noinspection PyTypeChecker
             for mask in cluster_assignments == labels:
-                if mask.sum() > 1:
+                if mask.sum() >= min_samples:
                     cluster_labels[mask] = label
                     label += 1
             n_clusters = label

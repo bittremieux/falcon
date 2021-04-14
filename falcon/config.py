@@ -129,7 +129,7 @@ class Config:
             help='Maximum peak m/z value (inclusive, '
                  'default: %(default)s m/z).')
         self._parser.add_argument(
-            '--remove_precursor_tol', default=0.5, type=float,
+            '--remove_precursor_tol', default=1.5, type=float,
             help='Window around the precursor mass to remove peaks '
                  '(default: %(default)s m/z).')
         self._parser.add_argument(
