@@ -102,20 +102,21 @@ def main(args: Union[str, List[str]] = None) -> int:
     else:
         buckets = joblib.load(os.path.join(config.work_dir, 'spectra',
                                            'buckets.joblib'))
+
+    vec_len, min_mz, max_mz = spectrum.get_dim(config.min_mz, config.max_mz,
+                                               config.fragment_tol)
     process_spectrum = functools.partial(
         spectrum.process_spectrum,
         min_peaks=config.min_peaks,
         min_mz_range=config.min_mz_range,
-        mz_min=config.min_mz,
-        mz_max=config.max_mz,
+        mz_min=min_mz,
+        mz_max=max_mz,
         remove_precursor_tolerance=config.remove_precursor_tol,
         min_intensity=config.min_intensity,
         max_peaks_used=config.max_peaks_used,
         scaling=None if config.scaling == 'off' else config.scaling)
 
     # Pre-compute the index hash mappings.
-    vec_len, min_mz, max_mz = spectrum.get_dim(config.min_mz, config.max_mz,
-                                               config.fragment_tol)
     hash_lookup = np.asarray([murmurhash3_32(i, 0, True) % config.hash_len
                               for i in range(vec_len)], np.uint32)
     vectorize = functools.partial(

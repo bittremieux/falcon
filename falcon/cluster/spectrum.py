@@ -166,7 +166,7 @@ def get_dim(min_mz: float, max_mz: float, bin_size: float) \
     """
     start_dim = min_mz - min_mz % bin_size
     end_dim = max_mz + bin_size - max_mz % bin_size
-    return round((end_dim - start_dim) / bin_size), start_dim, end_dim
+    return math.ceil((end_dim - start_dim) / bin_size), start_dim, end_dim
 
 
 @nb.njit
@@ -204,7 +204,7 @@ def to_vector(spectrum: MsmsSpectrumNb, vector: np.ndarray,
     """
     _, min_bound, max_bound = get_dim(min_mz, max_mz, bin_size)
     for mz, intensity in zip(spectrum.mz, spectrum.intensity):
-        if min_bound <= mz <= max_bound:
+        if min_bound < mz < max_bound:
             hash_idx = hash_lookup[math.floor((mz - min_bound) / bin_size)]
             vector[hash_idx] += intensity
     return vector if not norm else _norm_intensity(vector)

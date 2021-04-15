@@ -154,14 +154,14 @@ def _build_query_ann_index(
         # Read the spectra for the m/z split.
         spectra_split, precursor_mzs_split, rts_split = [], [], []
         with open(pkl_filename, 'rb') as f_in:
-            for spec in pickle.load(f_in):
-                spec = process_spectrum(spec)
+            for spec_raw in pickle.load(f_in):
+                spec_processed = process_spectrum(spec_raw)
                 # Discard low-quality spectra.
-                if spec is not None:
-                    spectra_split.append(spec)
-                    identifiers.append(spec.identifier)
-                    precursor_mzs_split.append(spec.precursor_mz)
-                    rts_split.append(spec.retention_time)
+                if spec_processed is not None:
+                    spectra_split.append(spec_processed)
+                    identifiers.append(spec_processed.identifier)
+                    precursor_mzs_split.append(spec_processed.precursor_mz)
+                    rts_split.append(spec_processed.retention_time)
         if len(spectra_split) == 0:
             continue
         precursor_mzs.append(np.asarray(precursor_mzs_split))
