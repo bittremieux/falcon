@@ -181,7 +181,38 @@ def main(args: Union[str, List[str]] = None) -> int:
                 f'{config.output_filename}.csv')
     clusters_all = (pd.concat(clusters_all, ignore_index=True)
                     .sort_values('identifier', key=natsort.natsort_keygen()))
-    clusters_all.to_csv(f'{config.output_filename}.csv', index=False)
+    with open(f'{config.output_filename}.csv', 'a') as f_out:
+        # Metadata.
+        f_out.write(f'# falcon version {__version__}\n')
+        f_out.write(f'# work_dir = {config.work_dir}\n')
+        f_out.write(f'# overwrite = {config.overwrite}\n')
+        f_out.write(f'# export_representatives = '
+                    f'{config.export_representatives}\n')
+        f_out.write(f'# usi_pxd = {config.usi_pxd}\n')
+        f_out.write(f'# precursor_tol = {config.precursor_tol[0]:.2f} '
+                    f'{config.precursor_tol[1]}\n')
+        f_out.write(f'# rt_tol = {config.rt_tol}\n')
+        f_out.write(f'# fragment_tol = {config.fragment_tol:.2f}\n')
+        f_out.write(f'# eps = {config.eps:.3f}\n')
+        f_out.write(f'# min_samples = {config.min_samples}\n')
+        f_out.write(f'# mz_interval = {config.mz_interval}\n')
+        f_out.write(f'# hash_len = {config.hash_len}\n')
+        f_out.write(f'# n_neighbors = {config.n_neighbors}\n')
+        f_out.write(f'# n_neighbors_ann = {config.n_neighbors_ann}\n')
+        f_out.write(f'# batch_size = {config.batch_size}\n')
+        f_out.write(f'# n_probe = {config.n_probe}\n')
+        f_out.write(f'# min_peaks = {config.min_peaks}\n')
+        f_out.write(f'# min_mz_range = {config.min_mz_range:.2f}\n')
+        f_out.write(f'# min_mz = {config.min_mz:.2f}\n')
+        f_out.write(f'# max_mz = {config.max_mz:.2f}\n')
+        f_out.write(f'# remove_precursor_tol = '
+                    f'{config.remove_precursor_tol:.2f}\n')
+        f_out.write(f'# min_intensity = {config.min_intensity:.2f}\n')
+        f_out.write(f'# max_peaks_used = {config.max_peaks_used}\n')
+        f_out.write(f'# scaling = {config.scaling}\n')
+        f_out.write('#\n')
+        # Cluster assignments.
+        clusters_all.to_csv(f_out, index=False)
     if config.export_representatives:
         representative_info = (
             pd.concat(representative_info, ignore_index=True)
