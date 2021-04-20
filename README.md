@@ -27,7 +27,7 @@ Installation
 
 _falcon_ requires Python 3.8+ and can be installed with pip:
 
-    pip install falcon
+    pip install git+https://github.com/bittremieux/falcon.git
 
 Running _falcon_
 ----------------
