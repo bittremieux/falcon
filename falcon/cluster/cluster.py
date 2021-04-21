@@ -646,7 +646,7 @@ def get_cluster_representatives(clusters: np.ndarray,
     Parameters
     ----------
     clusters : np.ndarray
-        Cluster label assignments, excluding noise clusters.
+        Cluster label assignments.
     pairwise_dist_matrix : ss.csr_matrix
         Pairwise distance matrix.
 
@@ -658,13 +658,14 @@ def get_cluster_representatives(clusters: np.ndarray,
     clusters_no_noise = clusters[clusters != -1]
     if len(clusters_no_noise) == 0:
         return
-    labels = np.arange(np.amin(clusters_no_noise), np.amax(clusters) + 1)
+    labels = np.arange(np.amin(clusters_no_noise),
+                       np.amax(clusters_no_noise) + 1)
     # noinspection PyTypeChecker
     yield from joblib.Parallel(n_jobs=-1, prefer='threads')(
         joblib.delayed(_get_cluster_medoid_index)(
             mask, pairwise_dist_matrix.indptr, pairwise_dist_matrix.indices,
             pairwise_dist_matrix.data)
-        for mask in clusters.reshape(1, -1) == labels.reshape(-1, 1))
+        for mask in clusters.reshape((1, -1)) == labels.reshape((-1, 1)))
 
 
 @nb.njit(fastmath=True)
