@@ -81,16 +81,38 @@ def main(args: Union[str, List[str]] = None) -> int:
     os.makedirs(os.path.join(config.work_dir, 'spectra'), exist_ok=True)
     os.makedirs(os.path.join(config.work_dir, 'nn'), exist_ok=True)
 
-    # Clean all intermediate results if "overwrite" is specified.
+    # Clean all intermediate and final results if "overwrite" is specified,
+    # otherwise abort if the output files already exist.
+    exit_exists = False
+    if os.path.isfile(f'{config.output_filename}.csv'):
+        if config.overwrite:
+            logger.warning('Output file %s (cluster assignments) already '
+                           'exists and will be overwritten',
+                           f'{config.output_filename}.csv')
+            os.remove(f'{config.output_filename}.csv')
+        else:
+            logger.error('Output file %s (cluster assignments) already '
+                         'exists, aborting...',
+                         f'{config.output_filename}.csv')
+            exit_exists = True
+    if os.path.isfile(f'{config.output_filename}.mgf'):
+        if config.overwrite:
+            logger.warning('Output file %s (cluster representatives) already '
+                           'exists and will be overwritten',
+                           f'{config.output_filename}.mgf')
+            os.remove(f'{config.output_filename}.mgf')
+        else:
+            logger.error('Output file %s (cluster representatives) already '
+                         'exists, aborting...',
+                         f'{config.output_filename}.mgf')
+            exit_exists = True
+    if exit_exists:
+        return 1
     if config.overwrite:
         for filename in os.listdir(os.path.join(config.work_dir, 'spectra')):
             os.remove(os.path.join(config.work_dir, 'spectra', filename))
         for filename in os.listdir(os.path.join(config.work_dir, 'nn')):
             os.remove(os.path.join(config.work_dir, 'nn', filename))
-        if os.path.isfile(os.path.join(config.work_dir, 'clusters.csv')):
-            os.remove(os.path.join(config.work_dir, 'clusters.csv'))
-        if os.path.isfile(os.path.join(config.work_dir, 'clusters.mgf')):
-            os.remove(os.path.join(config.work_dir, 'clusters.mgf'))
 
     # Read the spectra from the input files and partition them based on their
     # precursor m/z.
@@ -410,4 +432,4 @@ def _find_spectra_pkl(filename: str, usis_to_read: Dict[str, int]) \
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())
