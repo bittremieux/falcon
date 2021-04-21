@@ -191,6 +191,8 @@ def main(args: Union[str, List[str]] = None) -> int:
             representative_info.append(
                 metadata.iloc[list(cluster.get_cluster_representatives(
                     clusters, pairwise_dist_matrix))])
+            if config.export_include_singletons:
+                representative_info.append(metadata.loc[~mask_no_noise])
 
     # Export cluster memberships and representative spectra.
     n_clusters, n_spectra_clustered = 0, 0
@@ -236,11 +238,11 @@ def main(args: Union[str, List[str]] = None) -> int:
         # Cluster assignments.
         clusters_all.to_csv(f_out, index=False)
     if config.export_representatives:
-        representative_info = (
-            pd.concat(representative_info, ignore_index=True)
-            .sort_values(['precursor_charge', 'precursor_mz']))
-        logger.info('Export %d cluster representative spectra to output file '
-                    '%s', len(representative_info),
+        representative_info = pd.concat(representative_info, ignore_index=True)
+        logger.info('Export %d cluster representative spectra %sto output '
+                    'file %s', len(representative_info),
+                    ('(including singletons) '
+                     if config.export_include_singletons else ''),
                     f'{config.output_filename}.mgf')
         # Get the spectra corresponding to the cluster representatives.
         representative_info['filename'] = representative_info.apply(
