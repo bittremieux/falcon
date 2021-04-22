@@ -663,13 +663,13 @@ def get_cluster_representatives(clusters: np.ndarray,
     # noinspection PyTypeChecker
     yield from joblib.Parallel(n_jobs=-1, prefer='threads')(
         joblib.delayed(_get_cluster_medoid_index)(
-            mask, pairwise_dist_matrix.indptr, pairwise_dist_matrix.indices,
-            pairwise_dist_matrix.data)
-        for mask in clusters.reshape((1, -1)) == labels.reshape((-1, 1)))
+            label, clusters, pairwise_dist_matrix.indptr,
+            pairwise_dist_matrix.indices, pairwise_dist_matrix.data)
+        for label in labels)
 
 
 @nb.njit(fastmath=True)
-def _get_cluster_medoid_index(cluster_mask: np.ndarray,
+def _get_cluster_medoid_index(label: int, clusters: np.ndarray,
                               pairwise_indptr: np.ndarray,
                               pairwise_indices: np.ndarray,
                               pairwise_data: np.ndarray) -> int:
@@ -678,8 +678,10 @@ def _get_cluster_medoid_index(cluster_mask: np.ndarray,
 
     Parameters
     ----------
-    cluster_mask : np.ndarray
-        A boolean mask array.
+    label : int
+        The label of the cluster for which to get the medoid element.
+    clusters : np.ndarray
+        Cluster label assignments.
     pairwise_indptr : np.ndarray
         The index pointers for the nearest neighbor distances. See
         `scipy.sparse.csr_matrix`.
@@ -694,7 +696,7 @@ def _get_cluster_medoid_index(cluster_mask: np.ndarray,
     int
         The index of the cluster's medoid element.
     """
-    cluster_mask = np.where(cluster_mask)[0]
+    cluster_mask = np.where(clusters == label)[0]
     if len(cluster_mask) <= 2:
         # Pairwise distances will be identical.
         return cluster_mask[0]
