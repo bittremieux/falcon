@@ -254,21 +254,10 @@ def main(args: Union[str, List[str]] = None) -> int:
         representative_info['filename'] = representative_info.apply(
             lambda row: os.path.join(
                 config.work_dir, 'spectra',
-                f"""{row.precursor_charge}_
-                {_precursor_to_interval(row.precursor_mz,
-                                        row.precursor_charge,
-                                        config.mz_interval)}.pkl"""),
+                f"""{row.precursor_charge}_{_precursor_to_interval(
+                    row.precursor_mz, row.precursor_charge,
+                    config.mz_interval)}.pkl"""),
             axis='columns')
-        representative_info['file_mz'] = representative_info.apply(
-            lambda row: _precursor_to_interval(row['precursor_mz'],
-                                               row['precursor_charge'],
-                                               config.mz_interval),
-            axis='columns')
-        representative_info['filename'] = \
-            representative_info[['precursor_charge', 'file_mz']].apply(
-                lambda row: os.path.join(config.work_dir, 'spectra',
-                                         f'{row[0]}_{row[1]}.pkl'),
-                axis='columns')
         representatives = []
         for spectra in joblib.Parallel(n_jobs=-1)(
                 joblib.delayed(_find_spectra_pkl)(
@@ -430,7 +419,7 @@ def _find_spectra_pkl(filename: str, usis_to_read: Dict[str, int]) \
     spectra_found = []
     with open(filename, 'rb') as f_in:
         for spec in pickle.load(f_in):
-            if spec.identifier in usis_to_read.keys():
+            if spec.identifier in usis_to_read:
                 spec.cluster = usis_to_read[spec.identifier]
                 spectra_found.append(spec)
                 if len(spectra_found) == len(usis_to_read):
