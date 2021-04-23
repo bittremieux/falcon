@@ -1,7 +1,7 @@
 import logging
 import math
 import pickle
-from typing import Callable, Iterable, List, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import faiss
 import fastcluster
@@ -637,9 +637,12 @@ def _assign_unique_cluster_labels(group_idx: nb.typed.List,
     return clusters
 
 
+@nb.njit(parallel=True)
 def get_cluster_representatives(clusters: np.ndarray,
-                                pairwise_dist_matrix: ss.csr_matrix) \
-        -> Iterable[Tuple[int, int]]:
+                                pairwise_indptr: np.ndarray,
+                                pairwise_indices: np.ndarray,
+                                pairwise_data: np.ndarray) \
+        -> Optional[np.ndarray]:
     """
     Get indexes of the cluster representative spectra (medoids).
 
@@ -647,29 +650,45 @@ def get_cluster_representatives(clusters: np.ndarray,
     ----------
     clusters : np.ndarray
         Cluster label assignments.
-    pairwise_dist_matrix : ss.csr_matrix
-        Pairwise distance matrix.
+    pairwise_indptr : np.ndarray
+        The index pointers for the nearest neighbor distances. See
+        `scipy.sparse.csr_matrix`.
+    pairwise_indices : np.ndarray
+        The column indices for the nearest neighbor distances. See
+        `scipy.sparse.csr_matrix`.
+    pairwise_data : np.ndarray
+        The nearest neighbor distances. See `scipy.sparse.csr_matrix` (`data`).
 
     Returns
     -------
-    List[int]
-        The indexes of the medoid elements for all clusters.
+    Optional[np.ndarray]
+        The indexes of the medoid elements for all non-noise clusters, or None
+        if only noise clusters are present.
     """
-    clusters_no_noise = clusters[clusters != -1]
-    if len(clusters_no_noise) == 0:
-        return
-    labels = np.arange(np.amin(clusters_no_noise),
-                       np.amax(clusters_no_noise) + 1)
-    # noinspection PyTypeChecker
-    yield from joblib.Parallel(n_jobs=-1, prefer='threads')(
-        joblib.delayed(_get_cluster_medoid_index)(
-            label, clusters, pairwise_dist_matrix.indptr,
-            pairwise_dist_matrix.indices, pairwise_dist_matrix.data)
-        for label in labels)
+    order, min_i = np.argsort(clusters), 0
+    while min_i < clusters.shape[0] and clusters[order[min_i]] == -1:
+        min_i += 1
+    # Only noise clusters.
+    if min_i == clusters.shape[0]:
+        return None
+    # Find the indexes of the representatives for each unique cluster.
+    cluster_idx, max_i = [], min_i
+    while max_i < order.shape[0]:
+        while (max_i < order.shape[0] and
+               clusters[order[min_i]] == clusters[order[max_i]]):
+            max_i += 1
+        cluster_idx.append((min_i, max_i))
+        min_i = max_i
+    representatives = np.empty(len(cluster_idx), np.uint)
+    for i in nb.prange(len(cluster_idx)):
+        representatives[i] = _get_cluster_medoid_index(
+            order[cluster_idx[i][0]:cluster_idx[i][1]], pairwise_indptr,
+            pairwise_indices, pairwise_data)
+    return representatives
 
 
 @nb.njit(fastmath=True)
-def _get_cluster_medoid_index(label: int, clusters: np.ndarray,
+def _get_cluster_medoid_index(cluster_mask: np.ndarray,
                               pairwise_indptr: np.ndarray,
                               pairwise_indices: np.ndarray,
                               pairwise_data: np.ndarray) -> int:
@@ -678,10 +697,8 @@ def _get_cluster_medoid_index(label: int, clusters: np.ndarray,
 
     Parameters
     ----------
-    label : int
-        The label of the cluster for which to get the medoid element.
-    clusters : np.ndarray
-        Cluster label assignments.
+    cluster_mask : np.ndarray
+        Indexes of the items belonging to the current cluster.
     pairwise_indptr : np.ndarray
         The index pointers for the nearest neighbor distances. See
         `scipy.sparse.csr_matrix`.
@@ -696,7 +713,6 @@ def _get_cluster_medoid_index(label: int, clusters: np.ndarray,
     int
         The index of the cluster's medoid element.
     """
-    cluster_mask = np.where(clusters == label)[0]
     if len(cluster_mask) <= 2:
         # Pairwise distances will be identical.
         return cluster_mask[0]
@@ -706,22 +722,9 @@ def _get_cluster_medoid_index(label: int, clusters: np.ndarray,
                                    pairwise_indptr[cluster_mask[row_i] + 1]]
         data = pairwise_data[pairwise_indptr[cluster_mask[row_i]]:
                              pairwise_indptr[cluster_mask[row_i] + 1]]
-        row_sum, row_count = 0, 0
-        for col_i in range(cluster_mask.shape[0]):
-            for pairwise_i, ind in enumerate(indices):
-                if ind == cluster_mask[col_i]:
-                    break
-            else:
-                continue
-            # noinspection PyUnboundLocalVariable
-            row_sum += data[pairwise_i]
-            row_count += 1
-        # The pairwise distance matrix is not fully symmetrical so some values
-        # might be missing. In the extreme case a point doesn't have any of the
-        # other cluster members as its row neighbors (but connected as neighbor
-        # of another point; i.e. column neighbor).
-        if row_count > 0:
-            row_avg = row_sum / row_count
-            if row_avg < min_avg:
-                min_i, min_avg = row_i, row_avg
+        col_i = np.asarray([i for cm in cluster_mask
+                            for i, ind in enumerate(indices) if cm == ind])
+        row_avg = np.mean(data[col_i])
+        if row_avg < min_avg:
+            min_i, min_avg = row_i, row_avg
     return cluster_mask[min_i]

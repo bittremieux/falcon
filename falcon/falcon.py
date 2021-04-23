@@ -188,11 +188,17 @@ def main(args: Union[str, List[str]] = None) -> int:
         clusters_all.append(metadata)
         # Extract identifiers for cluster representatives (medoids).
         if config.export_representatives:
-            representative_info.append(
-                metadata.iloc[list(cluster.get_cluster_representatives(
-                    clusters, pairwise_dist_matrix))])
+            charge_repr = cluster.get_cluster_representatives(
+                clusters, pairwise_dist_matrix.indptr,
+                pairwise_dist_matrix.indices, pairwise_dist_matrix.data)
+            if charge_repr is not None:
+                representative_info.append(metadata.iloc[charge_repr])
             if config.export_include_singletons:
                 representative_info.append(metadata.loc[~mask_no_noise])
+            logger.debug('Extract %d cluster representative %sidentifiers',
+                         len(charge_repr) if charge_repr is not None else 0,
+                         f'and {(~mask_no_noise).sum()} singleton spectra '
+                         if config.export_include_singletons else '')
 
     # Export cluster memberships and representative spectra.
     n_clusters, n_spectra_clustered = 0, 0
