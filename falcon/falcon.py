@@ -242,7 +242,7 @@ def main(args: Union[str, List[str]] = None) -> int:
         f_out.write(f'# scaling = {config.scaling}\n')
         f_out.write('#\n')
         # Cluster assignments.
-        clusters_all.to_csv(f_out, index=False)
+        clusters_all.to_csv(f_out, index=False, chunksize=1000000)
     if config.export_representatives:
         representative_info = pd.concat(representative_info, ignore_index=True)
         logger.info('Export %d cluster representative spectra %sto output '
