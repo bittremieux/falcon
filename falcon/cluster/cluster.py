@@ -215,9 +215,13 @@ def _build_query_ann_index(
             precursor_tol_mode, rt_tol, distances, indices, indptr, indptr_i)
         index.reset()
         indptr_i += n_split
-    return pd.DataFrame({'identifier': identifiers,
-                         'precursor_mz': np.hstack(precursor_mzs),
-                         'retention_time': np.hstack(rts)})
+    if len(identifiers) == 0:
+        return pd.DataFrame(columns=['identifier', 'precursor_mz',
+                                     'retention_time'])
+    else:
+        return pd.DataFrame({'identifier': identifiers,
+                             'precursor_mz': np.hstack(precursor_mzs),
+                             'retention_time': np.hstack(rts)})
 
 
 def _dist_mz_interval(

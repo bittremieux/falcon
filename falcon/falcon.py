@@ -173,6 +173,9 @@ def main(args: Union[str, List[str]] = None) -> int:
                          'from file %s', dist_filename)
             pairwise_dist_matrix = ss.load_npz(dist_filename)
             metadata = pd.read_parquet(metadata_filename)
+        # No valid spectra found with the current charge.
+        if len(metadata) == 0:
+            continue
         # Cluster using the pairwise distance matrix.
         clusters = cluster.generate_clusters(
             pairwise_dist_matrix, config.eps, config.min_samples,
