@@ -107,6 +107,7 @@ def main(args: Union[str, List[str]] = None) -> int:
                          f'{config.output_filename}.mgf')
             exit_exists = True
     if exit_exists:
+        logging.shutdown()
         return 1
     if config.overwrite:
         for filename in os.listdir(os.path.join(config.work_dir, 'spectra')):
@@ -209,6 +210,10 @@ def main(args: Union[str, List[str]] = None) -> int:
         clust_no_noise = clust[clust['cluster'] != -1]
         n_clusters += clust_no_noise['cluster'].nunique()
         n_spectra_clustered += len(clust_no_noise)
+    if n_spectra_clustered == 0:
+        logger.error('No valid spectra found for clustering')
+        logging.shutdown()
+        return 1
     logger.info('Export cluster assignments of %d spectra to %d unique '
                 'clusters to output file %s', n_spectra_clustered, n_clusters,
                 f'{config.output_filename}.csv')
@@ -274,7 +279,6 @@ def main(args: Union[str, List[str]] = None) -> int:
         shutil.rmtree(config.work_dir)
 
     logging.shutdown()
-
     return 0
 
 
