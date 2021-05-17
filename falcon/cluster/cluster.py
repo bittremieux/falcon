@@ -728,7 +728,7 @@ def _get_cluster_medoid_index(cluster_mask: np.ndarray,
                              pairwise_indptr[cluster_mask[row_i] + 1]]
         col_i = np.asarray([i for cm in cluster_mask
                             for i, ind in enumerate(indices) if cm == ind])
-        row_avg = np.mean(data[col_i])
+        row_avg = np.mean(data[col_i]) if len(col_i) > 0 else np.inf
         if row_avg < min_avg:
             min_i, min_avg = row_i, row_avg
     return cluster_mask[min_i]
