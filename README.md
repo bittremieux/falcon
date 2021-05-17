@@ -1,6 +1,8 @@
 _falcon_
 ========
 
+![falcon](falcon_logo.png)
+
 For more information:
 
 * [Official code website](https://github.com/bittremieux/falcon)
@@ -95,7 +97,7 @@ clustering. See the command-line documentation for more information.
 How does it work?
 -----------------
 
-![falcon spectrum clustering](falcon.png)
+![falcon spectrum clustering](falcon_how.png)
 
 1. High-resolution MS/MS spectra are converted to low-dimensional vectors using
 feature hashing. First, spectra are converted to sparse vectors using small
