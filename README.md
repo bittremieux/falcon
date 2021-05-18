@@ -27,7 +27,9 @@ searching.** _publication pending_ (2021).
 Installation
 ------------
 
-_falcon_ requires Python 3.8+ and can be installed with pip:
+_falcon_ requires Python 3.8+ and is available on the Linux and OSX platforms.
+
+You can easily install _falcon_ with pip:
 
     pip install falcon-ms
 
