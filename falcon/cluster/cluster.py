@@ -355,7 +355,8 @@ def _get_neighbors_idx(values: np.ndarray, start_i: int, stop_i: int,
     Parameters
     ----------
     values : np.ndarray
-        The precursor m/z or retention time values of the candidates.
+        The precursor m/z (sorted) or retention time (unsorted) values of the
+        candidates.
     start_i, stop_i : int
         Indexes used to slice the values to be considered in the batch
         (inclusive start_i, exclusive stop_i).
@@ -372,23 +373,27 @@ def _get_neighbors_idx(values: np.ndarray, start_i: int, stop_i: int,
         candidates for each item.
     """
     batch_values = values[start_i:stop_i]
-    if tol_mode == 'Da':
-        min_value = batch_values[0] - tol
-        max_value = batch_values[-1] + tol
-    elif tol_mode == 'ppm':
-        min_value = batch_values[0] - batch_values[0] * tol / 10 ** 6
-        max_value = batch_values[-1] + batch_values[-1] * tol / 10 ** 6
+    if tol_mode in ('Da', 'ppm'):
+        if tol_mode == 'Da':
+            min_value = batch_values[0] - tol
+            max_value = batch_values[-1] + tol
+        elif tol_mode == 'ppm':
+            min_value = batch_values[0] - batch_values[0] * tol / 10 ** 6
+            max_value = batch_values[-1] + batch_values[-1] * tol / 10 ** 6
+        # noinspection PyUnboundLocalVariable
+        min_value, max_value = max(0, min_value), max(0, max_value)
+        match_i = np.searchsorted(values, [min_value, max_value])
+        match_values_i = np.arange(match_i[0], match_i[1])
+        match_values = values[match_i[0]:match_i[1]].reshape((1, -1))
     elif tol_mode == 'rt':
         # RT values are not sorted.
-        min_value = batch_values.min() - tol
-        max_value = batch_values.max() + tol
+        min_value = max(0, batch_values.min() - tol)
+        max_value = max(0, batch_values.max() + tol)
+        match_values_i = np.where(np.logical_and(values >= min_value,
+                                                 values <= max_value))[0]
+        match_values = values[match_values_i].reshape((1, -1))
     else:
         raise ValueError('Unknown tolerance filter')
-    min_value, max_value = max(0, min_value), max(0, max_value)
-    match_i = np.searchsorted(values, [min_value, max_value])
-    match_values = (values[match_i[0]:match_i[1]]
-                    .reshape((1, match_i[1] - match_i[0])))
-    match_values_i = np.arange(match_i[0], match_i[1])
     batch_values = batch_values.reshape((stop_i - start_i, 1))
     if tol_mode in ('Da', 'rt'):
         masks = np.abs(batch_values - match_values) < tol
