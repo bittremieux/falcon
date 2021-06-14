@@ -180,8 +180,8 @@ def main(args: Union[str, List[str]] = None) -> int:
         # Cluster using the pairwise distance matrix.
         clusters = cluster.generate_clusters(
             pairwise_dist_matrix, config.eps, config.min_samples,
-            metadata['precursor_mz'].values, config.precursor_tol[0],
-            config.precursor_tol[1])
+            metadata['precursor_mz'].values, metadata['retention_time'].values,
+            config.precursor_tol[0], config.precursor_tol[1], config.rt_tol)
         # Make sure that different charges have non-overlapping cluster labels.
         mask_no_noise = clusters != -1
         clusters[mask_no_noise] += current_label

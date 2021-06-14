@@ -451,7 +451,8 @@ def _intersect_idx_ann_mz(idx_ann: np.ndarray, idx_mz: np.ndarray,
 
 def generate_clusters(pairwise_dist_matrix: ss.csr_matrix, eps: float,
                       min_samples: int, precursor_mzs: np.ndarray,
-                      precursor_tol_mass: float, precursor_tol_mode: str) \
+                      rts: np.ndarray, precursor_tol_mass: float,
+                      precursor_tol_mode: str, rt_tol: float) \
         -> np.ndarray:
     """
     DBSCAN clustering of the given pairwise distance matrix.
@@ -468,10 +469,15 @@ def generate_clusters(pairwise_dist_matrix: ss.csr_matrix, eps: float,
         a core point. This includes the point itself.
     precursor_mzs : np.ndarray
         Precursor m/z's matching the pairwise distance matrix.
+    rts : np.ndarray
+        Retention times matching the pairwise distance matrix.
     precursor_tol_mass : float
         Maximum precursor mass tolerance for points to be clustered together.
     precursor_tol_mode : str
         The unit of the precursor m/z tolerance ('Da' or 'ppm').
+    rt_tol : float
+        The retention time tolerance for points to be clustered together. If
+        `None`, do not restrict the retention time.
 
     Returns
     -------
@@ -507,18 +513,22 @@ def generate_clusters(pairwise_dist_matrix: ss.csr_matrix, eps: float,
         # have an excessive precursor m/z difference.
         order = np.argsort(clusters)
         reverse_order = np.argsort(order)
-        clusters[:], precursor_mzs = clusters[order], precursor_mzs[order]
+        clusters[:] = clusters[order]
+        precursor_mzs, rts = precursor_mzs[order], rts[order]
         logger.debug('Finetune %d initial unique clusters to not exceed %.2f '
-                     '%s precursor m/z tolerance', clusters[-1] + 1,
-                     precursor_tol_mass, precursor_tol_mode)
-        group_idx = nb.typed.List(_get_cluster_group_idx(clusters))
-        if len(group_idx) == 0:     # Only noise samples.
+                     '%s precursor m/z tolerance%s', clusters[-1] + 1,
+                     precursor_tol_mass, precursor_tol_mode,
+                     f' and {rt_tol} retention time tolerance'
+                     if rt_tol is not None else '')
+        if clusters[-1] == -1:     # Only noise samples.
             clusters.fill(-1)
         else:
+            group_idx = nb.typed.List(_get_cluster_group_idx(clusters))
             n_clusters = nb.typed.List(joblib.Parallel(n_jobs=-1)(
                 joblib.delayed(_postprocess_cluster)
                 (clusters[start_i:stop_i], precursor_mzs[start_i:stop_i],
-                 precursor_tol_mass, precursor_tol_mode, min_samples)
+                 rts[start_i:stop_i], precursor_tol_mass, precursor_tol_mode,
+                 rt_tol, min_samples)
                 for start_i, stop_i in group_idx))
             _assign_unique_cluster_labels(
                 clusters, group_idx, n_clusters, min_samples)
@@ -554,7 +564,8 @@ def _get_cluster_group_idx(clusters: np.ndarray) -> Iterator[Tuple[int, int]]:
 
 
 def _postprocess_cluster(cluster_labels: np.ndarray, cluster_mzs: np.ndarray,
-                         precursor_tol_mass: float, precursor_tol_mode: str,
+                         cluster_rts: np.ndarray, precursor_tol_mass: float,
+                         precursor_tol_mode: str, rt_tol: float,
                          min_samples: int) -> int:
     """
     Agglomerative clustering of the precursor m/z's within each initial
@@ -566,10 +577,15 @@ def _postprocess_cluster(cluster_labels: np.ndarray, cluster_mzs: np.ndarray,
         Array in which to write the cluster labels.
     cluster_mzs : np.ndarray
         Precursor m/z's of the samples in a single initial cluster.
+    cluster_rts : np.ndarray
+        Retention times of the samples in a single initial cluster.
     precursor_tol_mass : float
         Maximum precursor mass tolerance for points to be clustered together.
     precursor_tol_mode : str
         The unit of the precursor m/z tolerance ('Da' or 'ppm').
+    rt_tol : float
+        The retention time tolerance for points to be clustered together. If
+        `None`, do not restrict the retention time.
     min_samples : int
         The minimum number of samples in a cluster.
     Returns
@@ -594,11 +610,24 @@ def _postprocess_cluster(cluster_labels: np.ndarray, cluster_mzs: np.ndarray,
         # precursor m/z tolerance (`distance_threshold`).
         # Subtract 1 because fcluster starts with cluster label 1 instead of 0
         # (like scikit-learn does).
-        cluster_labels = fcluster(
+        cluster_assignments = fcluster(
             fastcluster.linkage(
                 squareform(pairwise_mz_diff, checks=False), 'complete'),
             precursor_tol_mass, 'distance') - 1
-        n_clusters = cluster_labels.max() + 1
+        # Optionally restrict clusters by their retention time as well.
+        if rt_tol is not None:
+            pairwise_rt_diff = pairwise_distances(cluster_rts.reshape(-1, 1))
+            cluster_assignments_rt = fcluster(
+                fastcluster.linkage(
+                    squareform(pairwise_rt_diff, checks=False), 'complete'),
+                rt_tol, 'distance') - 1
+            # Merge cluster assignments based on precursor m/z and RT.
+            # First prime factorization is used to get unique combined cluster
+            # labels, after which consecutive labels are obtained.
+            cluster_assignments = np.unique(
+                cluster_assignments * 2 + cluster_assignments_rt * 3,
+                return_inverse=True)[1]
+        n_clusters = cluster_assignments.max() + 1
         # Update cluster assignments.
         if n_clusters == 1:
             # Single homogeneous cluster.
@@ -608,11 +637,13 @@ def _postprocess_cluster(cluster_labels: np.ndarray, cluster_mzs: np.ndarray,
             n_clusters = 0
         else:
             unique, inverse, counts = np.unique(
-                cluster_labels, return_inverse=True, return_counts=True)
-            noise_clusters = np.where(counts < min_samples)[0]
-            unique[noise_clusters] = -1
-            cluster_labels[:] = unique[inverse]
-            n_clusters = len(counts) - len(noise_clusters)
+                cluster_assignments, return_inverse=True, return_counts=True)
+            non_noise_clusters = np.where(counts >= min_samples)[0]
+            labels = -np.ones_like(unique)
+            labels[non_noise_clusters] = np.unique(unique[non_noise_clusters],
+                                                   return_inverse=True)[1]
+            cluster_labels[:] = labels[inverse]
+            n_clusters = len(non_noise_clusters)
     return n_clusters
 
 
@@ -624,6 +655,7 @@ def _assign_unique_cluster_labels(cluster_labels: np.ndarray,
     """
     Make sure all cluster labels are unique after potential splitting of
     clusters to avoid excessive precursor m/z differences.
+
     Parameters
     ----------
     cluster_labels : np.ndarray
@@ -639,7 +671,8 @@ def _assign_unique_cluster_labels(cluster_labels: np.ndarray,
     current_label = 0
     for (start_i, stop_i), n_cluster in zip(group_idx, n_clusters):
         if n_cluster > 0 and stop_i - start_i >= min_samples:
-            cluster_labels[start_i:stop_i] += current_label
+            current_labels = cluster_labels[start_i:stop_i]
+            current_labels[current_labels != -1] += current_label
             current_label += n_cluster
         else:
             cluster_labels[start_i:stop_i].fill(-1)
