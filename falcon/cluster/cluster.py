@@ -594,11 +594,11 @@ def _postprocess_cluster(cluster_labels: np.ndarray, cluster_mzs: np.ndarray,
         # precursor m/z tolerance (`distance_threshold`).
         # Subtract 1 because fcluster starts with cluster label 1 instead of 0
         # (like scikit-learn does).
-        cluster_assignments = fcluster(
+        cluster_labels = fcluster(
             fastcluster.linkage(
                 squareform(pairwise_mz_diff, checks=False), 'complete'),
             precursor_tol_mass, 'distance') - 1
-        n_clusters = cluster_assignments.max() + 1
+        n_clusters = cluster_labels.max() + 1
         # Update cluster assignments.
         if n_clusters == 1:
             # Single homogeneous cluster.
@@ -607,14 +607,12 @@ def _postprocess_cluster(cluster_labels: np.ndarray, cluster_mzs: np.ndarray,
             # Only singletons.
             n_clusters = 0
         else:
-            cluster_assignments = cluster_assignments.reshape(1, -1)
-            label, labels = 0, np.arange(n_clusters).reshape(-1, 1)
-            # noinspection PyTypeChecker
-            for mask in cluster_assignments == labels:
-                if mask.sum() >= min_samples:
-                    cluster_labels[mask] = label
-                    label += 1
-            n_clusters = label
+            unique, inverse, counts = np.unique(
+                cluster_labels, return_inverse=True, return_counts=True)
+            noise_clusters = np.where(counts < min_samples)[0]
+            unique[noise_clusters] = -1
+            cluster_labels[:] = unique[inverse]
+            n_clusters = len(counts) - len(noise_clusters)
     return n_clusters
 
 
