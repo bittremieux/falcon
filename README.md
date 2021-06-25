@@ -22,7 +22,8 @@ If you use _falcon_ in your work, please cite the following publication:
 
 - Wout Bittremieux, Kris Laukens, William Stafford Noble, Pieter C. Dorrestein.
 **Large-scale tandem mass spectrum clustering using fast nearest neighbor
-searching.** _publication pending_ (2021).
+searching.** _Rapid Communications in Mass Spectrometry_, e9153 (2021).
+[doi:10.1002/rcm.9153](https://doi.org/10.1002/rcm.9153)
 
 Installation
 ------------
