@@ -62,10 +62,6 @@ class Config:
             '--export_include_singletons', action='store_true',
             help="Include singletons in the cluster representatives MGF file "
                  "(default: don't include singletons).")
-        self._parser.add_argument(
-            '--usi_pxd', default='USI000000',
-            help='ProteomeXchange dataset identifier to create Universal '
-                 'Spectrum Identifier references (default: %(default)s).')
 
         # CLUSTERING
         self._parser.add_argument(

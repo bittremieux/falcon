@@ -49,7 +49,6 @@ def main(args: Union[str, List[str]] = None) -> int:
     logger.debug('work_dir = %s', config.work_dir)
     logger.debug('overwrite = %s', config.overwrite)
     logger.debug('export_representatives = %s', config.export_representatives)
-    logger.debug('usi_pxd = %s', config.usi_pxd)
     logger.debug('precursor_tol = %.2f %s', *config.precursor_tol)
     logger.debug('rt_tol = %s', config.rt_tol)
     logger.debug('fragment_tol = %.2f', config.fragment_tol)
@@ -229,7 +228,6 @@ def main(args: Union[str, List[str]] = None) -> int:
         f_out.write(f'# overwrite = {config.overwrite}\n')
         f_out.write(f'# export_representatives = '
                     f'{config.export_representatives}\n')
-        f_out.write(f'# usi_pxd = {config.usi_pxd}\n')
         f_out.write(f'# precursor_tol = {config.precursor_tol[0]:.2f} '
                     f'{config.precursor_tol[1]}\n')
         f_out.write(f'# rt_tol = {config.rt_tol}\n')
