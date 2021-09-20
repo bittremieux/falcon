@@ -344,7 +344,7 @@ def _read_spectra(filename: str, mz_interval: int, work_dir: str) \
         The spectra read from the given file and their bucket filenames
         (based on precursor charge and m/z).
     """
-    spectra = []
+    filename, spectra = os.path.abspath(filename), []
     for spec in ms_io.get_spectra(filename):
         spec.filename = filename
         interval = _precursor_to_interval(
