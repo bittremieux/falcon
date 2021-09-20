@@ -208,7 +208,8 @@ def _build_query_ann_index(
             batch_stop = min(batch_start + batch_size, n_split)
             # noinspection PyArgumentList
             index.add_with_ids(vectors_split[batch_start:batch_stop],
-                               np.arange(batch_start, batch_stop))
+                               np.arange(batch_start, batch_stop,
+                                         dtype=np.int64))
         # Query the index to calculate NN distances.
         _dist_mz_interval(
             index, vectors_split, precursor_mzs[-1], rts[-1], batch_size,
