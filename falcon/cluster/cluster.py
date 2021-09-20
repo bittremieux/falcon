@@ -144,10 +144,10 @@ def _build_query_ann_index(
     Returns
     -------
     pd.DataFrame
-        Metadata (identifier, precursor charge, precursor m/z, retention time)
-        of the spectra for which indexes were built.
+        Metadata (filename, identifier, precursor charge, precursor m/z,
+        retention time) of the spectra for which indexes were built.
     """
-    identifiers, precursor_mzs, rts = [], [], []
+    filenames, identifiers, precursor_mzs, rts = [], [], [], []
     indptr_i = 0
     # Find neighbors per specified precursor m/z interval.
     for pkl_filename in tqdm.tqdm(bucket_filenames, desc='Buckets queried',
@@ -160,6 +160,7 @@ def _build_query_ann_index(
                 # Discard low-quality spectra.
                 if spec_processed is not None:
                     spectra_split.append(spec_processed)
+                    filenames.append(spec_processed.filename)
                     identifiers.append(spec_processed.identifier)
                     precursor_mzs_split.append(spec_processed.precursor_mz)
                     rts_split.append(spec_processed.retention_time)
@@ -218,10 +219,11 @@ def _build_query_ann_index(
         index.reset()
         indptr_i += n_split
     if len(identifiers) == 0:
-        return pd.DataFrame(columns=['identifier', 'precursor_mz',
+        return pd.DataFrame(columns=['filename', 'spectrum_id', 'precursor_mz',
                                      'retention_time'])
     else:
-        return pd.DataFrame({'identifier': identifiers,
+        return pd.DataFrame({'filename': filenames,
+                             'spectrum_id': identifiers,
                              'precursor_mz': np.hstack(precursor_mzs),
                              'retention_time': np.hstack(rts)})
 

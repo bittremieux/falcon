@@ -164,7 +164,7 @@ def main(args: Union[str, List[str]] = None) -> int:
                     config.precursor_tol[0], config.precursor_tol[1],
                     config.rt_tol, config.n_neighbors, config.n_neighbors_ann,
                     config.batch_size, config.n_probe)
-            metadata.insert(1, 'precursor_charge', charge)
+            metadata.insert(2, 'precursor_charge', charge)
             logger.debug('Export pairwise distance matrix to file %s',
                          dist_filename)
             ss.save_npz(dist_filename, pairwise_dist_matrix, False)
@@ -220,7 +220,8 @@ def main(args: Union[str, List[str]] = None) -> int:
                 'clusters to output file %s', n_spectra_clustered, n_clusters,
                 f'{config.output_filename}.csv')
     clusters_all = (pd.concat(clusters_all, ignore_index=True)
-                    .sort_values('identifier', key=natsort.natsort_keygen()))
+                    .sort_values(['filename', 'spectrum_id'],
+                                 key=natsort.natsort_keygen()))
     with open(f'{config.output_filename}.csv', 'a') as f_out:
         # Metadata.
         f_out.write(f'# falcon version {__version__}\n')
@@ -271,7 +272,8 @@ def main(args: Union[str, List[str]] = None) -> int:
         representatives = []
         for spectra in joblib.Parallel(n_jobs=-1)(
                 joblib.delayed(_find_spectra_pkl)(
-                    fn, spectra.set_index('identifier')['cluster'].to_dict())
+                    fn, (spectra.set_index(['filename', 'spectrum_id'])
+                         ['cluster'].to_dict()))
                 for fn, spectra in representative_info.groupby('filename')):
             representatives.extend(spectra)
         representatives.sort(key=lambda spec: spec.cluster)
@@ -300,8 +302,8 @@ def _prepare_spectra() -> Dict[int, Tuple[int, List[str]]]:
     logger.info('Read spectra from %d peak file(s)', len(input_filenames))
     spectra = collections.defaultdict(lambda: collections.defaultdict(list))
     for file_spectra in joblib.Parallel(n_jobs=-1)(
-            joblib.delayed(_read_spectra)(filename, config.usi_pxd,
-                                          config.mz_interval, config.work_dir)
+            joblib.delayed(_read_spectra)(
+                filename, config.mz_interval, config.work_dir)
             for filename in input_filenames):
         for spec, pkl_filename in file_spectra:
             spectra[spec.precursor_charge][pkl_filename].append(spec)
@@ -323,8 +325,8 @@ def _prepare_spectra() -> Dict[int, Tuple[int, List[str]]]:
     return buckets
 
 
-def _read_spectra(filename: str, usi_pxd: str, mz_interval: int,
-                  work_dir: str) -> List[Tuple[MsmsSpectrum, str]]:
+def _read_spectra(filename: str, mz_interval: int, work_dir: str) \
+        -> List[Tuple[MsmsSpectrum, str]]:
     """
     Get MS/MS spectra from the given file.
 
@@ -332,8 +334,6 @@ def _read_spectra(filename: str, usi_pxd: str, mz_interval: int,
     ----------
     filename : str
         The path of the peak file to be read.
-    usi_pxd : str
-        ProteomeXchange dataset identifier to create USI references.
     mz_interval : int
         The width of each m/z interval.
     work_dir : str
@@ -348,7 +348,7 @@ def _read_spectra(filename: str, usi_pxd: str, mz_interval: int,
     """
     spectra = []
     for spec in ms_io.get_spectra(filename):
-        spec.identifier = f'mzspec:{usi_pxd}:{spec.identifier}'
+        spec.filename = filename
         interval = _precursor_to_interval(
             spec.precursor_mz, spec.precursor_charge, mz_interval)
         pkl_filename = os.path.join(work_dir, 'spectra',
@@ -408,7 +408,8 @@ def _write_spectra_pkl(filename: str, spectra: List[MsmsSpectrum]) -> int:
     return len(spectra)
 
 
-def _find_spectra_pkl(filename: str, usis_to_read: Dict[str, int]) \
+def _find_spectra_pkl(
+        filename: str, spectra_to_read: Dict[Tuple[str, str], int]) \
         -> List[MsmsSpectrum]:
     """
     Read spectra with the specified USIs from a pkl file.
@@ -417,9 +418,10 @@ def _find_spectra_pkl(filename: str, usis_to_read: Dict[str, int]) \
     ----------
     filename : str
         Name of the pkl file from which the spectra are read.
-    usis_to_read : Dict[str, int]
-        Dict with as keys the USIs of the spectra to read from the pkl file,
-        and as values the cluster labels that will be assigned to the spectra.
+    spectra_to_read : Dict[Tuple[str, str], int]
+        Dict with as keys tuples of the filename and identifier of the spectra
+        to read from the pkl file, and as values the cluster labels that will
+        be assigned to the spectra.
 
     Returns
     -------
@@ -429,13 +431,14 @@ def _find_spectra_pkl(filename: str, usis_to_read: Dict[str, int]) \
     spectra_found = []
     with open(filename, 'rb') as f_in:
         for spec in pickle.load(f_in):
-            if spec.identifier in usis_to_read:
-                spec.cluster = usis_to_read[spec.identifier]
+            spectrum_key = spec.filename, spec.identifier
+            if spectrum_key in spectra_to_read:
+                spec.cluster = spectra_to_read[spectrum_key]
                 spectra_found.append(spec)
-                if len(spectra_found) == len(usis_to_read):
+                if len(spectra_found) == len(spectra_to_read):
                     return spectra_found
-    raise ValueError(f'{len(usis_to_read) - len(spectra_found)} spectra not '
-                     f'found in file {filename}')
+    raise ValueError(f'{len(spectra_to_read) - len(spectra_found)} spectra not'
+                     f' found in file {filename}')
 
 
 if __name__ == '__main__':

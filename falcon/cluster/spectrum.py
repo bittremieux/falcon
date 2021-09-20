@@ -10,8 +10,9 @@ import spectrum_utils.spectrum as sus
 
 
 MsmsSpectrumNb = collections.namedtuple(
-    'MsmsSpectrumNb', ['identifier', 'precursor_mz', 'precursor_charge',
-                       'retention_time', 'mz', 'intensity'])
+    'MsmsSpectrumNb',
+    ['filename', 'identifier', 'precursor_mz', 'precursor_charge',
+     'retention_time', 'mz', 'intensity'])
 
 
 @nb.njit
@@ -135,9 +136,10 @@ def process_spectrum(spectrum: sus.MsmsSpectrum,
     spectrum = spectrum.scale_intensity(scaling, max_rank=max_peaks_used)
     intensity = _norm_intensity(spectrum.intensity)
 
-    return MsmsSpectrumNb(spectrum.identifier, spectrum.precursor_mz,
-                          spectrum.precursor_charge, spectrum.retention_time,
-                          spectrum.mz, intensity)
+    # noinspection PyUnresolvedReferences
+    return MsmsSpectrumNb(spectrum.filename, spectrum.identifier,
+                          spectrum.precursor_mz, spectrum.precursor_charge,
+                          spectrum.retention_time, spectrum.mz, intensity)
 
 
 @nb.njit('Tuple((u4, f4, f4))(f4, f4, f4)')
