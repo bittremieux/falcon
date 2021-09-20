@@ -185,6 +185,7 @@ def main(args: Union[str, List[str]] = None) -> int:
         # Make sure that different charges have non-overlapping cluster labels.
         mask_no_noise = clusters != -1
         clusters[mask_no_noise] += current_label
+        # noinspection PyUnresolvedReferences
         current_label = (np.amax(clusters[mask_no_noise]) + 1
                          if any(mask_no_noise) else current_label)
         # Save cluster assignments.
@@ -199,6 +200,7 @@ def main(args: Union[str, List[str]] = None) -> int:
                 representative_info.append(metadata.iloc[charge_repr])
             if config.export_include_singletons:
                 representative_info.append(metadata.loc[~mask_no_noise])
+            # noinspection PyUnresolvedReferences
             logger.debug('Extract %d cluster representative %sidentifiers',
                          len(charge_repr) if charge_repr is not None else 0,
                          f'and {(~mask_no_noise).sum()} singleton spectra '
@@ -397,6 +399,7 @@ def _write_spectra_pkl(filename: str, spectra: List[MsmsSpectrum]) -> int:
         The number of spectra in the file.
     """
     # Radix sort on integers with O(n) time complexity.
+    # noinspection PyUnresolvedReferences
     order = np.argsort(np.asarray([int(spec.precursor_mz * 10000)
                                    for spec in spectra], dtype=np.int32),
                        kind='stable')
