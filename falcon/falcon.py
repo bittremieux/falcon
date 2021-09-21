@@ -306,18 +306,20 @@ def _prepare_spectra() -> Dict[int, Tuple[int, List[str]]]:
         (pkl_filehandles, spectra_queue, lock))
     pkl_writers.close()
     pkl_writers.join()
-    for filehandle in pkl_filehandles.values():
-        filehandle.close()
     # Make sure the spectra in the individual files are sorted by their
     # precursor m/z and count the number of spectra per precursor charge.
     buckets: Dict = collections.defaultdict(lambda: [0, []])
-    for filename, n_spectra_file in joblib.Parallel(n_jobs=1)(
-            joblib.delayed(_sort_spectra_pkl)(filename)
-            for filename in pkl_filehandles.keys()):
+    for filename, n_spectra_file in zip(
+            pkl_filehandles.keys(),
+            joblib.Parallel(n_jobs=-1, backend='threading')(
+                joblib.delayed(_sort_spectra_pkl)(filehandle)
+                for filehandle in pkl_filehandles.values())):
         charge = os.path.basename(filename)
         charge = int(charge[:charge.index('_')])
         buckets[charge][0] += n_spectra_file
         buckets[charge][1].append(filename)
+    for filehandle in pkl_filehandles.values():
+        filehandle.close()
     n_spectra, n_buckets = 0, 0
     for charge, (n_spectra_charge, filenames) in buckets.items():
         n_spectra += n_spectra_charge
@@ -431,38 +433,58 @@ def _write_spectra_pkl(pkl_filehandles: Dict[str, BinaryIO],
                     protocol=pickle.HIGHEST_PROTOCOL)
 
 
-def _sort_spectra_pkl(filename: str) -> Tuple[str, int]:
+def _sort_spectra_pkl(filehandle: BinaryIO) -> int:
     """
-    Read and write spectra from a pickled file sorted by their precursor m/z.
+    Sort spectra in a pickle file by their precursor m/z.
 
     Parameters
     ----------
-    filename : str
-        The pickled spectrum file name.
+    filehandle : BinaryIO
+        The pickled spectrum file handle.
 
     Returns
     -------
-    Tuple[str, int]
-        A tuple with the file name and the number of spectra in the file.
+    int
+        The number of spectra in the file.
     """
-    with open(filename, 'rb+') as filehandle:
-        # Read all the spectra from the pickle file.
-        spectra = []
-        while True:
-            try:
-                spectra.append(pickle.load(filehandle))
-            except EOFError:
-                break
-        # Radix sort on integers with O(n) time complexity.
-        # noinspection PyUnresolvedReferences
-        order = np.argsort(np.asarray([int(spec.precursor_mz * 10000)
-                                       for spec in spectra], dtype=np.int32),
-                           kind='stable')
-        # Write the sorted spectra to the pickle file.
-        filehandle.seek(0)
-        pickle.dump([spectra[i] for i in order], filehandle,
-                    protocol=pickle.HIGHEST_PROTOCOL)
-        return filename, len(spectra)
+    # Read all the spectra from the pickle file.
+    spectra = []
+    filehandle.seek(0)
+    while True:
+        try:
+            spectra.append(pickle.load(filehandle))
+        except EOFError:
+            break
+    # Write the sorted spectra to the pickle file.
+    order = _get_precursor_order(
+        np.asarray([spec.precursor_mz for spec in spectra]))
+    filehandle.seek(0)
+    pickle.dump([spectra[i] for i in order], filehandle,
+                protocol=pickle.HIGHEST_PROTOCOL)
+    return len(spectra)
+
+
+@nb.njit
+def _get_precursor_order(precursor_mzs: np.ndarray) -> np.ndarray:
+    """
+    Get the precursor m/z sorting order.
+
+    This should use radix sort on integers with O(n) time complexity
+    internally.
+
+    Parameters
+    ----------
+    precursor_mzs : np.ndarray
+        The precursor m/z's for which the sorting order is to be determined.
+
+    Returns
+    -------
+    np.ndarray
+        The order to sort the given precursor m/z's.
+    """
+    # noinspection PyUnresolvedReferences
+    return np.argsort(np.asarray(precursor_mzs * 10000).astype(np.int32),
+                      kind='mergesort')
 
 
 def _find_spectra_pkl(
