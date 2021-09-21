@@ -51,15 +51,15 @@ Example _falcon_ run with some relevant command-line arguments:
 This will cluster all MS/MS spectra in mzML files in the `peak` directory with
 the specified settings and write (i) the cluster assignments to the `falcon.csv` file, and (ii) the cluster representatives to the `falcon.mgf` file.
 
-For detailed information on all available settings, run `falcon -h` or
-`falcon --help`.
-
 Important settings
 ------------------
 
 Here we provide information on the most important settings that influence the
 _falcon_ clustering performance. All settings have sensible default values
 which should give good results for a wide variety of datasets.
+
+For detailed information on all available settings, run `falcon -h` or
+`falcon --help`.
 
 **Spectrum comparison**
 
@@ -78,7 +78,31 @@ your data and optional spectrum preprocessing configured in _falcon_. Values
 between 0.05 and 0.15 will typically generate a pure clustering result. For
 more aggressive clustering values up to 0.30 can be used.
 
+**Spectrum preprocessing**
+
+There are several options to configure spectrum preprocessing prior to the
+clustering. The default settings are intended for clustering bottom-up
+proteomics data. When analyzing metabolomics or top-down data, these settings
+likely need to be adjusted accordingly.
+
+- `min_peaks` and `min_mz_range`: Discard spectra with fewer than the specified
+number of peaks, or peaks spanning a smaller _m_/_z_ range between the minimum
+and maximum _m_/_z_ value. Default values are minimum 5 peaks and 250 _m_/_z_
+range. It is recommended to reduce these values when clustering metabolomics
+data.
+- `min_mz` and `max_mz`: The minimum and maximum peak _m_/_z_ value,
+respectively. Peaks outside these values will be discarded. Default values are
+101 _m_/_z_ and 500 _m_/_z_, respectively.
+- `scaling`: Scale the peak intensities by their square root, logarithm, rank,
+or no scaling. Default is no scaling, with square root scaling often giving good
+results as well. Note that the scaling method can influence the cosine threshold
+`eps`.
+
 **Nearest neighbor indexing** (see below)
+
+The settings for nearest neighbor indexing can be modified to tune clustering
+time versus accuracy. Changing these settings is only recommended for advanced
+users.
 
 - `n_probe`: The maximum number of lists in the inverted index to inspect
 during querying. Inspecting fewer lists will run faster but will give slightly
@@ -91,11 +115,6 @@ results. `n_neighbors_ann` should be equal or greater than `n_neighbors`.
 searching. Larger vectors will minimize the number of hash collisions and more
 accurately approximate the true cosine distance, at the expense of longer
 nearest neighbor searching and memory requirements.
-
-**Spectrum preprocessing**
-
-- There are several options to configure spectrum preprocessing prior to the
-clustering. See the command-line documentation for more information.
 
 How does it work?
 -----------------
