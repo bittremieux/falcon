@@ -402,7 +402,7 @@ def _precursor_to_interval(mz: float, charge: int, interval_width: int) -> int:
         charge belongs.
     """
     hydrogen_mass, cluster_width = 1.00794, 1.0005079
-    neutral_mass = (mz - hydrogen_mass) * charge
+    neutral_mass = (mz - hydrogen_mass) * max(abs(charge), 1)
     return round(neutral_mass / cluster_width) // interval_width
 
 
