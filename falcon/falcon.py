@@ -1,7 +1,9 @@
 import collections
 import functools
+import itertools
 import glob
 import logging
+import multiprocessing
 import os
 import pickle
 import queue
@@ -278,17 +280,32 @@ def _prepare_spectra() -> Dict[int, Tuple[int, List[str]]]:
     input_filenames = [fn for pattern in config.input_filenames
                        for fn in glob.glob(pattern)]
     logger.info('Read spectra from %d peak file(s)', len(input_filenames))
-    pkl_filehandles = {}
+    # Use multiple worker processes to read the peak files.
+    max_file_workers = min(len(input_filenames), multiprocessing.cpu_count())
+    file_queue = queue.Queue()
+    # Restrict the number of spectra simultaneously in memory to avoid
+    # excessive memory requirements.
     max_spectra_in_memory = 1_000_000
     spectra_queue = queue.Queue(maxsize=max_spectra_in_memory)
-    threading.Thread(
-        target=_write_spectra_pkl, daemon=True,
-        args=(pkl_filehandles, spectra_queue)).start()
-    # Read all spectra and dump them to pickle files using the worker thread.
-    for filename in input_filenames:
-        _read_spectra_to_queue(filename, spectra_queue)
-    # Finish dumping all spectra to their pickle files.
-    spectra_queue.join()
+    # Include sentinels at the end to stop the worker file readers.
+    for filename in itertools.chain(
+            input_filenames, itertools.repeat(None, max_file_workers)):
+        file_queue.put(filename)
+    # Read the peak files and put their spectra in the queue for consumption.
+    peak_readers = multiprocessing.pool.ThreadPool(
+        max_file_workers, _read_spectra_queue, (file_queue, spectra_queue))
+    peak_readers.close()
+    peak_readers.join()
+    # Write the spectra to (unsorted) pickle files.
+    for _ in range(max_file_workers):   # Add sentinels to indicate stopping.
+        spectra_queue.put((None, None))
+    pkl_filehandles = {}
+    lock = multiprocessing.Lock()
+    pkl_writers = multiprocessing.pool.ThreadPool(
+        max_file_workers, _write_spectra_pkl,
+        (pkl_filehandles, spectra_queue, lock))
+    pkl_writers.close()
+    pkl_writers.join()
     for filehandle in pkl_filehandles.values():
         filehandle.close()
     # Make sure the spectra in the individual files are sorted by their
@@ -311,19 +328,25 @@ def _prepare_spectra() -> Dict[int, Tuple[int, List[str]]]:
     return dict(buckets)
 
 
-def _read_spectra_to_queue(filename: str, spectra_queue: queue.Queue) -> None:
+def _read_spectra_queue(file_queue: queue.Queue, spectra_queue: queue.Queue) \
+        -> None:
     """
-    Get the spectra from the given file and store them in the queue.
+    Get the spectra from the file queue and store them in the spectra queue.
 
     Parameters
     ----------
-    filename : str
-        The path of the peak file to be read.
+    file_queue : queue.Queue
+        Queue from which the file names are retrieved.
     spectra_queue : queue.Queue
         Queue in which spectra are stored.
     """
-    for spec in _read_spectra(filename, config.mz_interval, config.work_dir):
-        spectra_queue.put(spec)
+    while True:
+        filename = file_queue.get()
+        if filename is None:
+            return
+        for spec in _read_spectra(filename, config.mz_interval,
+                                  config.work_dir):
+            spectra_queue.put(spec)
 
 
 def _read_spectra(filename: str, mz_interval: int, work_dir: str) \
@@ -382,7 +405,8 @@ def _precursor_to_interval(mz: float, charge: int, interval_width: int) -> int:
 
 
 def _write_spectra_pkl(pkl_filehandles: Dict[str, BinaryIO],
-                       spectra_queue: queue.Queue) -> None:
+                       spectra_queue: queue.Queue,
+                       lock: multiprocessing.Lock) -> None:
     """
     Read spectra from a queue and write individually to a pickle file.
 
@@ -392,14 +416,19 @@ def _write_spectra_pkl(pkl_filehandles: Dict[str, BinaryIO],
         File handles of the pickle files to dump spectra.
     spectra_queue : queue.Queue
         Queue from which to read spectra for writing to pickle files.
+    lock : multiprocessing.Lock
+        Lock to avoid race conditions during file handle creation.
     """
     while True:
         spec, pkl_filename = spectra_queue.get()
+        if spec is None:
+            return
+        lock.acquire()
         if pkl_filename not in pkl_filehandles:
             pkl_filehandles[pkl_filename] = open(pkl_filename, 'wb+')
+        lock.release()
         pickle.dump(spec, pkl_filehandles[pkl_filename],
                     protocol=pickle.HIGHEST_PROTOCOL)
-        spectra_queue.task_done()
 
 
 def _sort_spectra_pkl(filename: str) -> Tuple[str, int]:
