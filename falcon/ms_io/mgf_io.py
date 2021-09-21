@@ -1,4 +1,3 @@
-import os
 from typing import Dict, IO, Iterable, Union
 
 import pyteomics.mgf
@@ -21,20 +20,7 @@ def get_spectra(source: Union[IO, str]) -> Iterable[sus.MsmsSpectrum]:
         An iterator over the spectra in the given file.
     """
     with pyteomics.mgf.MGF(source) as f_in:
-        filename = os.path.splitext(os.path.basename(f_in.name))[0]
         for spectrum_i, spectrum_dict in enumerate(f_in):
-            # USI-inspired cluster identifier.
-            if 'scans' in spectrum_dict['params']:
-                # Use a scan number as identifier.
-                spectrum_dict['params']['title'] = \
-                    f'{filename}:scan:{spectrum_dict["params"]["scans"]}'
-            elif 'scan' in spectrum_dict['params']:
-                spectrum_dict['params']['title'] = \
-                    f'{filename}:scan:{spectrum_dict["params"]["scan"]}'
-            else:
-                # Use the index in the MGF file as identifier.
-                spectrum_dict['params']['title'] = \
-                    f'{filename}:index:{spectrum_i}'
             try:
                 yield _parse_spectrum(spectrum_dict)
             except (ValueError, KeyError):
