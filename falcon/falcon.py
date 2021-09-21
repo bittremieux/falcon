@@ -181,45 +181,27 @@ def main(args: Union[str, List[str]] = None) -> int:
             metadata['retention_time'].values, config.precursor_tol[0],
             config.precursor_tol[1], config.rt_tol)
         # Make sure that different charges have non-overlapping cluster labels.
-        mask_no_noise = clusters != -1
-        clusters[mask_no_noise] += current_label
+        clusters += current_label
         # noinspection PyUnresolvedReferences
-        current_label = (np.amax(clusters[mask_no_noise]) + 1
-                         if any(mask_no_noise) else current_label)
+        current_label = np.amax(clusters) + 1
         # Save cluster assignments.
         metadata['cluster'] = clusters
         clusters_all.append(metadata)
         # Extract identifiers for cluster representatives (medoids).
         if config.export_representatives:
-            charge_repr = cluster.get_cluster_representatives(
+            charge_representatives = cluster.get_cluster_representatives(
                 clusters, pairwise_dist_matrix.indptr,
                 pairwise_dist_matrix.indices, pairwise_dist_matrix.data)
-            if charge_repr is not None:
-                representative_info.append(metadata.iloc[charge_repr])
-            if config.export_include_singletons:
-                representative_info.append(metadata.loc[~mask_no_noise])
-            # noinspection PyUnresolvedReferences
-            logger.debug('Extract %d cluster representative %sidentifiers',
-                         len(charge_repr) if charge_repr is not None else 0,
-                         f'and {(~mask_no_noise).sum()} singleton spectra '
-                         if config.export_include_singletons else '')
+            representative_info.append(metadata.iloc[charge_representatives])
 
     # Export cluster memberships and representative spectra.
-    n_clusters, n_spectra_clustered = 0, 0
-    for clust in clusters_all:
-        clust_no_noise = clust[clust['cluster'] != -1]
-        n_clusters += clust_no_noise['cluster'].nunique()
-        n_spectra_clustered += len(clust_no_noise)
-    if n_spectra_clustered == 0:
-        logger.error('No valid spectra found for clustering')
-        logging.shutdown()
-        return 1
-    logger.info('Export cluster assignments of %d spectra to %d unique '
-                'clusters to output file %s', n_spectra_clustered, n_clusters,
-                f'{config.output_filename}.csv')
     clusters_all = (pd.concat(clusters_all, ignore_index=True)
                     .sort_values(['filename', 'spectrum_id'],
                                  key=natsort.natsort_keygen()))
+    logger.info('Export cluster assignments of %d spectra to %d unique '
+                'clusters to output file %s',
+                len(clusters_all), clusters_all['cluster'].nunique(),
+                f'{config.output_filename}.csv')
     with open(f'{config.output_filename}.csv', 'a') as f_out:
         # Metadata.
         f_out.write(f'# falcon version {__version__}\n')
@@ -252,10 +234,8 @@ def main(args: Union[str, List[str]] = None) -> int:
         clusters_all.to_csv(f_out, index=False, chunksize=1000000)
     if config.export_representatives:
         representative_info = pd.concat(representative_info, ignore_index=True)
-        logger.info('Export %d cluster representative spectra %sto output '
-                    'file %s', len(representative_info),
-                    ('(including singletons) '
-                     if config.export_include_singletons else ''),
+        logger.info('Export %d cluster representative spectra to output file '
+                    '%s', len(representative_info),
                     f'{config.output_filename}.mgf')
         # Get the spectra corresponding to the cluster representatives.
         representative_info['pkl'] = representative_info.apply(

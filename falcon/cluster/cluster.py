@@ -522,13 +522,15 @@ def generate_clusters(pairwise_dist_matrix: ss.csr_matrix, eps: float,
         reverse_order = np.argsort(order)
         clusters[:] = clusters[order]
         precursor_mzs, rts = precursor_mzs[order], rts[order]
-        logger.debug('Finetune %d initial unique clusters to not exceed %.2f '
-                     '%s precursor m/z tolerance%s', clusters[-1] + 1,
-                     precursor_tol_mass, precursor_tol_mode,
+        logger.debug('Finetune %d initial unique non-singleton clusters to not'
+                     ' exceed %.2f %s precursor m/z tolerance%s',
+                     clusters[-1] + 1, precursor_tol_mass, precursor_tol_mode,
                      f' and {rt_tol} retention time tolerance'
                      if rt_tol is not None else '')
         if clusters[-1] == -1:     # Only noise samples.
             clusters.fill(-1)
+            noise_mask = np.ones_like(clusters, dtype=np.bool_)
+            n_clusters, n_noise = 0, len(noise_mask)
         else:
             group_idx = nb.typed.List(_get_cluster_group_idx(clusters))
             n_clusters = nb.typed.List(joblib.Parallel(n_jobs=-1)(
@@ -540,9 +542,14 @@ def generate_clusters(pairwise_dist_matrix: ss.csr_matrix, eps: float,
             _assign_unique_cluster_labels(
                 clusters, group_idx, n_clusters, min_samples)
             clusters = clusters[reverse_order]
-        # noinspection PyUnresolvedReferences
-        logger.debug('%d unique clusters after precursor m/z finetuning',
-                     np.amax(clusters) + 1)
+            noise_mask = clusters == -1
+            # noinspection PyUnresolvedReferences
+            n_clusters, n_noise = np.amax(clusters) + 1, noise_mask.sum()
+        logger.debug('%d unique non-singleton clusters after precursor m/z '
+                     'finetuning, %d total clusters',
+                     n_clusters, n_clusters + n_noise)
+        # Reassign noise points to singleton clusters.
+        clusters[noise_mask] = np.arange(n_clusters, n_clusters + n_noise)
         return np.asarray(clusters)
 
 
@@ -711,17 +718,11 @@ def get_cluster_representatives(clusters: np.ndarray,
     Returns
     -------
     Optional[np.ndarray]
-        The indexes of the medoid elements for all non-noise clusters, or None
-        if only noise clusters are present.
+        The indexes of the medoid elements for all clusters.
     """
+    # Find the indexes of the representatives for each unique cluster.
     # noinspection PyUnresolvedReferences
     order, min_i = np.argsort(clusters), 0
-    while min_i < clusters.shape[0] and clusters[order[min_i]] == -1:
-        min_i += 1
-    # Only noise clusters.
-    if min_i == clusters.shape[0]:
-        return None
-    # Find the indexes of the representatives for each unique cluster.
     cluster_idx, max_i = [], min_i
     while max_i < order.shape[0]:
         while (max_i < order.shape[0] and

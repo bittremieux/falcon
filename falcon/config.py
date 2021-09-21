@@ -58,10 +58,6 @@ class Config:
             '--export_representatives', action='store_true',
             help='Export cluster representatives to an MGF file '
                  '(default: no export).')
-        self._parser.add_argument(
-            '--export_include_singletons', action='store_true',
-            help="Include singletons in the cluster representatives MGF file "
-                 "(default: don't include singletons).")
 
         # CLUSTERING
         self._parser.add_argument(
