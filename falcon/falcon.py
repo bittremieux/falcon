@@ -53,7 +53,6 @@ def main(args: Union[str, List[str]] = None) -> int:
     logger.debug('rt_tol = %s', config.rt_tol)
     logger.debug('fragment_tol = %.2f', config.fragment_tol)
     logger.debug('eps = %.3f', config.eps)
-    logger.debug('min_samples = %d', config.min_samples)
     logger.debug('mz_interval = %d', config.mz_interval)
     logger.debug('hash_len = %d', config.hash_len)
     logger.debug('n_neighbors = %d', config.n_neighbors)
@@ -178,9 +177,9 @@ def main(args: Union[str, List[str]] = None) -> int:
             continue
         # Cluster using the pairwise distance matrix.
         clusters = cluster.generate_clusters(
-            pairwise_dist_matrix, config.eps, config.min_samples,
-            metadata['precursor_mz'].values, metadata['retention_time'].values,
-            config.precursor_tol[0], config.precursor_tol[1], config.rt_tol)
+            pairwise_dist_matrix, config.eps, metadata['precursor_mz'].values,
+            metadata['retention_time'].values, config.precursor_tol[0],
+            config.precursor_tol[1], config.rt_tol)
         # Make sure that different charges have non-overlapping cluster labels.
         mask_no_noise = clusters != -1
         clusters[mask_no_noise] += current_label
@@ -233,7 +232,6 @@ def main(args: Union[str, List[str]] = None) -> int:
         f_out.write(f'# rt_tol = {config.rt_tol}\n')
         f_out.write(f'# fragment_tol = {config.fragment_tol:.2f}\n')
         f_out.write(f'# eps = {config.eps:.3f}\n')
-        f_out.write(f'# min_samples = {config.min_samples}\n')
         f_out.write(f'# mz_interval = {config.mz_interval}\n')
         f_out.write(f'# hash_len = {config.hash_len}\n')
         f_out.write(f'# n_neighbors = {config.n_neighbors}\n')

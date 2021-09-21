@@ -386,6 +386,7 @@ def _get_neighbors_idx(values: np.ndarray, start_i: int, stop_i: int,
             max_value = batch_values[-1] + batch_values[-1] * tol / 10 ** 6
         # noinspection PyUnboundLocalVariable
         min_value, max_value = max(0, min_value), max(0, max_value)
+        # noinspection PyUnresolvedReferences
         match_i = np.searchsorted(values, [min_value, max_value])
         match_values_i = np.arange(match_i[0], match_i[1])
         match_values = values[match_i[0]:match_i[1]].reshape((1, -1))
@@ -404,7 +405,7 @@ def _get_neighbors_idx(values: np.ndarray, start_i: int, stop_i: int,
     elif tol_mode == 'ppm':
         masks = (np.abs(batch_values - match_values) / match_values * 10 ** 6
                  < tol)
-    # noinspection PyUnboundLocalVariable
+    # noinspection PyUnboundLocalVariable, PyUnresolvedReferences
     return [np.sort(match_values_i[mask]) for mask in masks]
 
 
@@ -433,6 +434,7 @@ def _intersect_idx_ann_mz(idx_ann: np.ndarray, idx_mz: np.ndarray,
         A mask to select the joint identifiers in the `idx_ann` array.
     """
     i_mz = 0
+    # noinspection PyUnresolvedReferences
     idx_ann_order = (np.argsort(idx_ann) if not is_sorted
                      else np.arange(len(idx_ann)))
     idx = []
@@ -449,14 +451,14 @@ def _intersect_idx_ann_mz(idx_ann: np.ndarray, idx_mz: np.ndarray,
     if max_neighbors is None or max_neighbors >= len(idx):
         return idx
     else:
+        # noinspection PyUnresolvedReferences
         return np.partition(idx, max_neighbors)[:max_neighbors]
 
 
 def generate_clusters(pairwise_dist_matrix: ss.csr_matrix, eps: float,
-                      min_samples: int, precursor_mzs: np.ndarray,
-                      rts: np.ndarray, precursor_tol_mass: float,
-                      precursor_tol_mode: str, rt_tol: float) \
-        -> np.ndarray:
+                      precursor_mzs: np.ndarray, rts: np.ndarray,
+                      precursor_tol_mass: float, precursor_tol_mode: str,
+                      rt_tol: float) -> np.ndarray:
     """
     DBSCAN clustering of the given pairwise distance matrix.
 
@@ -467,9 +469,6 @@ def generate_clusters(pairwise_dist_matrix: ss.csr_matrix, eps: float,
     eps : float
         The maximum distance between two samples for one to be considered as in
         the neighborhood of the other.
-    min_samples : int
-        The number of samples in a neighborhood for a point to be considered as
-        a core point. This includes the point itself.
     precursor_mzs : np.ndarray
         Precursor m/z's matching the pairwise distance matrix.
     rts : np.ndarray
@@ -488,6 +487,7 @@ def generate_clusters(pairwise_dist_matrix: ss.csr_matrix, eps: float,
         Cluster labels. Noisy samples are given the label -1.
     """
     # DBSCAN clustering using the precomputed pairwise distance matrix.
+    min_samples = 2
     logger.debug('DBSCAN clustering (eps=%.4f, min_samples=%d) of precomputed '
                  'pairwise distance matrix', eps, min_samples)
     with tempfile.NamedTemporaryFile() as mmap_file:
@@ -497,6 +497,7 @@ def generate_clusters(pairwise_dist_matrix: ss.csr_matrix, eps: float,
         mask = pairwise_dist_matrix.data <= eps
         indices = pairwise_dist_matrix.indices[mask].astype(np.intp)
         indptr = np.zeros(len(mask) + 1, dtype=np.int64)
+        # noinspection PyUnresolvedReferences
         np.cumsum(mask, out=indptr[1:])
         indptr = indptr[pairwise_dist_matrix.indptr]
         neighborhoods = np.split(indices, indptr[1:-1])
@@ -509,12 +510,15 @@ def generate_clusters(pairwise_dist_matrix: ss.csr_matrix, eps: float,
         n_neighbors = np.fromiter(map(len, neighborhoods), np.uint32)
         core_samples = n_neighbors >= min_samples
         # Run Scikit-Learn DBSCAN.
+        # noinspection PyUnresolvedReferences
         neighborhoods_arr = np.empty(len(neighborhoods), dtype=np.object)
         neighborhoods_arr[:] = neighborhoods
         dbscan_inner(core_samples, neighborhoods_arr, clusters)
         # Refine initial clusters to make sure spectra within a cluster don't
         # have an excessive precursor m/z difference.
+        # noinspection PyUnresolvedReferences
         order = np.argsort(clusters)
+        # noinspection PyUnresolvedReferences
         reverse_order = np.argsort(order)
         clusters[:] = clusters[order]
         precursor_mzs, rts = precursor_mzs[order], rts[order]
@@ -536,6 +540,7 @@ def generate_clusters(pairwise_dist_matrix: ss.csr_matrix, eps: float,
             _assign_unique_cluster_labels(
                 clusters, group_idx, n_clusters, min_samples)
             clusters = clusters[reverse_order]
+        # noinspection PyUnresolvedReferences
         logger.debug('%d unique clusters after precursor m/z finetuning',
                      np.amax(clusters) + 1)
         return np.asarray(clusters)
@@ -709,6 +714,7 @@ def get_cluster_representatives(clusters: np.ndarray,
         The indexes of the medoid elements for all non-noise clusters, or None
         if only noise clusters are present.
     """
+    # noinspection PyUnresolvedReferences
     order, min_i = np.argsort(clusters), 0
     while min_i < clusters.shape[0] and clusters[order[min_i]] == -1:
         min_i += 1
@@ -768,6 +774,7 @@ def _get_cluster_medoid_index(cluster_mask: np.ndarray,
                              pairwise_indptr[cluster_mask[row_i] + 1]]
         col_i = np.asarray([i for cm in cluster_mask
                             for i, ind in enumerate(indices) if cm == ind])
+        # noinspection PyUnresolvedReferences
         row_avg = np.mean(data[col_i]) if len(col_i) > 0 else np.inf
         if row_avg < min_avg:
             min_i, min_avg = row_i, row_avg

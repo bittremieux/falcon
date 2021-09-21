@@ -81,10 +81,6 @@ class Config:
             help='The eps parameter (cosine distance) for DBSCAN clustering '
                  '(default: %(default)s). Relevant cosine distance thresholds '
                  'are typically between 0.05 and 0.30.')
-        self._parser.add_argument(
-            '--min_samples', type=int, default=2,
-            help='The min_samples parameter for DBSCAN clustering (default: '
-                 '%(default)s).')
 
         self._parser.add_argument(
             '--mz_interval', type=int, default=1,
