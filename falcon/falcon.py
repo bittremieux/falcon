@@ -260,7 +260,7 @@ def main(args: Union[str, List[str]] = None) -> int:
                      if config.export_include_singletons else ''),
                     f'{config.output_filename}.mgf')
         # Get the spectra corresponding to the cluster representatives.
-        representative_info['filename'] = representative_info.apply(
+        representative_info['pkl'] = representative_info.apply(
             lambda row: os.path.join(
                 config.work_dir, 'spectra',
                 f"""{row.precursor_charge}_{_precursor_to_interval(
@@ -272,7 +272,7 @@ def main(args: Union[str, List[str]] = None) -> int:
                 joblib.delayed(_find_spectra_pkl)(
                     fn, (spectra.set_index(['filename', 'spectrum_id'])
                          ['cluster'].to_dict()))
-                for fn, spectra in representative_info.groupby('filename')):
+                for fn, spectra in representative_info.groupby('pkl')):
             representatives.extend(spectra)
         representatives.sort(key=lambda spec: spec.cluster)
         ms_io.write_spectra(f'{config.output_filename}.mgf', representatives)
