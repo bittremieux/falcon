@@ -4,10 +4,12 @@ import glob
 import logging
 import os
 import pickle
+import queue
 import shutil
 import sys
 import tempfile
-from typing import Dict, List, Tuple, Union
+import threading
+from typing import BinaryIO, Dict, Iterator, List, Tuple, Union
 
 import joblib
 import natsort
@@ -276,35 +278,55 @@ def _prepare_spectra() -> Dict[int, Tuple[int, List[str]]]:
     input_filenames = [fn for pattern in config.input_filenames
                        for fn in glob.glob(pattern)]
     logger.info('Read spectra from %d peak file(s)', len(input_filenames))
-    spectra = collections.defaultdict(lambda: collections.defaultdict(list))
-    for file_spectra in joblib.Parallel(n_jobs=-1)(
-            joblib.delayed(_read_spectra)(
-                filename, config.mz_interval, config.work_dir)
-            for filename in input_filenames):
-        for spec, pkl_filename in file_spectra:
-            spectra[spec.precursor_charge][pkl_filename].append(spec)
+    pkl_filehandles = {}
+    max_spectra_in_memory = 1_000_000
+    spectra_queue = queue.Queue(maxsize=max_spectra_in_memory)
+    threading.Thread(
+        target=_write_spectra_pkl, daemon=True,
+        args=(pkl_filehandles, spectra_queue)).start()
+    # Read all spectra and dump them to pickle files using the worker thread.
+    for filename in input_filenames:
+        _read_spectra_to_queue(filename, spectra_queue)
+    # Finish dumping all spectra to their pickle files.
+    spectra_queue.join()
     # Make sure the spectra in the individual files are sorted by their
     # precursor m/z and count the number of spectra per precursor charge.
-    buckets, n_spectra, n_buckets = {}, 0, 0
-    for charge in sorted(spectra.keys()):
-        spectra_charge = spectra[charge]
-        n_spectra_charge = sum(
-            joblib.Parallel(n_jobs=-1)
-            (joblib.delayed(_write_spectra_pkl)(filename, file_spectra)
-             for filename, file_spectra in spectra_charge.items()))
-        buckets[charge] = (n_spectra_charge,
-                           natsort.natsorted(spectra_charge.keys()))
+    buckets: Dict = collections.defaultdict(lambda: [0, []])
+    for filename, filehandle in pkl_filehandles.items():
+        charge = os.path.basename(filename)
+        charge = int(charge[:charge.index('_')])
+        n_spectra_file = _sort_spectra_pkl(filehandle)
+        buckets[charge][0] += n_spectra_file
+        buckets[charge][1].append(filename)
+    n_spectra, n_buckets = 0, 0
+    for charge, (n_spectra_charge, filenames) in buckets.items():
         n_spectra += n_spectra_charge
-        n_buckets += len(spectra_charge.keys())
+        n_buckets += len(filenames)
+        buckets[charge] = n_spectra_charge, natsort.natsorted(filenames)
     logger.debug('%d spectra written to %d buckets by precursor charge and '
                  'precursor m/z', n_spectra, n_buckets)
-    return buckets
+    return dict(buckets)
+
+
+def _read_spectra_to_queue(filename: str, spectra_queue: queue.Queue) -> None:
+    """
+    Get the spectra from the given file and store them in the queue.
+
+    Parameters
+    ----------
+    filename : str
+        The path of the peak file to be read.
+    spectra_queue : queue.Queue
+        Queue in which spectra are stored.
+    """
+    for spec in _read_spectra(filename, config.mz_interval, config.work_dir):
+        spectra_queue.put(spec)
 
 
 def _read_spectra(filename: str, mz_interval: int, work_dir: str) \
-        -> List[Tuple[MsmsSpectrum, str]]:
+        -> Iterator[Tuple[MsmsSpectrum, str]]:
     """
-    Get MS/MS spectra from the given file.
+    Get the spectra from the given file.
 
     Parameters
     ----------
@@ -315,22 +337,20 @@ def _read_spectra(filename: str, mz_interval: int, work_dir: str) \
     work_dir : str
         The directory in which the spectrum buckets will be stored.
 
-
     Returns
     -------
-    List[Tuple[MsmsSpectrum, str]]
+    Iterator[Tuple[MsmsSpectrum, str]]
         The spectra read from the given file and their bucket filenames
         (based on precursor charge and m/z).
     """
-    filename, spectra = os.path.abspath(filename), []
+    filename = os.path.abspath(filename)
     for spec in ms_io.get_spectra(filename):
         spec.filename = filename
         interval = _precursor_to_interval(
             spec.precursor_mz, spec.precursor_charge, mz_interval)
-        pkl_filename = os.path.join(work_dir, 'spectra',
-                                    f'{spec.precursor_charge}_{interval}.pkl')
-        spectra.append((spec, pkl_filename))
-    return spectra
+        pkl_filename = os.path.join(
+            work_dir, 'spectra', f'{spec.precursor_charge}_{interval}.pkl')
+        yield spec, pkl_filename
 
 
 @nb.njit
@@ -358,29 +378,59 @@ def _precursor_to_interval(mz: float, charge: int, interval_width: int) -> int:
     return round(neutral_mass / cluster_width) // interval_width
 
 
-def _write_spectra_pkl(filename: str, spectra: List[MsmsSpectrum]) -> int:
+def _write_spectra_pkl(pkl_filehandles: Dict[str, BinaryIO],
+                       spectra_queue: queue.Queue) -> None:
     """
-    Write the spectra to a pickled file sorted by their precursor m/z.
+    Read spectra from a queue and write individually to a pickle file.
 
     Parameters
     ----------
-    filename : str
-        The pickled spectrum file name.
-    spectra : List[MsmsSpectrum]
-        The spectra to write to the file.
+    pkl_filehandles : Dict[str, BinaryIO]
+        File handles of the pickle files to dump spectra.
+    spectra_queue : queue.Queue
+        Queue from which to read spectra for writing to pickle files.
+    """
+    while True:
+        spec, pkl_filename = spectra_queue.get()
+        if pkl_filename not in pkl_filehandles:
+            pkl_filehandles[pkl_filename] = open(pkl_filename, 'wb+')
+        pickle.dump(spec, pkl_filehandles[pkl_filename],
+                    protocol=pickle.HIGHEST_PROTOCOL)
+        spectra_queue.task_done()
+
+
+def _sort_spectra_pkl(filehandle: BinaryIO) -> int:
+    """
+    Read and write spectra from a pickled file sorted by their precursor m/z.
+
+    Parameters
+    ----------
+    filehandle : BinaryIO
+        The pickled spectrum file handle.
 
     Returns
     -------
     int
         The number of spectra in the file.
     """
+    # Read all the spectra from the pickle file.
+    filehandle.seek(0)
+    spectra = []
+    while True:
+        try:
+            spectra.append(pickle.load(filehandle))
+        except EOFError:
+            break
     # Radix sort on integers with O(n) time complexity.
     # noinspection PyUnresolvedReferences
     order = np.argsort(np.asarray([int(spec.precursor_mz * 10000)
                                    for spec in spectra], dtype=np.int32),
                        kind='stable')
-    with open(filename, 'wb') as f_in:
-        pickle.dump([spectra[i] for i in order], f_in, protocol=5)
+    # Write the sorted spectra to the pickle file.
+    filehandle.seek(0)
+    pickle.dump([spectra[i] for i in order], filehandle,
+                protocol=pickle.HIGHEST_PROTOCOL)
+    filehandle.close()
     return len(spectra)
 
 
