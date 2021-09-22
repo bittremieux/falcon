@@ -57,7 +57,7 @@ def main(args: Union[str, List[str]] = None) -> int:
     logger.debug('fragment_tol = %.2f', config.fragment_tol)
     logger.debug('eps = %.3f', config.eps)
     logger.debug('mz_interval = %d', config.mz_interval)
-    logger.debug('hash_len = %d', config.hash_len)
+    logger.debug('low_dim = %d', config.low_dim)
     logger.debug('n_neighbors = %d', config.n_neighbors)
     logger.debug('n_neighbors_ann = %d', config.n_neighbors_ann)
     logger.debug('batch_size = %d', config.batch_size)
@@ -140,7 +140,7 @@ def main(args: Union[str, List[str]] = None) -> int:
         max_peaks_used=config.max_peaks_used,
         scaling=None if config.scaling == 'off' else config.scaling)
 
-    transformation = (SparseRandomProjection(config.hash_len, random_state=0)
+    transformation = (SparseRandomProjection(config.low_dim, random_state=0)
                       .fit(np.zeros((1, vec_len)))
                       .components_.astype(np.float32).T)
     vectorize = functools.partial(
@@ -217,7 +217,7 @@ def main(args: Union[str, List[str]] = None) -> int:
         f_out.write(f'# fragment_tol = {config.fragment_tol:.2f}\n')
         f_out.write(f'# eps = {config.eps:.3f}\n')
         f_out.write(f'# mz_interval = {config.mz_interval}\n')
-        f_out.write(f'# hash_len = {config.hash_len}\n')
+        f_out.write(f'# low_dim = {config.low_dim}\n')
         f_out.write(f'# n_neighbors = {config.n_neighbors}\n')
         f_out.write(f'# n_neighbors_ann = {config.n_neighbors_ann}\n')
         f_out.write(f'# batch_size = {config.batch_size}\n')

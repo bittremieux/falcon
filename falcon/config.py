@@ -83,8 +83,8 @@ class Config:
             help='Precursor m/z interval (centered around x.5 Da) to process '
                  'spectra simultaneously (default: %(default)s m/z).')
         self._parser.add_argument(
-            '--hash_len', default=800, type=int,
-            help='Hashed vector length (default: %(default)s).')
+            '--low_dim', default=400, type=int,
+            help='Low-dimensional vector length (default: %(default)s).')
         self._parser.add_argument(
             '--n_neighbors', default=64, type=int,
             help='Number of neighbors to include in the pairwise distance '

@@ -111,10 +111,10 @@ less accurate clustering results.
 consider for each spectrum and during nearest neighbor searching. Querying less
 neighbors will run faster but will give slightly less accurate clustering
 results. `n_neighbors_ann` should be equal or greater than `n_neighbors`.
-- `hash_len`: The length of the hashed vectors used for nearest neighbor
-searching. Larger vectors will minimize the number of hash collisions and more
-accurately approximate the true cosine distance, at the expense of longer
-nearest neighbor searching and memory requirements.
+- `low_dim`: The length of the low-dimensional vectors used for nearest neighbor
+searching. Larger vectors will more accurately approximate the true cosine
+distance, at the expense of longer nearest neighbor searching and memory
+requirements.
 
 How does it work?
 -----------------
