@@ -630,10 +630,9 @@ def _postprocess_cluster(cluster_labels: np.ndarray, cluster_mzs: np.ndarray,
             precursor_tol_mass, 'distance') - 1
         # Optionally restrict clusters by their retention time as well.
         if rt_tol is not None:
-            pairwise_rt_diff = pairwise_distances(cluster_rts.reshape(-1, 1))
+            pairwise_rt_diff = _condensed_mz_diff(cluster_rts.reshape(-1, 1))
             cluster_assignments_rt = fcluster(
-                fastcluster.linkage(
-                    squareform(pairwise_rt_diff, checks=False), 'complete'),
+                fastcluster.linkage(pairwise_rt_diff, 'complete'),
                 rt_tol, 'distance') - 1
             # Merge cluster assignments based on precursor m/z and RT.
             # First prime factorization is used to get unique combined cluster
@@ -662,28 +661,30 @@ def _postprocess_cluster(cluster_labels: np.ndarray, cluster_mzs: np.ndarray,
 
 
 @nb.njit(cache=True)
-def _condensed_mz_diff(mzs: np.ndarray, precursor_tol_mode: str) -> np.ndarray:
+def _condensed_mz_diff(values: np.ndarray, tol_mode: str = None) \
+        -> np.ndarray:
     """
-    Compute the condensed pairwise precursor m/z distance matrix.
+    Compute the condensed pairwise precursor m/z or RT distance matrix.
 
     Parameters
     ----------
-    mzs : np.ndarray
-        The precursor m/z's for which pairwise distances are computed.
-    precursor_tol_mode : str
-        The unit of the precursor m/z tolerance ('Da' or 'ppm').
+    values : np.ndarray
+        The precursor m/z's or RTs for which pairwise distances are computed.
+    tol_mode : str
+        The unit of the tolerance ('Da' or 'ppm' for precursor m/z, 'rt' for
+        retention time).
 
     Returns
     -------
     np.ndarray
-        The condensed form of the pairwise precursor m/z distance matrix.
+        The condensed form of the pairwise distance matrix.
     """
-    diff, d = np.zeros(len(mzs) * (len(mzs) - 1) // 2, np.float32), 0
-    for i in range(mzs.shape[0]):
-        for j in range(i + 1, mzs.shape[0]):
-            diff[d] = abs(mzs[i] - mzs[j])
-            if precursor_tol_mode == 'ppm':
-                diff[d] = diff[d] / mzs[i] * 10**6
+    diff, d = np.zeros(len(values) * (len(values) - 1) // 2, np.float32), 0
+    for i in range(values.shape[0]):
+        for j in range(i + 1, values.shape[0]):
+            diff[d] = abs(values[i] - values[j])
+            if tol_mode == 'ppm':
+                diff[d] = diff[d] / values[i] * 10 ** 6
             d += 1
     return diff
 
