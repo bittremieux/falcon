@@ -1,3 +1,4 @@
+import gc
 import logging
 import math
 import pickle
@@ -13,10 +14,8 @@ import pandas as pd
 import scipy.sparse as ss
 import tqdm
 from scipy.cluster.hierarchy import fcluster
-from scipy.spatial.distance import squareform
 # noinspection PyProtectedMember
 from sklearn.cluster._dbscan_inner import dbscan_inner
-from sklearn.metrics import pairwise_distances
 
 
 logger = logging.getLogger('falcon')
@@ -514,6 +513,12 @@ def generate_clusters(pairwise_dist_matrix: ss.csr_matrix, eps: float,
         neighborhoods_arr = np.empty(len(neighborhoods), dtype=np.object)
         neighborhoods_arr[:] = neighborhoods
         dbscan_inner(core_samples, neighborhoods_arr, clusters)
+
+        # Free up memory by deleting DBSCAN-related data structures.
+        del pairwise_dist_matrix, mask, indptr, indices
+        del neighborhoods, n_neighbors, core_samples, neighborhoods_arr
+        gc.collect()
+
         # Refine initial clusters to make sure spectra within a cluster don't
         # have an excessive precursor m/z difference.
         # noinspection PyUnresolvedReferences
@@ -541,7 +546,7 @@ def generate_clusters(pairwise_dist_matrix: ss.csr_matrix, eps: float,
                 for start_i, stop_i in group_idx))
             _assign_unique_cluster_labels(
                 clusters, group_idx, n_clusters, min_samples)
-            clusters = clusters[reverse_order]
+            clusters[:] = clusters[reverse_order]
             noise_mask = clusters == -1
             # noinspection PyUnresolvedReferences
             n_clusters, n_noise = np.amax(clusters) + 1, noise_mask.sum()
