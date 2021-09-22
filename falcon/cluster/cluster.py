@@ -153,7 +153,7 @@ def _build_query_ann_index(
     for pkl_filename in tqdm.tqdm(bucket_filenames, desc='Buckets queried',
                                   unit='bucket'):
         # Read the spectra for the m/z split.
-        spectra_split, precursor_mzs_split, rts_split = [], [], []
+        spectra_split, precursor_mzs_split, rts_split = nb.typed.List(), [], []
         with open(pkl_filename, 'rb') as f_in:
             for spec_raw in pickle.load(f_in):
                 spec_processed = process_spectrum(spec_raw)

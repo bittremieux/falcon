@@ -140,11 +140,11 @@ def main(args: Union[str, List[str]] = None) -> int:
         max_peaks_used=config.max_peaks_used,
         scaling=None if config.scaling == 'off' else config.scaling)
 
-    vectorizer = SparseRandomProjection(
-        config.hash_len, dense_output=True, random_state=42)
-    vectorizer.fit(np.zeros((1, vec_len)))
+    transformation = (SparseRandomProjection(config.hash_len, random_state=0)
+                      .fit(np.zeros((1, vec_len)))
+                      .components_.astype(np.float32).T)
     vectorize = functools.partial(
-        spectrum.to_vector, vectorizer=vectorizer, min_mz=min_mz,
+        spectrum.to_vector, transformation=transformation, min_mz=min_mz,
         bin_size=config.fragment_tol, dim=vec_len, norm=True)
 
     # Cluster the spectra per charge.

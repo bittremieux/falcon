@@ -174,24 +174,23 @@ def get_dim(min_mz: float, max_mz: float, bin_size: float) \
 
 
 def to_vector(
-        vectorizer: SparseRandomProjection, spectra: List[MsmsSpectrumNb],
+        spectra: List[MsmsSpectrumNb], transformation: ss.csr_matrix,
         min_mz: float, bin_size: float, dim: int, norm: bool) -> np.ndarray:
     """
     Convert spectra to dense NumPy vectors.
 
-    Peaks are first discretized to mass bins of width `bin_size` between
-    `min_mz` and `max_mz`, after which they are transformed using sparse random
-    projections.
+    Peaks are first discretized to mass bins of width `bin_size` starting from
+    `min_mz`, after which they are transformed using sparse random projections.
 
     Parameters
     ----------
-    vectorizer : SparseRandomProjection
-        Sparse random projection transformer to convert sparse spectrum vectors
-        to low-dimensional dense vectors.
     spectra : List[MsmsSpectrumNb]
         The spectra to be converted to vectors.
+    transformation : ss.csr_matrix
+        Sparse random projection transformation to convert sparse spectrum
+        vectors to low-dimensional dense vectors.
     min_mz : float
-        The minimum m/z to include in the vector.
+        The minimum m/z to include in the vectors.
     bin_size : float
         The bin size in m/z used to divide the m/z range.
     dim : int
@@ -204,12 +203,47 @@ def to_vector(
     np.ndarray
         The low-dimensional transformed spectrum vectors.
     """
+    data, indices, indptr = _to_vector(spectra, min_mz, bin_size)
+    vectors = ss.csr_matrix(
+        (data, indices, indptr), (len(spectra), dim), np.float32, False)
+    vectors_transformed = (vectors @ transformation).toarray()
+    if norm:
+        # Normalize the vectors for inner product search.
+        faiss.normalize_L2(vectors_transformed)
+    return vectors_transformed
+
+
+@nb.njit(cache=True)
+def _to_vector(spectra: List[MsmsSpectrumNb], min_mz: float, bin_size: float) \
+        -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Convert spectra to a binned sparse vectors.
+
+    Peaks are discretized to mass bins of width `bin_size` starting from
+    `min_mz`.
+
+    Parameters
+    ----------
+    spectra : List[MsmsSpectrumNb]
+        The spectra to be converted to sparse vectors.
+    min_mz : float
+        The minimum m/z to include in the vectors.
+    bin_size : float
+        The bin size in m/z used to divide the m/z range.
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray, np.ndarray]
+        A SciPy CSR matrix represented by its `data`, `indices`, and `indptr`
+        elements.
+    """
     n_spectra = len(spectra)
-    n_peaks = sum([len(spec.mz) for spec in spectra])
-    dtype = np.int32 if n_peaks < np.iinfo(np.int32).max else np.int64
+    n_peaks = 0
+    for spec in spectra:
+        n_peaks += len(spec.mz)
     data = np.zeros(n_peaks, np.float32)
-    indices = np.zeros(n_peaks, dtype)
-    indptr = np.zeros(n_spectra + 1, dtype)
+    indices = np.zeros(n_peaks, np.int32)
+    indptr = np.zeros(n_spectra + 1, np.int32)
     i, j = 0, 1
     for spec in spectra:
         n_peaks_spectra = len(spec.mz)
@@ -219,10 +253,4 @@ def to_vector(
         indptr[j] = indptr[j - 1] + n_peaks_spectra
         i += n_peaks_spectra
         j += 1
-    vectors = ss.csr_matrix(
-        (data, indices, indptr), (n_spectra, dim), np.float32, False)
-    vectors_transformed = vectorizer.transform(vectors).astype(np.float32)
-    if norm:
-        # Normalize the vectors for inner product search.
-        faiss.normalize_L2(vectors_transformed)
-    return vectors_transformed
+    return data, indices, indptr
