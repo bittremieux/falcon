@@ -581,7 +581,7 @@ def _cumsum(a: np.ndarray) -> np.ndarray:
     return out
 
 
-@nb.njit(cache=True)
+@nb.njit
 def _get_cluster_group_idx(clusters: np.ndarray) -> Iterator[Tuple[int, int]]:
     """
     Get start and stop indexes for unique cluster labels.
