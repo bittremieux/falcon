@@ -492,18 +492,18 @@ def generate_clusters(pairwise_dist_matrix: ss.csr_matrix, eps: float,
     with tempfile.NamedTemporaryFile() as mmap_file:
         # Reimplement DBSCAN preprocessing to avoid unnecessary memory
         # consumption.
+        dist_data = pairwise_dist_matrix.data
+        dist_indices = pairwise_dist_matrix.indices
+        dist_indptr = pairwise_dist_matrix.indptr
+        n_spectra = pairwise_dist_matrix.shape[0]
         # Find the eps-neighborhoods for all points.
-        mask = pairwise_dist_matrix.data <= eps
-        indices = pairwise_dist_matrix.indices[mask].astype(np.intp)
-        indptr = np.zeros(len(mask) + 1, dtype=np.int64)
-        # noinspection PyUnresolvedReferences
-        np.cumsum(mask, out=indptr[1:])
-        indptr = indptr[pairwise_dist_matrix.indptr]
+        mask = dist_data <= eps
+        indptr = _cumsum(mask)[dist_indptr]
+        indices = dist_indices[mask].astype(np.intp, copy=False)
         neighborhoods = np.split(indices, indptr[1:-1])
         # Initially, all samples are noise.
         # (Memmap for shared memory multiprocessing.)
-        clusters = np.memmap(mmap_file, np.intp, 'w+',
-                             shape=(pairwise_dist_matrix.shape[0],))
+        clusters = np.memmap(mmap_file, np.intp, 'w+', shape=(n_spectra,))
         clusters.fill(-1)
         # A list of all core samples found.
         n_neighbors = np.fromiter(map(len, neighborhoods), np.uint32)
@@ -556,6 +556,29 @@ def generate_clusters(pairwise_dist_matrix: ss.csr_matrix, eps: float,
         # Reassign noise points to singleton clusters.
         clusters[noise_mask] = np.arange(n_clusters, n_clusters + n_noise)
         return np.asarray(clusters)
+
+
+@nb.njit
+def _cumsum(a: np.ndarray) -> np.ndarray:
+    """
+    Cumulative sum of the elements.
+
+    Try to avoid inadvertent copies in `np.cumsum`.
+
+    Parameters
+    ----------
+    a : np.ndarray
+        Input array
+
+    Returns
+    -------
+    np.ndarray
+        The cumulative sum in an array of size len(a) + 1 (first element is 0).
+    """
+    out = np.zeros(len(a) + 1, dtype=np.int64)
+    for i in range(len(out) - 1):
+        out[i + 1] = out[i] + a[i]
+    return out
 
 
 @nb.njit(cache=True)
