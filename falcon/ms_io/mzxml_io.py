@@ -27,7 +27,7 @@ def get_spectra(source: Union[IO, str]) -> Iterable[sus.MsmsSpectrum]:
     with pyteomics.mzxml.MzXML(source) as f_in:
         try:
             for spectrum_dict in f_in:
-                if int(spectrum_dict.get('msLevel', -1)) == 2:
+                if int(spectrum_dict.get('msLevel', -1)) > 1:
                     try:
                         yield _parse_spectrum(spectrum_dict)
                     except (ValueError, KeyError):
