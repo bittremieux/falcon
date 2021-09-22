@@ -274,16 +274,18 @@ def _prepare_spectra() -> Dict[int, Tuple[int, List[str]]]:
     # Read the peak files and put their spectra in the queue for consumption.
     peak_readers = multiprocessing.pool.ThreadPool(
         max_file_workers, _read_spectra_queue, (file_queue, spectra_queue))
-    peak_readers.close()
-    peak_readers.join()
     # Write the spectra to (unsorted) pickle files.
-    for _ in range(max_file_workers):   # Add sentinels to indicate stopping.
-        spectra_queue.put((None, None))
     pkl_filehandles = {}
     lock = multiprocessing.Lock()
     pkl_writers = multiprocessing.pool.ThreadPool(
         max_file_workers, _write_spectra_pkl,
         (pkl_filehandles, spectra_queue, lock))
+    peak_readers.close()
+    peak_readers.join()
+    # Add sentinels to indicate stopping. This needs to happen after all files
+    # have been read (by joining `peak_readers`).
+    for _ in range(max_file_workers):
+        spectra_queue.put((None, None))
     pkl_writers.close()
     pkl_writers.join()
     # Make sure the spectra in the individual files are sorted by their
