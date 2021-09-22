@@ -10,7 +10,6 @@ import queue
 import shutil
 import sys
 import tempfile
-import threading
 from typing import BinaryIO, Dict, Iterator, List, Tuple, Union
 
 import joblib
@@ -19,7 +18,7 @@ import numba as nb
 import numpy as np
 import pandas as pd
 import scipy.sparse as ss
-from sklearn.utils import murmurhash3_32
+from sklearn.random_projection import SparseRandomProjection
 from spectrum_utils.spectrum import MsmsSpectrum
 
 from . import __version__
@@ -141,13 +140,12 @@ def main(args: Union[str, List[str]] = None) -> int:
         max_peaks_used=config.max_peaks_used,
         scaling=None if config.scaling == 'off' else config.scaling)
 
-    # Pre-compute the index hash mappings.
-    hash_lookup = np.asarray([murmurhash3_32(i, 0, True) % config.hash_len
-                              for i in range(vec_len)], np.uint32)
+    vectorizer = SparseRandomProjection(
+        config.hash_len, dense_output=True, random_state=42)
+    vectorizer.fit(np.zeros((1, vec_len)))
     vectorize = functools.partial(
-        spectrum.to_vector_parallel, dim=config.hash_len, min_mz=min_mz,
-        max_mz=max_mz, bin_size=config.fragment_tol, hash_lookup=hash_lookup,
-        norm=True)
+        spectrum.to_vector, vectorizer=vectorizer, min_mz=min_mz,
+        bin_size=config.fragment_tol, dim=vec_len, norm=True)
 
     # Cluster the spectra per charge.
     clusters_all, current_label, representative_info = [], 0, []

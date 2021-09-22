@@ -6,7 +6,9 @@ import faiss
 import joblib
 import numba as nb
 import numpy as np
+import scipy.sparse as ss
 import spectrum_utils.spectrum as sus
+from sklearn.random_projection import SparseRandomProjection
 
 
 MsmsSpectrumNb = collections.namedtuple(
@@ -171,85 +173,56 @@ def get_dim(min_mz: float, max_mz: float, bin_size: float) \
     return math.ceil((end_dim - start_dim) / bin_size), start_dim, end_dim
 
 
-@nb.njit
-def to_vector(spectrum: MsmsSpectrumNb, vector: np.ndarray,
-              min_mz: float, max_mz: float, bin_size: float,
-              hash_lookup: np.ndarray, norm: bool = True) -> np.ndarray:
+def to_vector(
+        vectorizer: SparseRandomProjection, spectra: List[MsmsSpectrumNb],
+        min_mz: float, bin_size: float, dim: int, norm: bool) -> np.ndarray:
     """
-    Convert a spectrum to a hashed NumPy vector.
+    Convert spectra to dense NumPy vectors.
 
     Peaks are first discretized to mass bins of width `bin_size` between
-    `min_mz` and `max_mz`, after which they are hashed to random hash bins
-    (using the hash lookup table) in the final vector.
+    `min_mz` and `max_mz`, after which they are transformed using sparse random
+    projections.
 
     Parameters
     ----------
-    spectrum : MsmsSpectrumNb
-        The spectrum to be converted to a vector.
-    vector : np.ndarray
-        A pre-allocated vector to store the output.
-    min_mz : float
-        The minimum m/z to include in the vector.
-    max_mz : float
-        The maximum m/z to include in the vector.
-    bin_size : float
-        The bin size in m/z used to divide the m/z range.
-    hash_lookup : np.ndarray
-        A lookup vector with hash indexes.
-    norm : bool
-        Normalize the vector to unit length or not.
-
-    Returns
-    -------
-    np.ndarray
-        The hashed spectrum vector.
-    """
-    _, min_bound, max_bound = get_dim(min_mz, max_mz, bin_size)
-    for mz, intensity in zip(spectrum.mz, spectrum.intensity):
-        if min_bound < mz < max_bound:
-            hash_idx = hash_lookup[math.floor((mz - min_bound) / bin_size)]
-            vector[hash_idx] += intensity
-    return vector if not norm else _norm_intensity(vector)
-
-
-def to_vector_parallel(spectra: List[MsmsSpectrumNb], dim: int, min_mz: float,
-                       max_mz: float, bin_size: float, hash_lookup: np.ndarray,
-                       norm: bool) -> np.ndarray:
-    """
-    Convert multiple spectra to hashed NumPy vectors.
-
-    Peaks are first discretized to mass bins of width `bin_size` between
-    `min_mz` and `max_mz`, after which they are hashed to random hash bins
-    (using the hash lookup table) in the final vector.
-
-    Parameters
-    ----------
+    vectorizer : SparseRandomProjection
+        Sparse random projection transformer to convert sparse spectrum vectors
+        to low-dimensional dense vectors.
     spectra : List[MsmsSpectrumNb]
         The spectra to be converted to vectors.
-    dim: int
-        The dimensionality of the hashed spectrum vectors.
     min_mz : float
         The minimum m/z to include in the vector.
-    max_mz : float
-        The maximum m/z to include in the vector.
     bin_size : float
         The bin size in m/z used to divide the m/z range.
-    hash_lookup : np.ndarray
-        A lookup vector with hash indexes.
+    dim : int
+        The high-resolution vector dimensionality.
     norm : bool
         Normalize the vector to unit length or not.
 
     Returns
     -------
     np.ndarray
-        The hashed spectrum vectors.
+        The low-dimensional transformed spectrum vectors.
     """
-    vectors = np.zeros((len(spectra), dim), np.float32)
-    joblib.Parallel(n_jobs=-1, prefer='threads')(
-        joblib.delayed(to_vector)(spec, vectors[i, :], min_mz, max_mz,
-                                  bin_size, hash_lookup, False)
-        for i, spec in enumerate(spectra))
+    n_spectra = len(spectra)
+    n_peaks = sum([len(spec.mz) for spec in spectra])
+    dtype = np.int32 if n_peaks < np.iinfo(np.int32).max else np.int64
+    data = np.zeros(n_peaks, np.float32)
+    indices = np.zeros(n_peaks, dtype)
+    indptr = np.zeros(n_spectra + 1, dtype)
+    i, j = 0, 1
+    for spec in spectra:
+        n_peaks_spectra = len(spec.mz)
+        data[i:i + n_peaks_spectra] = spec.intensity
+        mz = [math.floor((mz - min_mz) / bin_size) for mz in spec.mz]
+        indices[i:i + n_peaks_spectra] = mz
+        indptr[j] = indptr[j - 1] + n_peaks_spectra
+        i += n_peaks_spectra
+        j += 1
+    vectors = ss.csr_matrix(
+        (data, indices, indptr), (n_spectra, dim), np.float32, False)
+    vectors_transformed = vectorizer.transform(vectors).astype(np.float32)
     if norm:
         # Normalize the vectors for inner product search.
-        faiss.normalize_L2(vectors)
-    return vectors
+        faiss.normalize_L2(vectors_transformed)
+    return vectors_transformed

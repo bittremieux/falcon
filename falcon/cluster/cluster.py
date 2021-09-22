@@ -169,7 +169,7 @@ def _build_query_ann_index(
         precursor_mzs.append(np.asarray(precursor_mzs_split))
         rts.append(np.asarray(rts_split))
         # Convert the spectra to vectors.
-        vectors_split = vectorize(spectra_split)
+        vectors_split = vectorize(spectra=spectra_split)
         n_split, dim = vectors_split.shape
         # Figure out a decent value for the n_list hyperparameter based on
         # the number of vectors.
