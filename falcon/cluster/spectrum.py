@@ -3,12 +3,10 @@ import math
 from typing import List, Optional, Tuple
 
 import faiss
-import joblib
 import numba as nb
 import numpy as np
 import scipy.sparse as ss
 import spectrum_utils.spectrum as sus
-from sklearn.random_projection import SparseRandomProjection
 
 
 MsmsSpectrumNb = collections.namedtuple(
@@ -17,7 +15,7 @@ MsmsSpectrumNb = collections.namedtuple(
      'retention_time', 'mz', 'intensity'])
 
 
-@nb.njit
+@nb.njit(cache=True)
 def _check_spectrum_valid(spectrum_mz: np.ndarray, min_peaks: int,
                           min_mz_range: float) -> bool:
     """
@@ -42,7 +40,7 @@ def _check_spectrum_valid(spectrum_mz: np.ndarray, min_peaks: int,
             spectrum_mz[-1] - spectrum_mz[0] >= min_mz_range)
 
 
-@nb.njit
+@nb.njit(cache=True)
 def _norm_intensity(spectrum_intensity: np.ndarray) -> np.ndarray:
     """
     Normalize cluster peak intensities by their vector norm.
@@ -144,7 +142,7 @@ def process_spectrum(spectrum: sus.MsmsSpectrum,
                           spectrum.retention_time, spectrum.mz, intensity)
 
 
-@nb.njit('Tuple((u4, f4, f4))(f4, f4, f4)')
+@nb.njit('Tuple((u4, f4, f4))(f4, f4, f4)', cache=True)
 def get_dim(min_mz: float, max_mz: float, bin_size: float) \
         -> Tuple[int, float, float]:
     """

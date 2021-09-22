@@ -361,7 +361,7 @@ def _read_spectra(filename: str, mz_interval: int, work_dir: str) \
         yield spec, pkl_filename
 
 
-@nb.njit
+@nb.njit(cache=True)
 def _precursor_to_interval(mz: float, charge: int, interval_width: int) -> int:
     """
     Convert the precursor m/z to the neutral mass and get the interval index.
@@ -444,7 +444,7 @@ def _sort_spectra_pkl(filehandle: BinaryIO) -> int:
     return len(spectra)
 
 
-@nb.njit
+@nb.njit(cache=True)
 def _get_precursor_order(precursor_mzs: np.ndarray) -> np.ndarray:
     """
     Get the precursor m/z sorting order.

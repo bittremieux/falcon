@@ -288,7 +288,7 @@ def _dist_mz_interval(
             distances, indices, indptr, indptr_i + batch_start)
 
 
-@nb.njit
+@nb.njit(cache=True)
 def _filter_neighbors_mz(
         precursor_mzs: np.ndarray, rts: np.ndarray, batch_start: int,
         batch_stop: int, precursor_tol_mass: float, precursor_tol_mode: str,
@@ -349,7 +349,7 @@ def _filter_neighbors_mz(
         indices[indptr[i]:indptr[i + 1]] = indptr_i_start + idx_ann[mask]
 
 
-@nb.njit
+@nb.njit(cache=True)
 def _get_neighbors_idx(values: np.ndarray, start_i: int, stop_i: int,
                        tol: float, tol_mode: str) \
         -> List[np.ndarray]:
@@ -409,7 +409,7 @@ def _get_neighbors_idx(values: np.ndarray, start_i: int, stop_i: int,
     return [np.sort(match_values_i[mask]) for mask in masks]
 
 
-@nb.njit
+@nb.njit(cache=True)
 def _intersect_idx_ann_mz(idx_ann: np.ndarray, idx_mz: np.ndarray,
                           max_neighbors: int = None, is_sorted: bool = False) \
         -> np.ndarray:
@@ -553,7 +553,7 @@ def generate_clusters(pairwise_dist_matrix: ss.csr_matrix, eps: float,
         return np.asarray(clusters)
 
 
-@nb.njit
+@nb.njit(cache=True)
 def _get_cluster_group_idx(clusters: np.ndarray) -> Iterator[Tuple[int, int]]:
     """
     Get start and stop indexes for unique cluster labels.
@@ -662,7 +662,7 @@ def _postprocess_cluster(cluster_labels: np.ndarray, cluster_mzs: np.ndarray,
     return n_clusters
 
 
-@nb.njit
+@nb.njit(cache=True)
 def _assign_unique_cluster_labels(cluster_labels: np.ndarray,
                                   group_idx: nb.typed.List,
                                   n_clusters: nb.typed.List,
@@ -693,7 +693,7 @@ def _assign_unique_cluster_labels(cluster_labels: np.ndarray,
             cluster_labels[start_i:stop_i].fill(-1)
 
 
-@nb.njit(parallel=True)
+@nb.njit(cache=True, parallel=True)
 def get_cluster_representatives(clusters: np.ndarray,
                                 pairwise_indptr: np.ndarray,
                                 pairwise_indices: np.ndarray,
@@ -738,7 +738,7 @@ def get_cluster_representatives(clusters: np.ndarray,
     return representatives
 
 
-@nb.njit(fastmath=True)
+@nb.njit(cache=True, fastmath=True)
 def _get_cluster_medoid_index(cluster_mask: np.ndarray,
                               pairwise_indptr: np.ndarray,
                               pairwise_indices: np.ndarray,
