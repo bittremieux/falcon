@@ -10,6 +10,7 @@ import queue
 import shutil
 import sys
 import tempfile
+import threading
 from typing import BinaryIO, Dict, Iterator, List, Tuple, Union
 
 import joblib
@@ -204,36 +205,10 @@ def main(args: Union[str, List[str]] = None) -> int:
                 'clusters to output file %s',
                 len(clusters_all), clusters_all['cluster'].nunique(),
                 f'{config.output_filename}.csv')
-    with open(f'{config.output_filename}.csv', 'a') as f_out:
-        # Metadata.
-        f_out.write(f'# falcon version {__version__}\n')
-        f_out.write(f'# work_dir = {config.work_dir}\n')
-        f_out.write(f'# overwrite = {config.overwrite}\n')
-        f_out.write(f'# export_representatives = '
-                    f'{config.export_representatives}\n')
-        f_out.write(f'# precursor_tol = {config.precursor_tol[0]:.2f} '
-                    f'{config.precursor_tol[1]}\n')
-        f_out.write(f'# rt_tol = {config.rt_tol}\n')
-        f_out.write(f'# fragment_tol = {config.fragment_tol:.2f}\n')
-        f_out.write(f'# eps = {config.eps:.3f}\n')
-        f_out.write(f'# mz_interval = {config.mz_interval}\n')
-        f_out.write(f'# low_dim = {config.low_dim}\n')
-        f_out.write(f'# n_neighbors = {config.n_neighbors}\n')
-        f_out.write(f'# n_neighbors_ann = {config.n_neighbors_ann}\n')
-        f_out.write(f'# batch_size = {config.batch_size}\n')
-        f_out.write(f'# n_probe = {config.n_probe}\n')
-        f_out.write(f'# min_peaks = {config.min_peaks}\n')
-        f_out.write(f'# min_mz_range = {config.min_mz_range:.2f}\n')
-        f_out.write(f'# min_mz = {config.min_mz:.2f}\n')
-        f_out.write(f'# max_mz = {config.max_mz:.2f}\n')
-        f_out.write(f'# remove_precursor_tol = '
-                    f'{config.remove_precursor_tol:.2f}\n')
-        f_out.write(f'# min_intensity = {config.min_intensity:.2f}\n')
-        f_out.write(f'# max_peaks_used = {config.max_peaks_used}\n')
-        f_out.write(f'# scaling = {config.scaling}\n')
-        f_out.write('#\n')
-        # Cluster assignments.
-        clusters_all.to_csv(f_out, index=False, chunksize=1000000)
+    # Perform IO in a separate worker process.
+    write_csv_worker = threading.Thread(
+        target=_write_cluster_info, args=(clusters_all,), daemon=True)
+    write_csv_worker.start()
     if config.export_representatives:
         representative_info = pd.concat(representative_info, ignore_index=True)
         logger.info('Export %d cluster representative spectra to output file '
@@ -248,14 +223,21 @@ def main(args: Union[str, List[str]] = None) -> int:
                     config.mz_interval)}.pkl"""),
             axis='columns')
         representatives = []
-        for spectra in joblib.Parallel(n_jobs=-1)(
+        for spectra in joblib.Parallel(n_jobs=-1, prefer='threads')(
                 joblib.delayed(_find_spectra_pkl)(
                     fn, (spectra.set_index(['filename', 'spectrum_id'])
                          ['cluster'].to_dict()))
                 for fn, spectra in representative_info.groupby('pkl')):
             representatives.extend(spectra)
         representatives.sort(key=lambda spec: spec.cluster)
-        ms_io.write_spectra(f'{config.output_filename}.mgf', representatives)
+        # Perform IO in a separate worker process.
+        write_mgf_worker = threading.Thread(
+            target=ms_io.write_spectra,
+            args=(f'{config.output_filename}.mgf', representatives),
+            daemon=True)
+        write_mgf_worker.start()
+        write_mgf_worker.join()
+    write_csv_worker.join()
 
     if rm_work_dir:
         shutil.rmtree(config.work_dir)
@@ -485,6 +467,47 @@ def _get_precursor_order(precursor_mzs: np.ndarray) -> np.ndarray:
                       kind='mergesort')
 
 
+def _write_cluster_info(clusters: pd.DataFrame) -> None:
+    """
+    Export the clustering results to a CSV file.
+
+    Parameters
+    ----------
+    clusters : pd.DataFrame
+        The clustering results.
+    """
+    with open(f'{config.output_filename}.csv', 'a') as f_out:
+        # Metadata.
+        f_out.write(f'# falcon version {__version__}\n')
+        f_out.write(f'# work_dir = {config.work_dir}\n')
+        f_out.write(f'# overwrite = {config.overwrite}\n')
+        f_out.write(f'# export_representatives = '
+                    f'{config.export_representatives}\n')
+        f_out.write(f'# precursor_tol = {config.precursor_tol[0]:.2f} '
+                    f'{config.precursor_tol[1]}\n')
+        f_out.write(f'# rt_tol = {config.rt_tol}\n')
+        f_out.write(f'# fragment_tol = {config.fragment_tol:.2f}\n')
+        f_out.write(f'# eps = {config.eps:.3f}\n')
+        f_out.write(f'# mz_interval = {config.mz_interval}\n')
+        f_out.write(f'# low_dim = {config.low_dim}\n')
+        f_out.write(f'# n_neighbors = {config.n_neighbors}\n')
+        f_out.write(f'# n_neighbors_ann = {config.n_neighbors_ann}\n')
+        f_out.write(f'# batch_size = {config.batch_size}\n')
+        f_out.write(f'# n_probe = {config.n_probe}\n')
+        f_out.write(f'# min_peaks = {config.min_peaks}\n')
+        f_out.write(f'# min_mz_range = {config.min_mz_range:.2f}\n')
+        f_out.write(f'# min_mz = {config.min_mz:.2f}\n')
+        f_out.write(f'# max_mz = {config.max_mz:.2f}\n')
+        f_out.write(f'# remove_precursor_tol = '
+                    f'{config.remove_precursor_tol:.2f}\n')
+        f_out.write(f'# min_intensity = {config.min_intensity:.2f}\n')
+        f_out.write(f'# max_peaks_used = {config.max_peaks_used}\n')
+        f_out.write(f'# scaling = {config.scaling}\n')
+        f_out.write('#\n')
+        # Cluster assignments.
+        clusters.to_csv(f_out, index=False, chunksize=1000000)
+
+
 def _find_spectra_pkl(
         filename: str, spectra_to_read: Dict[Tuple[str, str], int]) \
         -> List[MsmsSpectrum]:
@@ -505,17 +528,25 @@ def _find_spectra_pkl(
     Iterable[MsmsSpectrum]
         The spectra with the specified USIs.
     """
-    spectra_found = []
     with open(filename, 'rb') as f_in:
-        for spec in pickle.load(f_in):
-            spectrum_key = spec.filename, spec.identifier
-            if spectrum_key in spectra_to_read:
-                spec.cluster = spectra_to_read[spectrum_key]
+        spectra = pickle.load(f_in)
+        spectra_key_to_index = {(spec.filename, spec.identifier): i
+                                for i, spec in enumerate(spectra)}
+        spectra_index_to_cluster = {
+            spectra_key_to_index[key]: spectra_to_read[key]
+            for key in (set(spectra_key_to_index.keys()) &
+                        set(spectra_to_read.keys()))}
+        if len(spectra_index_to_cluster) != len(spectra_to_read):
+            raise ValueError(
+                f'{len(spectra_to_read) - len(spectra_index_to_cluster)} '
+                f'spectra not found in file {filename}')
+        else:
+            spectra_found = []
+            for i, cluster_ in spectra_index_to_cluster.items():
+                spec = spectra[i]
+                spec.cluster = cluster_
                 spectra_found.append(spec)
-                if len(spectra_found) == len(spectra_to_read):
-                    return spectra_found
-    raise ValueError(f'{len(spectra_to_read) - len(spectra_found)} spectra not'
-                     f' found in file {filename}')
+            return spectra_found
 
 
 if __name__ == '__main__':
