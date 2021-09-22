@@ -6,7 +6,6 @@ import tempfile
 from typing import Callable, Iterator, List, Optional, Tuple
 
 import faiss
-import fastcluster
 import joblib
 import numba as nb
 import numpy as np
@@ -538,12 +537,13 @@ def generate_clusters(pairwise_dist_matrix: ss.csr_matrix, eps: float,
             n_clusters, n_noise = 0, len(noise_mask)
         else:
             group_idx = nb.typed.List(_get_cluster_group_idx(clusters))
-            n_clusters = nb.typed.List(joblib.Parallel(n_jobs=-1)(
-                joblib.delayed(_postprocess_cluster)
-                (clusters[start_i:stop_i], precursor_mzs[start_i:stop_i],
-                 rts[start_i:stop_i], precursor_tol_mass, precursor_tol_mode,
-                 rt_tol, min_samples)
-                for start_i, stop_i in group_idx))
+            n_clusters = nb.typed.List(
+                joblib.Parallel(n_jobs=-1, prefer='threads')(
+                    joblib.delayed(_postprocess_cluster)
+                    (clusters[start_i:stop_i], precursor_mzs[start_i:stop_i],
+                     rts[start_i:stop_i], precursor_tol_mass,
+                     precursor_tol_mode, rt_tol, min_samples)
+                    for start_i, stop_i in group_idx))
             _assign_unique_cluster_labels(
                 clusters, group_idx, n_clusters, min_samples)
             clusters[:] = clusters[reverse_order]
@@ -645,23 +645,18 @@ def _postprocess_cluster(cluster_labels: np.ndarray, cluster_mzs: np.ndarray,
     if cluster_labels.shape[0] < min_samples:
         n_clusters = 0
     else:
-        cluster_mzs = cluster_mzs.reshape(-1, 1)
-        # Pairwise differences in Dalton.
-        pairwise_mz_diff = _condensed_mz_diff(cluster_mzs, precursor_tol_mode)
         # Group items within the cluster based on their precursor m/z.
         # Precursor m/z's within a single group can't exceed the specified
         # precursor m/z tolerance (`distance_threshold`).
         # Subtract 1 because fcluster starts with cluster label 1 instead of 0
-        # (like scikit-learn does).
+        # (like Scikit-Learn does).
         cluster_assignments = fcluster(
-            fastcluster.linkage(pairwise_mz_diff, 'complete'),
+            _linkage(cluster_mzs, precursor_tol_mode),
             precursor_tol_mass, 'distance') - 1
         # Optionally restrict clusters by their retention time as well.
         if rt_tol is not None:
-            pairwise_rt_diff = _condensed_mz_diff(cluster_rts.reshape(-1, 1))
             cluster_assignments_rt = fcluster(
-                fastcluster.linkage(pairwise_rt_diff, 'complete'),
-                rt_tol, 'distance') - 1
+                _linkage(cluster_rts), rt_tol, 'distance') - 1
             # Merge cluster assignments based on precursor m/z and RT.
             # First prime factorization is used to get unique combined cluster
             # labels, after which consecutive labels are obtained.
@@ -688,11 +683,16 @@ def _postprocess_cluster(cluster_labels: np.ndarray, cluster_mzs: np.ndarray,
     return n_clusters
 
 
-@nb.njit(cache=True)
-def _condensed_mz_diff(values: np.ndarray, tol_mode: str = None) \
-        -> np.ndarray:
+@nb.njit(cache=True, fastmath=True)
+def _linkage(values: np.ndarray, tol_mode: str = None) -> np.ndarray:
     """
-    Compute the condensed pairwise precursor m/z or RT distance matrix.
+    Perform hierarchical clustering of a one-dimensional m/z or RT array.
+
+    Because the data is one-dimensional, no pairwise distance matrix needs to
+    be computed, but rather sorting can be used.
+
+    For information on the linkage output format, see:
+    https://docs.scipy.org/doc/scipy/reference/generated/scipy.cluster.hierarchy.linkage.html
 
     Parameters
     ----------
@@ -705,16 +705,28 @@ def _condensed_mz_diff(values: np.ndarray, tol_mode: str = None) \
     Returns
     -------
     np.ndarray
-        The condensed form of the pairwise distance matrix.
+        The hierarchical clustering encoded as a linkage matrix.
     """
-    diff, d = np.zeros(len(values) * (len(values) - 1) // 2, np.float32), 0
-    for i in range(values.shape[0]):
-        for j in range(i + 1, values.shape[0]):
-            diff[d] = abs(values[i] - values[j])
+    linkage = np.zeros((values.shape[0] - 1, 4), np.double)
+    # min, max, cluster index, number of cluster elements
+    # noinspection PyUnresolvedReferences
+    clusters = [(values[i], values[i], i, 1) for i in np.argsort(values)]
+    for it in range(values.shape[0] - 1):
+        min_dist, min_i = np.inf, -1
+        for i in range(len(clusters) - 1):
+            dist = clusters[i + 1][1] - clusters[i][0]  # Always positive.
             if tol_mode == 'ppm':
-                diff[d] = diff[d] / values[i] * 10 ** 6
-            d += 1
-    return diff
+                dist = dist / clusters[i][0] * 10 ** 6
+            if dist < min_dist:
+                min_dist, min_i = dist, i
+        n_points = clusters[min_i][3] + clusters[min_i + 1][3]
+        linkage[it, :] = [clusters[min_i][2], clusters[min_i + 1][2],
+                          min_dist, n_points]
+        clusters[min_i] = (clusters[min_i][0], clusters[min_i + 1][1],
+                           values.shape[0] + it, n_points)
+        del clusters[min_i + 1]
+
+    return linkage
 
 
 @nb.njit(cache=True)
