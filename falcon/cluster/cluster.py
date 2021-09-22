@@ -681,7 +681,7 @@ def _condensed_mz_diff(mzs: np.ndarray, precursor_tol_mode: str) -> np.ndarray:
     diff, d = np.zeros(len(mzs) * (len(mzs) - 1) // 2, np.float32), 0
     for i in range(mzs.shape[0]):
         for j in range(i + 1, mzs.shape[0]):
-            diff[d] = np.sqrt((mzs[i] - mzs[j]) ** 2)
+            diff[d] = abs(mzs[i] - mzs[j])
             if precursor_tol_mode == 'ppm':
                 diff[d] = diff[d] / mzs[i] * 10**6
             d += 1
