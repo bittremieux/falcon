@@ -11,7 +11,7 @@ import shutil
 import sys
 import tempfile
 import threading
-from typing import BinaryIO, Dict, Iterator, List, Tuple, Union
+from typing import Dict, Iterator, List, Tuple, Union
 
 import joblib
 import natsort
@@ -275,11 +275,11 @@ def _prepare_spectra() -> Dict[int, Tuple[int, List[str]]]:
     peak_readers = multiprocessing.pool.ThreadPool(
         max_file_workers, _read_spectra_queue, (file_queue, spectra_queue))
     # Write the spectra to (unsorted) pickle files.
-    pkl_filehandles = {}
-    lock = multiprocessing.Lock()
+    spectra_to_pkl = collections.defaultdict(list)
+    pkl_locks = collections.defaultdict(multiprocessing.Lock)
     pkl_writers = multiprocessing.pool.ThreadPool(
         max_file_workers, _write_spectra_pkl,
-        (pkl_filehandles, spectra_queue, lock))
+        (spectra_to_pkl, spectra_queue, pkl_locks))
     peak_readers.close()
     peak_readers.join()
     # Add sentinels to indicate stopping. This needs to happen after all files
@@ -288,20 +288,23 @@ def _prepare_spectra() -> Dict[int, Tuple[int, List[str]]]:
         spectra_queue.put((None, None))
     pkl_writers.close()
     pkl_writers.join()
+    # Flush all remaining spectra to pickle files.
+    for pkl_filename, pkl_spectra in spectra_to_pkl.items():
+        with open(pkl_filename, 'ab+') as f_out:
+            for spec in pkl_spectra:
+                pickle.dump(spec, f_out, protocol=pickle.HIGHEST_PROTOCOL)
     # Make sure the spectra in the individual files are sorted by their
     # precursor m/z and count the number of spectra per precursor charge.
     buckets: Dict = collections.defaultdict(lambda: [0, []])
+    pkl_filenames = spectra_to_pkl.keys()
     for filename, n_spectra_file in zip(
-            pkl_filehandles.keys(),
-            joblib.Parallel(n_jobs=-1, backend='threading')(
-                joblib.delayed(_sort_spectra_pkl)(filehandle)
-                for filehandle in pkl_filehandles.values())):
+            pkl_filenames, joblib.Parallel(n_jobs=-1, backend='threading')(
+                joblib.delayed(_sort_spectra_pkl)(filename)
+                for filename in pkl_filenames)):
         charge = os.path.basename(filename)
         charge = int(charge[:charge.index('_')])
         buckets[charge][0] += n_spectra_file
         buckets[charge][1].append(filename)
-    for filehandle in pkl_filehandles.values():
-        filehandle.close()
     n_spectra, n_buckets = 0, 0
     for charge, (n_spectra_charge, filenames) in buckets.items():
         n_spectra += n_spectra_charge
@@ -388,62 +391,63 @@ def _precursor_to_interval(mz: float, charge: int, interval_width: int) -> int:
     return round(neutral_mass / cluster_width) // interval_width
 
 
-def _write_spectra_pkl(pkl_filehandles: Dict[str, BinaryIO],
+def _write_spectra_pkl(spectra_to_pkl: Dict[str, List],
                        spectra_queue: queue.Queue,
-                       lock: multiprocessing.Lock) -> None:
+                       pkl_locks: Dict[str, multiprocessing.Lock]) -> None:
     """
     Read spectra from a queue and write individually to a pickle file.
 
     Parameters
     ----------
-    pkl_filehandles : Dict[str, BinaryIO]
-        File handles of the pickle files to dump spectra.
+    spectra_to_pkl : Dict[str, List]
+        Spectra to write to pickle files.
     spectra_queue : queue.Queue
         Queue from which to read spectra for writing to pickle files.
-    lock : multiprocessing.Lock
-        Lock to avoid race conditions during file handle creation.
+    pkl_locks : Dict[str, multiprocessing.Lock]
+        Locks per file name to avoid race conditions when writing to pickled
+        spectra.
     """
     while True:
         spec, pkl_filename = spectra_queue.get()
         if spec is None:
             return
-        lock.acquire()
-        if pkl_filename not in pkl_filehandles:
-            pkl_filehandles[pkl_filename] = open(pkl_filename, 'wb+')
-        lock.release()
-        pickle.dump(spec, pkl_filehandles[pkl_filename],
-                    protocol=pickle.HIGHEST_PROTOCOL)
+        spectra_to_pkl[pkl_filename].append(spec)
+        if len(spectra_to_pkl[pkl_filename]) > 10_000:
+            with pkl_locks[pkl_filename], open(pkl_filename, 'ab+') as f_out:
+                for spec in spectra_to_pkl[pkl_filename]:
+                    pickle.dump(spec, f_out, protocol=pickle.HIGHEST_PROTOCOL)
+                spectra_to_pkl[pkl_filename].clear()
 
 
-def _sort_spectra_pkl(filehandle: BinaryIO) -> int:
+def _sort_spectra_pkl(filename: str) -> int:
     """
     Sort spectra in a pickle file by their precursor m/z.
 
     Parameters
     ----------
-    filehandle : BinaryIO
-        The pickled spectrum file handle.
+    filename : str
+        The pickled spectrum file name.
 
     Returns
     -------
     int
         The number of spectra in the file.
     """
-    # Read all the spectra from the pickle file.
-    spectra = []
-    filehandle.seek(0)
-    while True:
-        try:
-            spectra.append(pickle.load(filehandle))
-        except EOFError:
-            break
-    # Write the sorted spectra to the pickle file.
-    order = _get_precursor_order(
-        np.asarray([spec.precursor_mz for spec in spectra]))
-    filehandle.seek(0)
-    pickle.dump([spectra[i] for i in order], filehandle,
-                protocol=pickle.HIGHEST_PROTOCOL)
-    return len(spectra)
+    with open(filename, 'rb+') as f_pkl:
+        # Read all the spectra from the pickle file.
+        spectra = []
+        while True:
+            try:
+                spectra.append(pickle.load(f_pkl))
+            except EOFError:
+                break
+        # Write the sorted spectra to the pickle file.
+        order = _get_precursor_order(
+            np.asarray([spec.precursor_mz for spec in spectra]))
+        f_pkl.seek(0)
+        pickle.dump([spectra[i] for i in order], f_pkl,
+                    protocol=pickle.HIGHEST_PROTOCOL)
+        return len(spectra)
 
 
 @nb.njit(cache=True)
