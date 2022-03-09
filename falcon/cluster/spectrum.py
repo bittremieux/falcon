@@ -142,7 +142,7 @@ def process_spectrum(spectrum: sus.MsmsSpectrum,
                           spectrum.retention_time, spectrum.mz, intensity)
 
 
-@nb.njit('Tuple((u4, f4, f4))(f4, f4, f4)', cache=True)
+# @nb.njit('Tuple((u4, f4, f4))(f4, f4, f4)', cache=True)
 def get_dim(min_mz: float, max_mz: float, bin_size: float) \
         -> Tuple[int, float, float]:
     """
