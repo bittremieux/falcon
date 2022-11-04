@@ -32,7 +32,7 @@ _falcon_ requires Python 3.8+ and is available on the Linux and OSX platforms.
 
 You can easily install _falcon_ with pip:
 
-    pip install falcon-ms
+    pip install falcon-ms spectrum-utils==0.3.5
 
 Running _falcon_
 ----------------
