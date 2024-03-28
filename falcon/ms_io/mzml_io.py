@@ -6,7 +6,7 @@ import spectrum_utils.spectrum as sus
 from lxml.etree import LxmlError
 
 
-logger = logging.getLogger('falcon')
+logger = logging.getLogger("falcon")
 
 
 def get_spectra(source: Union[IO, str]) -> Iterable[sus.MsmsSpectrum]:
@@ -27,13 +27,13 @@ def get_spectra(source: Union[IO, str]) -> Iterable[sus.MsmsSpectrum]:
     with pyteomics.mzml.MzML(source) as f_in:
         try:
             for spectrum_dict in f_in:
-                if int(spectrum_dict.get('ms level', -1)) > 1:
+                if int(spectrum_dict.get("ms level", -1)) > 1:
                     try:
                         yield _parse_spectrum(spectrum_dict)
                     except (ValueError, KeyError):
                         pass
         except LxmlError as e:
-            logger.warning('Failed to read file %s: %s', source, e)
+            logger.warning("Failed to read file %s: %s", source, e)
 
 
 def _parse_spectrum(spectrum_dict: Dict) -> sus.MsmsSpectrum:
@@ -50,21 +50,29 @@ def _parse_spectrum(spectrum_dict: Dict) -> sus.MsmsSpectrum:
     MsmsSpectrum
         The parsed cluster.
     """
-    spectrum_id = spectrum_dict['id']
-    mz_array = spectrum_dict['m/z array']
-    intensity_array = spectrum_dict['intensity array']
-    retention_time = (spectrum_dict['scanList']['scan'][0]
-                      .get('scan start time', -1))
+    spectrum_id = spectrum_dict["id"]
+    mz_array = spectrum_dict["m/z array"]
+    intensity_array = spectrum_dict["intensity array"]
+    retention_time = spectrum_dict["scanList"]["scan"][0].get(
+        "scan start time", -1
+    )
 
-    precursor = spectrum_dict['precursorList']['precursor'][0]
-    precursor_ion = precursor['selectedIonList']['selectedIon'][0]
-    precursor_mz = precursor_ion['selected ion m/z']
-    if 'charge state' in precursor_ion:
-        precursor_charge = int(precursor_ion['charge state'])
-    elif 'possible charge state' in precursor_ion:
-        precursor_charge = int(precursor_ion['possible charge state'])
+    precursor = spectrum_dict["precursorList"]["precursor"][0]
+    precursor_ion = precursor["selectedIonList"]["selectedIon"][0]
+    precursor_mz = precursor_ion["selected ion m/z"]
+    if "charge state" in precursor_ion:
+        precursor_charge = int(precursor_ion["charge state"])
+    elif "possible charge state" in precursor_ion:
+        precursor_charge = int(precursor_ion["possible charge state"])
     else:
-        raise ValueError('Unknown precursor charge')
+        raise ValueError("Unknown precursor charge")
 
-    return sus.MsmsSpectrum(spectrum_id, precursor_mz, precursor_charge,
-                            mz_array, intensity_array, None, retention_time)
+    return sus.MsmsSpectrum(
+        spectrum_id,
+        precursor_mz,
+        precursor_charge,
+        mz_array,
+        intensity_array,
+        None,
+        retention_time,
+    )

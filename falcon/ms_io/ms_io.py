@@ -25,14 +25,14 @@ def get_spectra(filename: str) -> Iterator[MsmsSpectrum]:
         An iterator over the spectra in the given file.
     """
     if not os.path.isfile(filename):
-        raise ValueError(f'Non-existing peak file {filename}')
+        raise ValueError(f"Non-existing peak file {filename}")
 
     _, ext = os.path.splitext(filename.lower())
-    if ext == '.mgf':
+    if ext == ".mgf":
         spectrum_io = mgf_io
-    elif ext == '.mzml':
+    elif ext == ".mzml":
         spectrum_io = mzml_io
-    elif ext == '.mzxml':
+    elif ext == ".mzxml":
         spectrum_io = mzxml_io
     else:
         raise ValueError(f'Unknown spectrum file type with extension "{ext}"')
@@ -56,10 +56,11 @@ def write_spectra(filename: str, spectra: Iterable[MsmsSpectrum]) -> None:
         The spectra to be written to the peak file.
     """
     ext = os.path.splitext(filename.lower())[1]
-    if ext == '.mgf':
+    if ext == ".mgf":
         spectrum_io = mgf_io
     else:
-        raise ValueError('Unsupported peak file format (supported formats: '
-                         'MGF)')
+        raise ValueError(
+            "Unsupported peak file format (supported formats: " "MGF)"
+        )
 
     spectrum_io.write_spectra(filename, spectra)

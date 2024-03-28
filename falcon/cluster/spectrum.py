@@ -10,14 +10,23 @@ import spectrum_utils.spectrum as sus
 
 
 MsmsSpectrumNb = collections.namedtuple(
-    'MsmsSpectrumNb',
-    ['filename', 'identifier', 'precursor_mz', 'precursor_charge',
-     'retention_time', 'mz', 'intensity'])
+    "MsmsSpectrumNb",
+    [
+        "filename",
+        "identifier",
+        "precursor_mz",
+        "precursor_charge",
+        "retention_time",
+        "mz",
+        "intensity",
+    ],
+)
 
 
 @nb.njit(cache=True)
-def _check_spectrum_valid(spectrum_mz: np.ndarray, min_peaks: int,
-                          min_mz_range: float) -> bool:
+def _check_spectrum_valid(
+    spectrum_mz: np.ndarray, min_peaks: int, min_mz_range: float
+) -> bool:
     """
     Check whether a cluster is of good enough quality to be used.
 
@@ -36,8 +45,10 @@ def _check_spectrum_valid(spectrum_mz: np.ndarray, min_peaks: int,
         True if the cluster has enough peaks covering a wide enough mass
         range, False otherwise.
     """
-    return (len(spectrum_mz) >= min_peaks and
-            spectrum_mz[-1] - spectrum_mz[0] >= min_mz_range)
+    return (
+        len(spectrum_mz) >= min_peaks
+        and spectrum_mz[-1] - spectrum_mz[0] >= min_mz_range
+    )
 
 
 @nb.njit(cache=True)
@@ -58,15 +69,17 @@ def _norm_intensity(spectrum_intensity: np.ndarray) -> np.ndarray:
     return spectrum_intensity / np.linalg.norm(spectrum_intensity)
 
 
-def process_spectrum(spectrum: sus.MsmsSpectrum,
-                     min_peaks: int, min_mz_range: float,
-                     mz_min: Optional[float] = None,
-                     mz_max: Optional[float] = None,
-                     remove_precursor_tolerance: Optional[float] = None,
-                     min_intensity: Optional[float] = None,
-                     max_peaks_used: Optional[int] = None,
-                     scaling: Optional[str] = None) \
-        -> Optional[MsmsSpectrumNb]:
+def process_spectrum(
+    spectrum: sus.MsmsSpectrum,
+    min_peaks: int,
+    min_mz_range: float,
+    mz_min: Optional[float] = None,
+    mz_max: Optional[float] = None,
+    remove_precursor_tolerance: Optional[float] = None,
+    min_intensity: Optional[float] = None,
+    max_peaks_used: Optional[int] = None,
+    scaling: Optional[str] = None,
+) -> Optional[MsmsSpectrumNb]:
     """
     Process a cluster.
 
@@ -123,12 +136,13 @@ def process_spectrum(spectrum: sus.MsmsSpectrum,
 
     if remove_precursor_tolerance is not None:
         spectrum = spectrum.remove_precursor_peak(
-            remove_precursor_tolerance, 'Da', 0)
+            remove_precursor_tolerance, "Da", 0
+        )
         if not _check_spectrum_valid(spectrum.mz, min_peaks, min_mz_range):
             return None
 
     if min_intensity is not None or max_peaks_used is not None:
-        min_intensity = 0. if min_intensity is None else min_intensity
+        min_intensity = 0.0 if min_intensity is None else min_intensity
         spectrum = spectrum.filter_intensity(min_intensity, max_peaks_used)
         if not _check_spectrum_valid(spectrum.mz, min_peaks, min_mz_range):
             return None
@@ -137,14 +151,21 @@ def process_spectrum(spectrum: sus.MsmsSpectrum,
     intensity = _norm_intensity(spectrum.intensity)
 
     # noinspection PyUnresolvedReferences
-    return MsmsSpectrumNb(spectrum.filename, spectrum.identifier,
-                          spectrum.precursor_mz, spectrum.precursor_charge,
-                          spectrum.retention_time, spectrum.mz, intensity)
+    return MsmsSpectrumNb(
+        spectrum.filename,
+        spectrum.identifier,
+        spectrum.precursor_mz,
+        spectrum.precursor_charge,
+        spectrum.retention_time,
+        spectrum.mz,
+        intensity,
+    )
 
 
-@nb.njit('Tuple((u4, f4, f4))(f4, f4, f4)', cache=True)
-def get_dim(min_mz: float, max_mz: float, bin_size: float) \
-        -> Tuple[int, float, float]:
+@nb.njit("Tuple((u4, f4, f4))(f4, f4, f4)", cache=True)
+def get_dim(
+    min_mz: float, max_mz: float, bin_size: float
+) -> Tuple[int, float, float]:
     """
     Compute the number of bins over the given mass range for the given bin
     size.
@@ -172,8 +193,13 @@ def get_dim(min_mz: float, max_mz: float, bin_size: float) \
 
 
 def to_vector(
-        spectra: List[MsmsSpectrumNb], transformation: ss.csr_matrix,
-        min_mz: float, bin_size: float, dim: int, norm: bool) -> np.ndarray:
+    spectra: List[MsmsSpectrumNb],
+    transformation: ss.csr_matrix,
+    min_mz: float,
+    bin_size: float,
+    dim: int,
+    norm: bool,
+) -> np.ndarray:
     """
     Convert spectra to dense NumPy vectors.
 
@@ -203,7 +229,8 @@ def to_vector(
     """
     data, indices, indptr = _to_vector(spectra, min_mz, bin_size)
     vectors = ss.csr_matrix(
-        (data, indices, indptr), (len(spectra), dim), np.float32, False)
+        (data, indices, indptr), (len(spectra), dim), np.float32, False
+    )
     vectors_transformed = (vectors @ transformation).toarray()
     if norm:
         # Normalize the vectors for inner product search.
@@ -212,8 +239,9 @@ def to_vector(
 
 
 @nb.njit(cache=True)
-def _to_vector(spectra: List[MsmsSpectrumNb], min_mz: float, bin_size: float) \
-        -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _to_vector(
+    spectra: List[MsmsSpectrumNb], min_mz: float, bin_size: float
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Convert spectra to a binned sparse vectors.
 
@@ -245,9 +273,9 @@ def _to_vector(spectra: List[MsmsSpectrumNb], min_mz: float, bin_size: float) \
     i, j = 0, 1
     for spec in spectra:
         n_peaks_spectra = len(spec.mz)
-        data[i:i + n_peaks_spectra] = spec.intensity
+        data[i : i + n_peaks_spectra] = spec.intensity
         mz = [math.floor((mz - min_mz) / bin_size) for mz in spec.mz]
-        indices[i:i + n_peaks_spectra] = mz
+        indices[i : i + n_peaks_spectra] = mz
         indptr[j] = indptr[j - 1] + n_peaks_spectra
         i += n_peaks_spectra
         j += 1

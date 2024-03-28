@@ -41,20 +41,27 @@ def _parse_spectrum(spectrum_dict: Dict) -> sus.MsmsSpectrum:
     MsmsSpectrum
         The parsed cluster.
     """
-    identifier = spectrum_dict['params']['title']
+    identifier = spectrum_dict["params"]["title"]
 
-    mz_array = spectrum_dict['m/z array']
-    intensity_array = spectrum_dict['intensity array']
-    retention_time = float(spectrum_dict['params'].get('rtinseconds', -1))
+    mz_array = spectrum_dict["m/z array"]
+    intensity_array = spectrum_dict["intensity array"]
+    retention_time = float(spectrum_dict["params"].get("rtinseconds", -1))
 
-    precursor_mz = float(spectrum_dict['params']['pepmass'][0])
-    if 'charge' in spectrum_dict['params']:
-        precursor_charge = int(spectrum_dict['params']['charge'][0])
+    precursor_mz = float(spectrum_dict["params"]["pepmass"][0])
+    if "charge" in spectrum_dict["params"]:
+        precursor_charge = int(spectrum_dict["params"]["charge"][0])
     else:
-        raise ValueError('Unknown precursor charge')
+        raise ValueError("Unknown precursor charge")
 
-    return sus.MsmsSpectrum(identifier, precursor_mz, precursor_charge,
-                            mz_array, intensity_array, None, retention_time)
+    return sus.MsmsSpectrum(
+        identifier,
+        precursor_mz,
+        precursor_charge,
+        mz_array,
+        intensity_array,
+        None,
+        retention_time,
+    )
 
 
 def write_spectra(filename: str, spectra: Iterable[sus.MsmsSpectrum]) -> None:
@@ -68,7 +75,7 @@ def write_spectra(filename: str, spectra: Iterable[sus.MsmsSpectrum]) -> None:
     spectra : Iterable[MsmsSpectrum]
         The spectra to be written to the MGF file.
     """
-    with open(filename, 'w') as f_out:
+    with open(filename, "w") as f_out:
         pyteomics.mgf.write(_spectra_to_dicts(spectra), f_out, use_numpy=True)
 
 
@@ -87,15 +94,19 @@ def _spectra_to_dicts(spectra: Iterable[sus.MsmsSpectrum]) -> Iterable[Dict]:
         The given spectra as Pyteomics MGF dictionaries.
     """
     for spectrum in spectra:
-        params = {'title': spectrum.identifier,
-                  'pepmass': spectrum.precursor_mz,
-                  'charge': spectrum.precursor_charge}
-        if hasattr(spectrum, 'retention_time'):
-            params['rtinseconds'] = spectrum.retention_time
-        if hasattr(spectrum, 'scan'):
-            params['scan'] = spectrum.scan
-        if hasattr(spectrum, 'cluster'):
-            params['cluster'] = spectrum.cluster
-        yield {'params': params,
-               'm/z array': spectrum.mz,
-               'intensity array': spectrum.intensity}
+        params = {
+            "title": spectrum.identifier,
+            "pepmass": spectrum.precursor_mz,
+            "charge": spectrum.precursor_charge,
+        }
+        if hasattr(spectrum, "retention_time"):
+            params["rtinseconds"] = spectrum.retention_time
+        if hasattr(spectrum, "scan"):
+            params["scan"] = spectrum.scan
+        if hasattr(spectrum, "cluster"):
+            params["cluster"] = spectrum.cluster
+        yield {
+            "params": params,
+            "m/z array": spectrum.mz,
+            "intensity array": spectrum.intensity,
+        }
