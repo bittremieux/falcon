@@ -3,6 +3,8 @@ from typing import Dict, IO, Iterable, Union
 import pyteomics.mgf
 import spectrum_utils.spectrum as sus
 
+from ..config import config
+
 
 def get_spectra(source: Union[IO, str]) -> Iterable[sus.MsmsSpectrum]:
     """
@@ -50,6 +52,8 @@ def _parse_spectrum(spectrum_dict: Dict) -> sus.MsmsSpectrum:
     precursor_mz = float(spectrum_dict["params"]["pepmass"][0])
     if "charge" in spectrum_dict["params"]:
         precursor_charge = int(spectrum_dict["params"]["charge"][0])
+    elif config.default_charge:
+        precursor_charge = config.default_charge
     else:
         raise ValueError("Unknown precursor charge")
 

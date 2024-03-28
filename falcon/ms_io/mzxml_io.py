@@ -5,6 +5,8 @@ import pyteomics.mzxml
 import spectrum_utils.spectrum as sus
 from lxml.etree import LxmlError
 
+from ..config import config
+
 
 logger = logging.getLogger("falcon")
 
@@ -58,6 +60,8 @@ def _parse_spectrum(spectrum_dict: Dict) -> sus.MsmsSpectrum:
     precursor_mz = spectrum_dict["precursorMz"][0]["precursorMz"]
     if "precursorCharge" in spectrum_dict["precursorMz"][0]:
         precursor_charge = spectrum_dict["precursorMz"][0]["precursorCharge"]
+    elif config.default_charge:
+        precursor_charge = config.default_charge
     else:
         raise ValueError("Unknown precursor charge")
 
