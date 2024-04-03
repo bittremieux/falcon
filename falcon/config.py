@@ -111,6 +111,13 @@ class Config:
             "spectra simultaneously (default: %(default)s m/z).",
         )
         self._parser.add_argument(
+            "--mass_bucket_width",
+            type=float,
+            default=100,
+            help="Width of the mass buckets, for IO purposes "
+            "(default: %(default)s Da).",
+        )
+        self._parser.add_argument(
             "--low_dim",
             default=400,
             type=int,

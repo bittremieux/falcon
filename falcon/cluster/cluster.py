@@ -23,7 +23,7 @@ logger = logging.getLogger("falcon")
 
 def compute_pairwise_distances(
     n_spectra: int,
-    bucket_filenames: List[str],
+    bucket_filename: str,
     process_spectrum: Callable,
     vectorize: Callable,
     precursor_tol_mass: float,
@@ -90,7 +90,7 @@ def compute_pairwise_distances(
     # Create the ANN indexes (if this hasn't been done yet) and calculate
     # pairwise distances.
     metadata = _build_query_ann_index(
-        bucket_filenames,
+        bucket_filename,
         process_spectrum,
         vectorize,
         n_probe,
@@ -106,6 +106,8 @@ def compute_pairwise_distances(
     )
     # Update the number of spectra because of skipped low-quality spectra.
     n_spectra = len(metadata)
+    if n_spectra == 0:
+        return None, None
     indptr = indptr[: n_spectra + 1]
     distances, indices = distances[: indptr[-1]], indices[: indptr[-1]]
     # Convert to a sparse pairwise distance matrix. This matrix might not be
@@ -124,7 +126,7 @@ def compute_pairwise_distances(
 
 
 def _build_query_ann_index(
-    bucket_filenames: List[str],
+    bucket_filename: str,
     process_spectrum: Callable,
     vectorize: Callable,
     n_probe: int,
@@ -182,99 +184,113 @@ def _build_query_ann_index(
         Metadata (filename, identifier, precursor charge, precursor m/z,
         retention time) of the spectra for which indexes were built.
     """
-    filenames, identifiers, precursor_mzs, rts = [], [], [], []
+    # Read the spectra for the m/z bucket.
+    filenames, identifiers, bucket_ids, precursor_mzs, rts = [], [], [], [], []
+    spectra = nb.typed.List()
     indptr_i = 0
-    # Find neighbors per specified precursor m/z interval.
-    for pkl_filename in tqdm.tqdm(
-        bucket_filenames, desc="Buckets queried", unit="bucket"
-    ):
-        # Read the spectra for the m/z split.
-        spectra_split, precursor_mzs_split, rts_split = nb.typed.List(), [], []
-        with open(pkl_filename, "rb") as f_in:
-            for spec_raw in pickle.load(f_in):
-                spec_processed = process_spectrum(spec_raw)
-                # Discard low-quality spectra.
-                if spec_processed is not None:
-                    spectra_split.append(spec_processed)
-                    filenames.append(spec_processed.filename)
-                    identifiers.append(spec_processed.identifier)
-                    precursor_mzs_split.append(spec_processed.precursor_mz)
-                    rts_split.append(spec_processed.retention_time)
-        if len(spectra_split) == 0:
-            continue
-        precursor_mzs.append(np.asarray(precursor_mzs_split))
-        rts.append(np.asarray(rts_split))
-        # Convert the spectra to vectors.
-        vectors_split = vectorize(spectra=spectra_split)
-        n_split, dim = vectors_split.shape
-        # Figure out a decent value for the n_list hyperparameter based on
-        # the number of vectors.
-        # Rules of thumb from the Faiss wiki:
-        # https://github.com/facebookresearch/faiss/wiki/Guidelines-to-choose-an-index#how-big-is-the-dataset
-        if n_split == 0:
-            continue
-        if n_split < 10**2:
-            # Use a brute-force index instead of an ANN index when there
-            # are only a few items.
-            n_list = -1
-        elif n_split < 10**6:
-            n_list = 2 ** math.floor(math.log2(n_split / 39))
-        elif n_split < 10**7:
-            n_list = 2**16
-        elif n_split < 10**8:
-            n_list = 2**18
-        else:
-            n_list = 2**20
-            if n_split > 10**9:
-                logger.warning(
-                    "More than 1B vectors to be indexed, consider "
-                    "decreasing the ANN size"
+    with open(bucket_filename, "rb") as f_in:
+        for spec_raw in pickle.load(f_in):
+            spec_processed = process_spectrum(spec_raw)
+            # spec_processed = spec_raw
+            # Discard low-quality spectra.
+            if spec_processed is not None:
+                spectra.append(spec_processed)
+                filenames.append(spec_processed.filename)
+                identifiers.append(spec_processed.identifier)
+                bucket_ids.append(
+                    int(
+                        bucket_filename.split("/")[-1]
+                        .split(".")[0]
+                        .split("_")[-1]
+                    )
                 )
-        # Create an ANN index using the inner product (proxy for cosine
-        # distance) for fast NN queries.
-        if n_list <= 0:
-            index = faiss.IndexIDMap(faiss.IndexFlatIP(dim))
-        else:
-            index = faiss.IndexIVFFlat(
-                faiss.IndexFlatIP(dim), dim, n_list, faiss.METRIC_INNER_PRODUCT
-            )
-            index.nprobe = min(math.ceil(index.nlist / 8), n_probe)
-        # Compute cluster centroids.
-        # noinspection PyArgumentList
-        index.train(vectors_split)
-        # Add the vectors to the index in batches.
-        batch_size = min(n_split, batch_size)
-        for batch_start in range(0, n_split, batch_size):
-            batch_stop = min(batch_start + batch_size, n_split)
-            # noinspection PyArgumentList
-            index.add_with_ids(
-                vectors_split[batch_start:batch_stop],
-                np.arange(batch_start, batch_stop, dtype=np.int64),
-            )
-        # Query the index to calculate NN distances.
-        _dist_mz_interval(
-            index,
-            vectors_split,
-            precursor_mzs[-1],
-            rts[-1],
-            batch_size,
-            n_neighbors,
-            n_neighbors_ann,
-            precursor_tol_mass,
-            precursor_tol_mode,
-            rt_tol,
-            distances,
-            indices,
-            indptr,
-            indptr_i,
+                precursor_mzs.append(spec_processed.precursor_mz)
+                rts.append(spec_processed.retention_time)
+    if len(spectra) == 0:
+        logger.warning("No spectra to cluster after quality inspection")
+        return pd.DataFrame(
+            columns=[
+                "filename",
+                "spectrum_id",
+                "precursor_mz",
+                "retention_time",
+            ]
         )
-        index.reset()
-        indptr_i += n_split
+    precursor_mzs = np.asarray(precursor_mzs)
+    rts = np.asarray(rts)
+    # Convert the spectra to vectors.
+    vectors = vectorize(spectra=spectra)
+    n_vectors, dim = vectors.shape
+    # Figure out a decent value for the n_list hyperparameter based on
+    # the number of vectors.
+    # Rules of thumb from the Faiss wiki:
+    # https://github.com/facebookresearch/faiss/wiki/Guidelines-to-choose-an-index#how-big-is-the-dataset
+    # if n_vectors == 0:
+    #     continue
+    if n_vectors < 10**2:
+        # Use a brute-force index instead of an ANN index when there
+        # are only a few items.
+        n_list = -1
+    elif n_vectors < 10**6:
+        n_list = 2 ** math.floor(math.log2(n_vectors / 39))
+    elif n_vectors < 10**7:
+        n_list = 2**16
+    elif n_vectors < 10**8:
+        n_list = 2**18
+    else:
+        n_list = 2**20
+        if n_vectors > 10**9:
+            logger.warning(
+                "More than 1B vectors to be indexed, consider "
+                "decreasing the ANN size"
+            )
+    # Create an ANN index using the inner product (proxy for cosine
+    # distance) for fast NN queries.
+    if n_list <= 0:
+        index = faiss.IndexIDMap(faiss.IndexFlatIP(dim))
+    else:
+        index = faiss.IndexIVFFlat(
+            faiss.IndexFlatIP(dim), dim, n_list, faiss.METRIC_INNER_PRODUCT
+        )
+        index.nprobe = min(math.ceil(index.nlist / 8), n_probe)
+    # Compute cluster centroids.
+    # noinspection PyArgumentList
+    index.train(vectors)
+    # Add the vectors to the index in batches.
+    batch_size = min(n_vectors, batch_size)
+    for batch_start in range(0, n_vectors, batch_size):
+        batch_stop = min(batch_start + batch_size, n_vectors)
+        # noinspection PyArgumentList
+        index.add_with_ids(
+            vectors[batch_start:batch_stop],
+            np.arange(batch_start, batch_stop, dtype=np.int64),
+        )
+    # Query the index to calculate NN distances.
+    _dist_mz_interval(
+        index,
+        vectors,
+        precursor_mzs,
+        rts,
+        batch_size,
+        n_neighbors,
+        n_neighbors_ann,
+        precursor_tol_mass,
+        precursor_tol_mode,
+        rt_tol,
+        distances,
+        indices,
+        indptr,
+        indptr_i,
+    )
+    index.reset()
+    indptr_i += n_vectors
+
     if len(identifiers) == 0:
         return pd.DataFrame(
             columns=[
                 "filename",
                 "spectrum_id",
+                "bucket_id",
                 "precursor_mz",
                 "retention_time",
             ]
@@ -284,6 +300,7 @@ def _build_query_ann_index(
             {
                 "filename": filenames,
                 "spectrum_id": identifiers,
+                "bucket_id": bucket_ids,
                 "precursor_mz": np.hstack(precursor_mzs),
                 "retention_time": np.hstack(rts),
             }

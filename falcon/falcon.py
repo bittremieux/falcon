@@ -88,6 +88,7 @@ def main(args: Union[str, List[str]] = None) -> int:
         )
     os.makedirs(config.work_dir, exist_ok=True)
     os.makedirs(os.path.join(config.work_dir, "spectra"), exist_ok=True)
+    os.makedirs(os.path.join(config.work_dir, "buckets"), exist_ok=True)
     os.makedirs(os.path.join(config.work_dir, "nn"), exist_ok=True)
 
     # Clean all intermediate and final results if "overwrite" is specified,
@@ -181,17 +182,23 @@ def main(args: Union[str, List[str]] = None) -> int:
         norm=True,
     )
 
-    # Cluster the spectra per charge.
+    # Cluster the spectra per precursor mass bucket.
     clusters_all, current_label, representative_info = [], 0, []
-    for charge, (n_spectra, bucket_filenames) in buckets.items():
+    for n_spectra, filename in buckets:
+        charge, bucket_id = map(
+            int, os.path.basename(filename).split(".")[0].split("_")
+        )
         logger.info(
-            "Cluster %d spectra with precursor charge %d", n_spectra, charge
+            "Cluster %d spectra with precursor charge %d in mass bucket %d",
+            n_spectra,
+            charge,
+            bucket_id,
         )
         dist_filename = os.path.join(
-            config.work_dir, "nn", f"dist_{charge}.npz"
+            config.work_dir, "nn", f"dist_{bucket_id}.npz"
         )
         metadata_filename = os.path.join(
-            config.work_dir, "nn", f"metadata_{charge}.parquet"
+            config.work_dir, "nn", f"metadata_{bucket_id}.parquet"
         )
         if not os.path.isfile(dist_filename) or not os.path.isfile(
             metadata_filename
@@ -199,7 +206,7 @@ def main(args: Union[str, List[str]] = None) -> int:
             pairwise_dist_matrix, metadata = (
                 cluster.compute_pairwise_distances(
                     n_spectra,
-                    bucket_filenames,
+                    filename,
                     process_spectrum,
                     vectorize,
                     config.precursor_tol[0],
@@ -211,6 +218,8 @@ def main(args: Union[str, List[str]] = None) -> int:
                     config.n_probe,
                 )
             )
+            if metadata is None:
+                continue
             metadata.insert(2, "precursor_charge", charge)
             logger.debug(
                 "Export pairwise distance matrix to file %s", dist_filename
@@ -282,10 +291,8 @@ def main(args: Union[str, List[str]] = None) -> int:
         representative_info["pkl"] = representative_info.apply(
             lambda row: os.path.join(
                 config.work_dir,
-                "spectra",
-                f"""{row.precursor_charge}_{_precursor_to_interval(
-                    row.precursor_mz, row.precursor_charge,
-                    config.mz_interval)}.pkl""",
+                "buckets",
+                f"""{row.precursor_charge}_{row.bucket_id}.pkl""",
             ),
             axis="columns",
         )
@@ -348,8 +355,11 @@ def _prepare_spectra() -> Dict[int, Tuple[int, List[str]]]:
     ):
         file_queue.put(filename)
     # Read the peak files and put their spectra in the queue for consumption.
+    precursor_mz = collections.defaultdict(list)
     peak_readers = multiprocessing.pool.ThreadPool(
-        max_file_workers, _read_spectra_queue, (file_queue, spectra_queue)
+        max_file_workers,
+        _read_spectra_queue,
+        (file_queue, spectra_queue, precursor_mz),
     )
     # Write the spectra to (unsorted) pickle files.
     spectra_to_pkl = collections.defaultdict(list)
@@ -372,37 +382,58 @@ def _prepare_spectra() -> Dict[int, Tuple[int, List[str]]]:
         with open(pkl_filename, "ab+") as f_out:
             for spec in pkl_spectra:
                 pickle.dump(spec, f_out, protocol=pickle.HIGHEST_PROTOCOL)
+    # Group spectra with near-identical precursor m/z values in the same mass
+    # bucket before clustering.
+    mass_buckets = _get_bucket_limits(precursor_mz)
+
+    bucket_queue = queue.Queue()
+    bucket_counter = 0
+    for charge, bucket_limits in mass_buckets.items():
+        for min_mz, max_mz in bucket_limits:
+            bucket_queue.put((bucket_counter, charge, min_mz, max_mz))
+            bucket_counter += 1
+    for _ in range(max_file_workers):
+        bucket_queue.put((None, None, None, None))
+    max_bucket_workers = min(len(mass_buckets), multiprocessing.cpu_count())
+    bucket_filenames = []
+    bucket_writers = multiprocessing.pool.ThreadPool(
+        max_bucket_workers,
+        _write_mass_buckets,
+        (
+            bucket_queue,
+            bucket_filenames,
+        ),
+    )
+    bucket_writers.close()
+    bucket_writers.join()
     # Make sure the spectra in the individual files are sorted by their
     # precursor m/z and count the number of spectra per precursor charge.
-    buckets: Dict = collections.defaultdict(lambda: [0, []])
-    pkl_filenames = spectra_to_pkl.keys()
+    buckets = []
     for filename, n_spectra_file in zip(
-        pkl_filenames,
+        bucket_filenames,
         joblib.Parallel(n_jobs=-1, backend="threading")(
             joblib.delayed(_sort_spectra_pkl)(filename)
-            for filename in pkl_filenames
+            for filename in bucket_filenames
         ),
     ):
-        charge = os.path.basename(filename)
-        charge = int(charge[: charge.index("_")])
-        buckets[charge][0] += n_spectra_file
-        buckets[charge][1].append(filename)
+        buckets.append((n_spectra_file, filename))
     n_spectra, n_buckets = 0, 0
-    for charge, (n_spectra_charge, filenames) in buckets.items():
-        n_spectra += n_spectra_charge
-        n_buckets += len(filenames)
-        buckets[charge] = n_spectra_charge, natsort.natsorted(filenames)
+    for n_spectra_bucket, filename in buckets:
+        n_spectra += n_spectra_bucket
+        n_buckets += 1
     logger.debug(
         "%d spectra written to %d buckets by precursor charge and "
         "precursor m/z",
         n_spectra,
         n_buckets,
     )
-    return dict(buckets)
+    return buckets
 
 
 def _read_spectra_queue(
-    file_queue: queue.Queue, spectra_queue: queue.Queue
+    file_queue: queue.Queue,
+    spectra_queue: queue.Queue,
+    precursor_mz: Dict[int, List[float]],
 ) -> None:
     """
     Get the spectra from the file queue and store them in the spectra queue.
@@ -413,19 +444,27 @@ def _read_spectra_queue(
         Queue from which the file names are retrieved.
     spectra_queue : queue.Queue
         Queue in which spectra are stored.
+    precursor_mz : Dict[int, List[float]]
+        List in which precursor m/z values are stored by charge.
     """
     while True:
         filename = file_queue.get()
         if filename is None:
             return
         for spec in _read_spectra(
-            filename, config.mz_interval, config.work_dir
+            filename,
+            precursor_mz,
+            config.mass_bucket_width,
+            config.work_dir,
         ):
             spectra_queue.put(spec)
 
 
 def _read_spectra(
-    filename: str, mz_interval: int, work_dir: str
+    filename: str,
+    precursor_mz: Dict[int, List[float]],
+    mass_bucket_width: float,
+    work_dir: str,
 ) -> Iterator[Tuple[MsmsSpectrum, str]]:
     """
     Get the spectra from the given file.
@@ -434,8 +473,8 @@ def _read_spectra(
     ----------
     filename : str
         The path of the peak file to be read.
-    mz_interval : int
-        The width of each m/z interval.
+    mass_bucket_width : float
+        The size of the mass bucket.
     work_dir : str
         The directory in which the spectrum buckets will be stored.
 
@@ -448,8 +487,11 @@ def _read_spectra(
     filename = os.path.abspath(filename)
     for spec in ms_io.get_spectra(filename):
         spec.filename = filename
+        precursor_mz[spec.precursor_charge].append(spec.precursor_mz)
         interval = _precursor_to_interval(
-            spec.precursor_mz, spec.precursor_charge, mz_interval
+            spec.precursor_mz,
+            spec.precursor_charge,
+            mass_bucket_width,
         )
         pkl_filename = os.path.join(
             work_dir, "spectra", f"{spec.precursor_charge}_{interval}.pkl"
@@ -458,7 +500,11 @@ def _read_spectra(
 
 
 @nb.njit(cache=True)
-def _precursor_to_interval(mz: float, charge: int, interval_width: int) -> int:
+def _precursor_to_interval(
+    mz: float,
+    charge: int,
+    interval_width: float,
+) -> int:
     """
     Convert the precursor m/z to the neutral mass and get the interval index.
 
@@ -468,7 +514,7 @@ def _precursor_to_interval(mz: float, charge: int, interval_width: int) -> int:
         The precursor m/z.
     charge : int
         The precursor charge.
-    interval_width : int
+    interval_width : float
         The width of each m/z interval.
 
     Returns
@@ -477,9 +523,9 @@ def _precursor_to_interval(mz: float, charge: int, interval_width: int) -> int:
         The index of the interval to which a spectrum with the given m/z and
         charge belongs.
     """
-    hydrogen_mass, cluster_width = 1.00794, 1.0005079
+    hydrogen_mass = 1.00794
     neutral_mass = (mz - hydrogen_mass) * max(abs(charge), 1)
-    return round(neutral_mass / cluster_width) // interval_width
+    return int(neutral_mass // interval_width)
 
 
 def _write_spectra_pkl(
@@ -510,6 +556,118 @@ def _write_spectra_pkl(
                 for spec in spectra_to_pkl[pkl_filename]:
                     pickle.dump(spec, f_out, protocol=pickle.HIGHEST_PROTOCOL)
                 spectra_to_pkl[pkl_filename].clear()
+
+
+def _write_mass_buckets(
+    bucket_queue: queue.Queue,
+    bucket_filenames: List[str],
+) -> None:
+    """
+    Get the mass buckets from the queue and store them in the mass bucket files.
+
+    Parameters
+    ----------
+    bucket_queue : queue.Queue
+        Queue from which the mass buckets are retrieved.
+    """
+    while True:
+        bucket_idx, charge, min_mz, max_mz = bucket_queue.get()
+        if charge is None:
+            return
+        _spectra_to_mass_bucket(
+            bucket_idx,
+            charge,
+            min_mz,
+            max_mz,
+            bucket_filenames,
+            config.work_dir,
+        )
+
+
+def _spectra_to_mass_bucket(
+    bucket_idx: int,
+    charge: int,
+    min_mz: float,
+    max_mz: float,
+    bucket_filenames: List[str],
+    work_dir: str,
+) -> None:
+    """
+    Read spectra from pickle files and store them in mass buckets.
+
+    Parameters
+    ----------
+    charge : int
+        The precursor charge.
+    min_mz : float
+        The minimum m/z value of the spectra to read.
+    max_mz : float
+        The maximum m/z value of the spectra to read.
+    work_dir : str
+        The directory in which the spectrum buckets are stored.
+
+    Returns
+    -------
+    List[MsmsSpectrum]
+        The spectra in the given m/z range.
+    """
+    spectra = []
+    min_bucket = int(min_mz // config.mass_bucket_width)
+    max_bucket = int(max_mz // config.mass_bucket_width)
+    for bucket in range(min_bucket, max_bucket + 1):
+        pkl_filename = os.path.join(
+            work_dir, "spectra", f"{charge}_{bucket}.pkl"
+        )
+        if not os.path.exists(pkl_filename):
+            continue
+        with open(pkl_filename, "rb") as f_in:
+            while True:
+                try:
+                    spec = pickle.load(f_in)
+                    if min_mz <= spec.precursor_mz <= max_mz:
+                        spectra.append(spec)
+                except EOFError:
+                    break
+    bucket_filename = os.path.join(
+        work_dir, "buckets", f"{charge}_{bucket_idx}.pkl"
+    )
+    bucket_filenames.append(bucket_filename)
+    with open(bucket_filename, "wb") as f_out:
+        for spec in spectra:
+            pickle.dump(spec, f_out, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def _get_bucket_limits(precursor_mz: Dict[int, List[float]]) -> None:
+    """
+    Create mass buckets given all precursor m/z's and precursor m/z tolerance.
+
+    Parameters
+    ----------
+    precursor_mz : Dict[int, List[float]]
+        The precursor m/z values per charge.
+
+    Returns
+    -------
+    Dict[int, List[Tuple[float, float]]]
+        The minimum and maximum m/z values for each mass bucket.
+    """
+    min_max_mz = collections.defaultdict(list)
+    for charge, mz_values in precursor_mz.items():
+        mz_values = np.sort(mz_values)
+        cluster_count = 0
+        i = 0
+        while i < len(mz_values):
+            cluster_min = mz_values[i]
+            while (
+                i < len(mz_values) - 1
+                and mz_values[i + 1] - mz_values[i] < config.precursor_tol[0]
+            ):
+                i += 1
+            cluster_max = mz_values[i]
+            min_max_mz[charge].append((cluster_min, cluster_max))
+            cluster_count += 1
+            i += 1
+    return min_max_mz
 
 
 def _sort_spectra_pkl(filename: str) -> int:
