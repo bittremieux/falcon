@@ -384,8 +384,9 @@ def _prepare_spectra() -> Dict[int, Tuple[int, List[str]]]:
                 pickle.dump(spec, f_out, protocol=pickle.HIGHEST_PROTOCOL)
     # Group spectra with near-identical precursor m/z values in the same mass
     # bucket before clustering.
-    mass_buckets = _get_bucket_limits(precursor_mz)
-
+    mass_buckets = _get_bucket_limits(
+        precursor_mz, config.precursor_tol[0], config.precursor_tol[1]
+    )
     bucket_queue = queue.Queue()
     bucket_counter = 0
     for charge, bucket_limits in mass_buckets.items():
@@ -637,7 +638,11 @@ def _spectra_to_mass_bucket(
             pickle.dump(spec, f_out, protocol=pickle.HIGHEST_PROTOCOL)
 
 
-def _get_bucket_limits(precursor_mz: Dict[int, List[float]]) -> None:
+def _get_bucket_limits(
+    precursor_mz: Dict[int, List[float]],
+    tol: float,
+    tol_mode: str,
+) -> None:
     """
     Create mass buckets given all precursor m/z's and precursor m/z tolerance.
 
@@ -658,11 +663,21 @@ def _get_bucket_limits(precursor_mz: Dict[int, List[float]]) -> None:
         i = 0
         while i < len(mz_values):
             cluster_min = mz_values[i]
-            while (
-                i < len(mz_values) - 1
-                and mz_values[i + 1] - mz_values[i] < config.precursor_tol[0]
-            ):
-                i += 1
+            if tol_mode == "Da":
+                while (
+                    i < len(mz_values) - 1
+                    and mz_values[i + 1] - mz_values[i] < tol
+                ):
+                    i += 1
+            elif tol_mode == "ppm":
+                while (
+                    i < len(mz_values) - 1
+                    and (mz_values[i + 1] - mz_values[i])
+                    / mz_values[i]
+                    * 10**6
+                    < tol
+                ):
+                    i += 1
             cluster_max = mz_values[i]
             min_max_mz[charge].append((cluster_min, cluster_max))
             cluster_count += 1
