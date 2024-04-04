@@ -327,16 +327,16 @@ def main(args: Union[str, List[str]] = None) -> int:
     return 0
 
 
-def _prepare_spectra() -> Dict[int, Tuple[int, List[str]]]:
+def _prepare_spectra() -> List[Tuple[int, str]]:
     """
     Read the spectra from the input peak files and partition to intermediate
     files split and sorted by precursor m/z.
 
     Returns
     -------
-    Dict[int, Tuple[int, List[str]]]
-        A dictionary with per precursor charge the total number of spectra and
-        a list of file names of the spectrum buckets.
+    List[Tuple[int, str]]
+        The number of spectra per precursor m/z bucket and the filenames of the
+        intermediate files.
     """
     input_filenames = [
         fn for pattern in config.input_filenames for fn in glob.glob(pattern)
@@ -393,9 +393,9 @@ def _prepare_spectra() -> Dict[int, Tuple[int, List[str]]]:
         for min_mz, max_mz in bucket_limits:
             bucket_queue.put((bucket_counter, charge, min_mz, max_mz))
             bucket_counter += 1
-    for _ in range(max_file_workers):
-        bucket_queue.put((None, None, None, None))
     max_bucket_workers = min(len(mass_buckets), multiprocessing.cpu_count())
+    for _ in range(max_bucket_workers):
+        bucket_queue.put((None, None, None, None))
     bucket_filenames = []
     bucket_writers = multiprocessing.pool.ThreadPool(
         max_bucket_workers,
@@ -474,6 +474,8 @@ def _read_spectra(
     ----------
     filename : str
         The path of the peak file to be read.
+    precursor_mz : Dict[int, List[float]]
+        The precursor m/z values per charge.
     mass_bucket_width : float
         The size of the mass bucket.
     work_dir : str
@@ -521,8 +523,8 @@ def _precursor_to_interval(
     Returns
     -------
     int
-        The index of the interval to which a spectrum with the given m/z and
-        charge belongs.
+        The index of the interval to which a spectrum with the given m/z
+        belongs.
     """
     hydrogen_mass = 1.00794
     neutral_mass = (mz - hydrogen_mass) * max(abs(charge), 1)
@@ -564,12 +566,15 @@ def _write_mass_buckets(
     bucket_filenames: List[str],
 ) -> None:
     """
-    Get the mass buckets from the queue and store them in the mass bucket files.
+    Get the mass buckets from the queue and store them in the mass bucket
+    files.
 
     Parameters
     ----------
     bucket_queue : queue.Queue
         Queue from which the mass buckets are retrieved.
+    bucket_filenames : List[str]
+        List that will be filled with filenames of the mass buckets.
     """
     while True:
         bucket_idx, charge, min_mz, max_mz = bucket_queue.get()
@@ -598,12 +603,16 @@ def _spectra_to_mass_bucket(
 
     Parameters
     ----------
+    bucket_idx : int
+        The index of the mass bucket.
     charge : int
         The precursor charge.
     min_mz : float
         The minimum m/z value of the spectra to read.
     max_mz : float
         The maximum m/z value of the spectra to read.
+    bucket_filenames : List[str]
+        List that will be filled with filenames of the mass buckets.
     work_dir : str
         The directory in which the spectrum buckets are stored.
 
@@ -650,6 +659,10 @@ def _get_bucket_limits(
     ----------
     precursor_mz : Dict[int, List[float]]
         The precursor m/z values per charge.
+    tol : float
+        The precursor m/z tolerance.
+    tol_mode : str
+        The tolerance mode, either "Da" or "ppm".
 
     Returns
     -------

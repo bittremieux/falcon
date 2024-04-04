@@ -42,8 +42,8 @@ def compute_pairwise_distances(
     ----------
     n_spectra: int
         The total number of spectra to be processed.
-    bucket_filenames : List[str]
-        List of bucket file names.
+    bucket_filename : str
+        Mass bucket file name.
     process_spectrum : Callable
         Function to preprocess the spectra.
     vectorize : Callable
@@ -146,8 +146,8 @@ def _build_query_ann_index(
 
     Parameters
     ----------
-    bucket_filenames : List[str]
-        List of bucket file names.
+    bucket_filename : str
+        Mass bucket file name.
     process_spectrum : Callable
         Function to preprocess the spectra.
     vectorize : Callable
