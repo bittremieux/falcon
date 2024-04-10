@@ -222,7 +222,8 @@ def main(args: Union[str, List[str]] = None) -> int:
                 continue
             metadata.insert(2, "precursor_charge", charge)
             logger.debug(
-                "Export pairwise distance matrix to file %s", dist_filename
+                "Export pairwise distance matrix to file %s",
+                dist_filename,
             )
             ss.save_npz(dist_filename, pairwise_dist_matrix, False)
             metadata.to_parquet(metadata_filename, index=False)
@@ -456,6 +457,7 @@ def _read_spectra_queue(
             filename,
             precursor_mz,
             config.mass_bucket_width,
+            config.bucket_tolerance,
             config.work_dir,
         ):
             spectra_queue.put(spec)
@@ -465,6 +467,7 @@ def _read_spectra(
     filename: str,
     precursor_mz: Dict[int, List[float]],
     mass_bucket_width: float,
+    bucket_tolerance: float,
     work_dir: str,
 ) -> Iterator[Tuple[MsmsSpectrum, str]]:
     """
@@ -478,6 +481,8 @@ def _read_spectra(
         The precursor m/z values per charge.
     mass_bucket_width : float
         The size of the mass bucket.
+    bucket_tolerance : float
+        The tolerance for handling border cases during bucketing.
     work_dir : str
         The directory in which the spectrum buckets will be stored.
 
@@ -495,6 +500,7 @@ def _read_spectra(
             spec.precursor_mz,
             spec.precursor_charge,
             mass_bucket_width,
+            bucket_tolerance,
         )
         pkl_filename = os.path.join(
             work_dir, "spectra", f"{spec.precursor_charge}_{interval}.pkl"
@@ -507,6 +513,7 @@ def _precursor_to_interval(
     mz: float,
     charge: int,
     interval_width: float,
+    bucket_tolerance: float,
 ) -> int:
     """
     Convert the precursor m/z to the neutral mass and get the interval index.
@@ -519,6 +526,8 @@ def _precursor_to_interval(
         The precursor charge.
     interval_width : float
         The width of each m/z interval.
+    bucket_tolerance : float
+        The tolerance for handling border cases during bucketing.
 
     Returns
     -------
@@ -528,7 +537,11 @@ def _precursor_to_interval(
     """
     hydrogen_mass = 1.00794
     neutral_mass = (mz - hydrogen_mass) * max(abs(charge), 1)
-    return int(neutral_mass // interval_width)
+    interval = int(neutral_mass // interval_width)
+    remainder = neutral_mass % interval_width
+    if remainder >= interval_width - bucket_tolerance:
+        interval += 1
+    return interval
 
 
 def _write_spectra_pkl(
@@ -651,7 +664,7 @@ def _get_bucket_limits(
     precursor_mz: Dict[int, List[float]],
     tol: float,
     tol_mode: str,
-) -> None:
+) -> Dict[int, List[Tuple[float, float]]]:
     """
     Create mass buckets given all precursor m/z's and precursor m/z tolerance.
 

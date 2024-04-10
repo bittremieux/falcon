@@ -118,6 +118,13 @@ class Config:
             "(default: %(default)s Da).",
         )
         self._parser.add_argument(
+            "--bucket_tolerance",
+            type=float,
+            default=0.001,
+            help="Tolerance for the bucketing of spectra "
+            "(default: %(default)s Da).",
+        )
+        self._parser.add_argument(
             "--low_dim",
             default=400,
             type=int,
