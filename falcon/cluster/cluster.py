@@ -13,6 +13,7 @@ import pandas as pd
 import scipy.sparse as ss
 import tqdm
 from scipy.cluster.hierarchy import fcluster
+from spectrum_utils.spectrum import MsmsSpectrum
 
 # noinspection PyProtectedMember
 from sklearn.cluster._dbscan_inner import dbscan_inner
@@ -23,7 +24,8 @@ logger = logging.getLogger("falcon")
 
 def compute_pairwise_distances(
     n_spectra: int,
-    bucket_filename: str,
+    spectra_df: pd.DataFrame,
+    bucket_id: int,
     process_spectrum: Callable,
     vectorize: Callable,
     precursor_tol_mass: float,
@@ -90,7 +92,8 @@ def compute_pairwise_distances(
     # Create the ANN indexes (if this hasn't been done yet) and calculate
     # pairwise distances.
     metadata = _build_query_ann_index(
-        bucket_filename,
+        spectra_df,
+        bucket_id,
         process_spectrum,
         vectorize,
         n_probe,
@@ -126,7 +129,8 @@ def compute_pairwise_distances(
 
 
 def _build_query_ann_index(
-    bucket_filename: str,
+    spectra_df: pd.DataFrame,
+    bucket_id: int,
     process_spectrum: Callable,
     vectorize: Callable,
     n_probe: int,
@@ -188,24 +192,17 @@ def _build_query_ann_index(
     filenames, identifiers, bucket_ids, precursor_mzs, rts = [], [], [], [], []
     spectra = nb.typed.List()
     indptr_i = 0
-    with open(bucket_filename, "rb") as f_in:
-        for spec_raw in pickle.load(f_in):
-            spec_processed = process_spectrum(spec_raw)
-            # spec_processed = spec_raw
-            # Discard low-quality spectra.
-            if spec_processed is not None:
-                spectra.append(spec_processed)
-                filenames.append(spec_processed.filename)
-                identifiers.append(spec_processed.identifier)
-                bucket_ids.append(
-                    int(
-                        bucket_filename.split("/")[-1]
-                        .split(".")[0]
-                        .split("_")[-1]
-                    )
-                )
-                precursor_mzs.append(spec_processed.precursor_mz)
-                rts.append(spec_processed.retention_time)
+    msms_spectra = spectra_df.apply(df_row_to_spectrum, axis=1).tolist()
+    for spec_raw in msms_spectra:
+        spec_processed = process_spectrum(spec_raw)
+        # Discard low-quality spectra.
+        if spec_processed is not None:
+            spectra.append(spec_processed)
+            filenames.append(spec_processed.filename)
+            identifiers.append(spec_processed.identifier)
+            bucket_ids.append(bucket_id)
+            precursor_mzs.append(spec_processed.precursor_mz)
+            rts.append(spec_processed.retention_time)
     if len(spectra) == 0:
         logger.warning("No spectra to cluster after quality inspection")
         return pd.DataFrame(
@@ -305,6 +302,32 @@ def _build_query_ann_index(
                 "retention_time": np.hstack(rts),
             }
         )
+
+
+def df_row_to_spectrum(row) -> MsmsSpectrum:
+    """
+    Convert a row from a DataFrame to a `MsmsSpectrum`.
+
+    Parameters
+    ----------
+    row : pd.Series
+        A row from a DataFrame containing the spectrum metadata.
+
+    Returns
+    -------
+    MsmsSpectrum
+        The spectrum object.
+    """
+    spectrum = MsmsSpectrum(
+        identifier=row["identifier"],
+        precursor_mz=row["precursor_mz"],
+        precursor_charge=row["precursor_charge"],
+        retention_time=row["retention_time"],
+        mz=row["mz"],
+        intensity=row["intensity"],
+    )
+    spectrum.filename = row["filename"]
+    return spectrum
 
 
 def _dist_mz_interval(
