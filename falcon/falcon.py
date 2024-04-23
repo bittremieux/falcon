@@ -186,29 +186,19 @@ def main(args: Union[str, List[str]] = None) -> int:
     )
 
     # Cluster the spectra per precursor mass bucket.
-    clusters_all, current_label, representative_info = [], 0, []
+    clusters_all, current_label, representatives = [], 0, []
     dataset = lance.dataset(os.path.join(config.work_dir, "spec_data.lance"))
-    for charge, bucket_dict in buckets.items():
-        for bucket_id, spec_ids in bucket_dict.items():
-            spectra = []
-            for batch in dataset.to_batches():
-                batch_df = batch.to_pandas()
-                filtered_df = batch_df[
-                    list(
-                        (col1, col2) in spec_ids
-                        for col1, col2 in zip(
-                            batch_df["filename"], batch_df["identifier"]
-                        )
-                    )
-                ]
-                spectra.append(filtered_df)
-            spectra = pd.concat(spectra)
+    dataset.create_scalar_index(
+        column="precursor_mz", index_type="BTREE", replace=True
+    )
+    bucket_id = 0
+    for charge, bucket_limits in buckets.items():
+        for min_mz, max_mz in bucket_limits:
+            query = f"precursor_mz >= {min_mz} AND precursor_mz <= {max_mz}"
+            spectra = dataset.scanner(filter=query).to_table().to_pandas()
             n_spectra = len(spectra)
             logger.info(
-                "Cluster %d spectra with precursor charge %d in mass bucket %d",
-                n_spectra,
-                charge,
-                bucket_id,
+                f"Cluster {n_spectra} spectra with precursor charge {charge} in mass interval {min_mz} - {max_mz}"
             )
             dist_filename = os.path.join(
                 config.work_dir, "nn", f"dist_{bucket_id}.npz"
@@ -280,9 +270,8 @@ def main(args: Union[str, List[str]] = None) -> int:
                     pairwise_dist_matrix.indices,
                     pairwise_dist_matrix.data,
                 )
-                representative_info.append(
-                    metadata.iloc[charge_representatives]
-                )
+                representatives.append(spectra.iloc[charge_representatives])
+            bucket_id += 1
 
     # Export cluster memberships and representative spectra.
     clusters_all = pd.concat(clusters_all, ignore_index=True).sort_values(
@@ -301,40 +290,15 @@ def main(args: Union[str, List[str]] = None) -> int:
     )
     write_csv_worker.start()
     if config.export_representatives:
-        representative_info = pd.concat(representative_info, ignore_index=True)
+        representatives = pd.concat(representatives, ignore_index=True)
         logger.info(
             "Export %d cluster representative spectra to output file " "%s",
-            len(representative_info),
+            len(representatives),
             f"{config.output_filename}.mgf",
         )
-        # Get the spectra corresponding to the cluster representatives.
-        # TODO: make this more efficient
-        representatives = []
-        for batch in dataset.to_batches():
-            batch_df = batch.to_pandas()
-            filtered_df = batch_df[
-                list(
-                    (col1, col2)
-                    in zip(
-                        representative_info["filename"],
-                        representative_info["spectrum_id"],
-                    )
-                    for col1, col2 in zip(
-                        batch_df["filename"], batch_df["identifier"]
-                    )
-                )
-            ]
-            filtered_specs = filtered_df.apply(
-                cluster.df_row_to_spectrum, axis=1
-            ).tolist()
-            for spec in filtered_specs:
-                spec.cluster = representative_info.loc[
-                    (representative_info["filename"] == spec.filename)
-                    & (representative_info["spectrum_id"] == spec.identifier),
-                    "cluster",
-                ].values[0]
-            representatives.extend(filtered_specs)
-        representatives.sort(key=lambda spec: spec.cluster)
+        representatives = representatives.apply(
+            cluster.df_row_to_spectrum, axis=1
+        ).tolist()
         # Perform IO in a separate worker process.
         write_mgf_worker = threading.Thread(
             target=ms_io.write_spectra,
@@ -406,13 +370,11 @@ def _prepare_spectra() -> Dict[int, Dict[int, List[Tuple[str, str]]]]:
     )
     logger.debug("Created lance dataset at %s", lance_path)
     lance_lock = multiprocessing.Lock()
-    # Write the spectra to (unsorted) pickle files.
-    spectra_to_pkl = collections.defaultdict(list)
-    pkl_locks = collections.defaultdict(multiprocessing.Lock)
+    # Write the spectra to a lance file.
     pkl_writers = multiprocessing.pool.ThreadPool(
         max_file_workers,
         _write_spectra_lance,
-        (spectra_to_pkl, spectra_queue, lance_lock, schema),
+        (spectra_queue, lance_lock, schema),
     )
     peak_readers.close()
     peak_readers.join()
@@ -460,9 +422,6 @@ def _read_spectra_queue(
         for spec in _read_spectra(
             filename,
             precursor_mz,
-            config.mass_bucket_width,
-            config.bucket_tolerance,
-            config.work_dir,
         ):
             spectra_queue.put(spec)
 
@@ -470,9 +429,6 @@ def _read_spectra_queue(
 def _read_spectra(
     filename: str,
     precursor_mz: Dict[int, List[float]],
-    mass_bucket_width: float,
-    bucket_tolerance: float,
-    work_dir: str,
 ) -> Iterator[Tuple[MsmsSpectrum, str]]:
     """
     Get the spectra from the given file.
@@ -499,33 +455,33 @@ def _read_spectra(
     filename = os.path.abspath(filename)
     for spec in ms_io.get_spectra(filename):
         spec.filename = filename
-        precursor_mz[spec.precursor_charge].append(
-            (spec.precursor_mz, spec.filename, spec.identifier)
-        )
+        precursor_mz[spec.precursor_charge].append(spec.precursor_mz)
+        yield _spec_to_dict(spec)
 
-        # interval = _precursor_to_interval(
-        #     spec.precursor_mz,
-        #     spec.precursor_charge,
-        #     mass_bucket_width,
-        #     bucket_tolerance,
-        # )
-        # pkl_filename = os.path.join(
-        #     work_dir, "spectra", f"{spec.precursor_charge}_{interval}.pkl"
-        # )
-        def spec_to_dict(
-            spectrum: MsmsSpectrum,
-        ) -> Dict[str, Union[str, int, float]]:
-            return {
-                "identifier": spectrum.identifier,
-                "precursor_mz": spectrum.precursor_mz,
-                "precursor_charge": spectrum.precursor_charge,
-                "mz": spectrum.mz,
-                "intensity": spectrum.intensity,
-                "retention_time": spectrum.retention_time,
-                "filename": spectrum.filename,
-            }
 
-        yield spec_to_dict(spec)  # , pkl_filename
+def _spec_to_dict(spectrum: MsmsSpectrum) -> Dict[str, Union[str, int, float]]:
+    """
+    Convert a MsmsSpectrum object to a dictionary.
+
+    Parameters
+    ----------
+    spectrum : MsmsSpectrum
+        The spectrum to convert.
+
+    Returns
+    -------
+    Dict[str, Union[str, int, float]]
+        The spectrum as a dictionary.
+    """
+    return {
+        "identifier": spectrum.identifier,
+        "precursor_mz": spectrum.precursor_mz,
+        "precursor_charge": spectrum.precursor_charge,
+        "mz": spectrum.mz,
+        "intensity": spectrum.intensity,
+        "retention_time": spectrum.retention_time,
+        "filename": spectrum.filename,
+    }
 
 
 @nb.njit(cache=True)
@@ -625,27 +581,25 @@ def _write_to_dataset(
         The number of spectra written to the dataset.
     """
     new_rows = pa.Table.from_pylist(spec_to_write, schema)
+    path = os.path.join(work_dir, "spec_data.lance")
     with lock:
-        dataset = lance.dataset(os.path.join(work_dir, "spec_data.lance"))
-        dataset.merge_insert(
-            ["identifier", "filename"]
-        ).when_not_matched_insert_all().execute(new_rows)
+        lance.write_dataset(new_rows, path, mode="append")
     return len(new_rows)
 
 
 def spectra_to_bucket(
-    precursor_mz: Dict[int, List[Tuple[float, str, str]]],
+    precursor_mz: Dict[int, List[float]],
     tol: float,
     tol_mode: str,
-) -> Dict[int, Dict[int, List[Tuple[str, str]]]]:
+) -> Dict[int, List[Tuple[float, float]]]:
     """
     Group spectra with near-identical precursor m/z values in the same mass
     bucket.
 
     Parameters
     ----------
-    precursor_mz : Dict[int, List[Tuple[float, str, str]]]
-        The precursor m/z values, filename and spectrum id per charge.
+    precursor_mz : Dict[int, List[float]]
+        The precursor m/z values per charge.
     tol : float
         The precursor m/z tolerance.
     tol_mode : str
@@ -653,33 +607,19 @@ def spectra_to_bucket(
 
     Returns
     -------
-    Dict[int, Dict[int, List[Tuple[str, str]]]]
-        The spectra grouped by charge and mass bucket.
+    Dict[int, List[Tuple[str, str]]]
+        Bucket limits (min_mz, max_mz) per charge.
     """
     sorted_precursor_mz = {
-        charge: sorted(mz_values, key=lambda x: x[0])
-        for charge, mz_values in precursor_mz.items()
+        charge: sorted(mz_values) for charge, mz_values in precursor_mz.items()
     }
     bucket_limits = _get_bucket_limits(sorted_precursor_mz, tol, tol_mode)
 
-    buckets = {charge: {} for charge in precursor_mz.keys()}
-    bucket_id = 0
-    for charge, mass_limits in bucket_limits.items():
-        for min_mz, max_mz in mass_limits:
-            buckets[charge][bucket_id] = []
-            for precursor_mz, filename, identifier in sorted_precursor_mz[
-                charge
-            ]:
-                if min_mz <= precursor_mz <= max_mz:
-                    buckets[charge][bucket_id].append((filename, identifier))
-                elif precursor_mz > max_mz:
-                    break
-            bucket_id += 1
-    return buckets
+    return bucket_limits
 
 
 def _get_bucket_limits(
-    precursor_mz: Dict[int, List[Tuple[float, str, str]]],
+    precursor_mz: Dict[int, List[float]],
     tol: float,
     tol_mode: str,
 ) -> Dict[int, List[Tuple[float, float]]]:
@@ -688,8 +628,8 @@ def _get_bucket_limits(
 
     Parameters
     ----------
-    precursor_mz : Dict[int, List[Tuple[float, str, str]]]
-        The precursor m/z values, filename and spectrum id per charge.
+    precursor_mz : Dict[int, List[float]]
+        The precursor m/z values per charge.
     tol : float
         The precursor m/z tolerance.
     tol_mode : str
@@ -705,23 +645,23 @@ def _get_bucket_limits(
         cluster_count = 0
         i = 0
         while i < len(mz_values):
-            cluster_min = mz_values[i][0]
+            cluster_min = mz_values[i]
             if tol_mode == "Da":
                 while (
                     i < len(mz_values) - 1
-                    and mz_values[i + 1][0] - mz_values[i][0] < tol
+                    and mz_values[i + 1] - mz_values[i] < tol
                 ):
                     i += 1
             elif tol_mode == "ppm":
                 while (
                     i < len(mz_values) - 1
-                    and (mz_values[i + 1][0] - mz_values[i][0])
-                    / mz_values[i][0]
+                    and (mz_values[i + 1] - mz_values[i])
+                    / mz_values[i]
                     * 10**6
                     < tol
                 ):
                     i += 1
-            cluster_max = mz_values[i][0]
+            cluster_max = mz_values[i]
             min_max_mz[charge].append((cluster_min, cluster_max))
             cluster_count += 1
             i += 1
