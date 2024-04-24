@@ -5,7 +5,6 @@ import glob
 import logging
 import multiprocessing
 import os
-import pickle
 import queue
 import shutil
 import sys
@@ -188,6 +187,7 @@ def main(args: Union[str, List[str]] = None) -> int:
     # Cluster the spectra per precursor mass bucket.
     clusters_all, current_label, representatives = [], 0, []
     dataset = lance.dataset(os.path.join(config.work_dir, "spec_data.lance"))
+    # Create index for fast spectrum retrieval
     dataset.create_scalar_index(
         column="precursor_mz", index_type="BTREE", replace=True
     )
@@ -297,7 +297,7 @@ def main(args: Union[str, List[str]] = None) -> int:
             f"{config.output_filename}.mgf",
         )
         representatives = representatives.apply(
-            cluster.df_row_to_spectrum, axis=1
+            spectrum.df_row_to_spec, axis=1
         ).tolist()
         # Perform IO in a separate worker process.
         write_mgf_worker = threading.Thread(
@@ -439,12 +439,6 @@ def _read_spectra(
         The path of the peak file to be read.
     precursor_mz : Dict[int, List[float]]
         Dictionary that will be filled with precursor m/z values per charge.
-    mass_bucket_width : float
-        The size of the mass bucket.
-    bucket_tolerance : float
-        The tolerance for handling border cases during bucketing.
-    work_dir : str
-        The directory in which the spectrum buckets will be stored.
 
     Returns
     -------
@@ -456,68 +450,7 @@ def _read_spectra(
     for spec in ms_io.get_spectra(filename):
         spec.filename = filename
         precursor_mz[spec.precursor_charge].append(spec.precursor_mz)
-        yield _spec_to_dict(spec)
-
-
-def _spec_to_dict(spectrum: MsmsSpectrum) -> Dict[str, Union[str, int, float]]:
-    """
-    Convert a MsmsSpectrum object to a dictionary.
-
-    Parameters
-    ----------
-    spectrum : MsmsSpectrum
-        The spectrum to convert.
-
-    Returns
-    -------
-    Dict[str, Union[str, int, float]]
-        The spectrum as a dictionary.
-    """
-    return {
-        "identifier": spectrum.identifier,
-        "precursor_mz": spectrum.precursor_mz,
-        "precursor_charge": spectrum.precursor_charge,
-        "mz": spectrum.mz,
-        "intensity": spectrum.intensity,
-        "retention_time": spectrum.retention_time,
-        "filename": spectrum.filename,
-    }
-
-
-@nb.njit(cache=True)
-def _precursor_to_interval(
-    mz: float,
-    charge: int,
-    interval_width: float,
-    bucket_tolerance: float,
-) -> int:
-    """
-    Convert the precursor m/z to the neutral mass and get the interval index.
-
-    Parameters
-    ----------
-    mz : float
-        The precursor m/z.
-    charge : int
-        The precursor charge.
-    interval_width : float
-        The width of each m/z interval.
-    bucket_tolerance : float
-        The tolerance for handling border cases during bucketing.
-
-    Returns
-    -------
-    int
-        The index of the interval to which a spectrum with the given m/z
-        belongs.
-    """
-    hydrogen_mass = 1.00794
-    neutral_mass = (mz - hydrogen_mass) * max(abs(charge), 1)
-    interval = int(neutral_mass // interval_width)
-    remainder = neutral_mass % interval_width
-    if remainder >= interval_width - bucket_tolerance:
-        interval += 1
-    return interval
+        yield spectrum.spec_to_dict(spec)
 
 
 def _write_spectra_lance(
@@ -624,7 +557,10 @@ def _get_bucket_limits(
     tol_mode: str,
 ) -> Dict[int, List[Tuple[float, float]]]:
     """
-    Create mass buckets given all precursor m/z's and precursor m/z tolerance.
+    Create mass buckets.
+
+    Define mass bucket limits given all precursor m/z's and precursor tolerance.
+    Add tolerance to the lower and upper limits.
 
     Parameters
     ----------
@@ -647,12 +583,15 @@ def _get_bucket_limits(
         while i < len(mz_values):
             cluster_min = mz_values[i]
             if tol_mode == "Da":
+                cluster_min = cluster_min - tol
                 while (
                     i < len(mz_values) - 1
                     and mz_values[i + 1] - mz_values[i] < tol
                 ):
                     i += 1
+                cluster_max = mz_values[i] + tol
             elif tol_mode == "ppm":
+                cluster_min = cluster_min - cluster_min * tol / 10**6
                 while (
                     i < len(mz_values) - 1
                     and (mz_values[i + 1] - mz_values[i])
@@ -661,70 +600,11 @@ def _get_bucket_limits(
                     < tol
                 ):
                     i += 1
-            cluster_max = mz_values[i]
+                cluster_max = mz_values[i] + mz_values[i] * tol / 10**6
             min_max_mz[charge].append((cluster_min, cluster_max))
             cluster_count += 1
             i += 1
     return min_max_mz
-
-
-def _sort_spectra_pkl(filename: str) -> int:
-    """
-    Sort spectra in a pickle file by their precursor m/z.
-
-    Parameters
-    ----------
-    filename : str
-        The pickled spectrum file name.
-
-    Returns
-    -------
-    int
-        The number of spectra in the file.
-    """
-    with open(filename, "rb+") as f_pkl:
-        # Read all the spectra from the pickle file.
-        spectra = []
-        while True:
-            try:
-                spectra.append(pickle.load(f_pkl))
-            except EOFError:
-                break
-        # Write the sorted spectra to the pickle file.
-        order = _get_precursor_order(
-            np.asarray([spec.precursor_mz for spec in spectra])
-        )
-        f_pkl.seek(0)
-        pickle.dump(
-            [spectra[i] for i in order],
-            f_pkl,
-            protocol=pickle.HIGHEST_PROTOCOL,
-        )
-        return len(spectra)
-
-
-@nb.njit(cache=True)
-def _get_precursor_order(precursor_mzs: np.ndarray) -> np.ndarray:
-    """
-    Get the precursor m/z sorting order.
-
-    This should use radix sort on integers with O(n) time complexity
-    internally.
-
-    Parameters
-    ----------
-    precursor_mzs : np.ndarray
-        The precursor m/z's for which the sorting order is to be determined.
-
-    Returns
-    -------
-    np.ndarray
-        The order to sort the given precursor m/z's.
-    """
-    # noinspection PyUnresolvedReferences
-    return np.argsort(
-        np.asarray(precursor_mzs * 10000).astype(np.int32), kind="mergesort"
-    )
 
 
 def _write_cluster_info(clusters: pd.DataFrame) -> None:
@@ -770,52 +650,6 @@ def _write_cluster_info(clusters: pd.DataFrame) -> None:
         f_out.write("#\n")
         # Cluster assignments.
         clusters.to_csv(f_out, index=False, chunksize=1000000)
-
-
-def _find_spectra_pkl(
-    filename: str, spectra_to_read: Dict[Tuple[str, str], int]
-) -> List[MsmsSpectrum]:
-    """
-    Read spectra with the specified USIs from a pkl file.
-
-    Parameters
-    ----------
-    filename : str
-        Name of the pkl file from which the spectra are read.
-    spectra_to_read : Dict[Tuple[str, str], int]
-        Dict with as keys tuples of the filename and identifier of the spectra
-        to read from the pkl file, and as values the cluster labels that will
-        be assigned to the spectra.
-
-    Returns
-    -------
-    Iterable[MsmsSpectrum]
-        The spectra with the specified USIs.
-    """
-    with open(filename, "rb") as f_in:
-        spectra = pickle.load(f_in)
-        spectra_key_to_index = {
-            (spec.filename, spec.identifier): i
-            for i, spec in enumerate(spectra)
-        }
-        spectra_index_to_cluster = {
-            spectra_key_to_index[key]: spectra_to_read[key]
-            for key in (
-                set(spectra_key_to_index.keys()) & set(spectra_to_read.keys())
-            )
-        }
-        if len(spectra_index_to_cluster) != len(spectra_to_read):
-            raise ValueError(
-                f"{len(spectra_to_read) - len(spectra_index_to_cluster)} "
-                f"spectra not found in file {filename}"
-            )
-        else:
-            spectra_found = []
-            for i, cluster_ in spectra_index_to_cluster.items():
-                spec = spectra[i]
-                spec.cluster = cluster_
-                spectra_found.append(spec)
-            return spectra_found
 
 
 if __name__ == "__main__":

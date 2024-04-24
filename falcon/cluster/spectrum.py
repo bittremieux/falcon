@@ -1,10 +1,11 @@
 import collections
 import math
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 import faiss
 import numba as nb
 import numpy as np
+import pandas as pd
 import scipy.sparse as ss
 import spectrum_utils.spectrum as sus
 
@@ -280,3 +281,56 @@ def _to_vector(
         i += n_peaks_spectra
         j += 1
     return data, indices, indptr
+
+
+def df_row_to_spec(row: pd.Series) -> sus.MsmsSpectrum:
+    """
+    Convert a row from a DataFrame to a `MsmsSpectrum`.
+
+    Parameters
+    ----------
+    row : pd.Series
+        A row from a DataFrame containing the spectrum metadata.
+
+    Returns
+    -------
+    MsmsSpectrum
+        The spectrum object.
+    """
+    spectrum = sus.MsmsSpectrum(
+        identifier=row["identifier"],
+        precursor_mz=row["precursor_mz"],
+        precursor_charge=row["precursor_charge"],
+        retention_time=row["retention_time"],
+        mz=row["mz"],
+        intensity=row["intensity"],
+    )
+    spectrum.filename = row["filename"]
+    return spectrum
+
+
+def spec_to_dict(
+    spectrum: sus.MsmsSpectrum,
+) -> Dict[str, Union[str, int, float]]:
+    """
+    Convert a MsmsSpectrum object to a dictionary.
+
+    Parameters
+    ----------
+    spectrum : MsmsSpectrum
+        The spectrum to convert.
+
+    Returns
+    -------
+    Dict[str, Union[str, int, float]]
+        The spectrum as a dictionary.
+    """
+    return {
+        "identifier": spectrum.identifier,
+        "precursor_mz": spectrum.precursor_mz,
+        "precursor_charge": spectrum.precursor_charge,
+        "mz": spectrum.mz,
+        "intensity": spectrum.intensity,
+        "retention_time": spectrum.retention_time,
+        "filename": spectrum.filename,
+    }

@@ -1,7 +1,6 @@
 import gc
 import logging
 import math
-import pickle
 import tempfile
 from typing import Callable, Iterator, List, Optional, Tuple
 
@@ -11,13 +10,13 @@ import numba as nb
 import numpy as np
 import pandas as pd
 import scipy.sparse as ss
-import tqdm
 from scipy.cluster.hierarchy import fcluster
 from spectrum_utils.spectrum import MsmsSpectrum
 
 # noinspection PyProtectedMember
 from sklearn.cluster._dbscan_inner import dbscan_inner
 
+from . import spectrum
 
 logger = logging.getLogger("falcon")
 
@@ -192,7 +191,7 @@ def _build_query_ann_index(
     filenames, identifiers, bucket_ids, precursor_mzs, rts = [], [], [], [], []
     spectra = nb.typed.List()
     indptr_i = 0
-    msms_spectra = spectra_df.apply(df_row_to_spectrum, axis=1).tolist()
+    msms_spectra = spectra_df.apply(spectrum.df_row_to_spec, axis=1).tolist()
     for spec_raw in msms_spectra:
         spec_processed = process_spectrum(spec_raw)
         # Discard low-quality spectra.
@@ -302,32 +301,6 @@ def _build_query_ann_index(
                 "retention_time": np.hstack(rts),
             }
         )
-
-
-def df_row_to_spectrum(row) -> MsmsSpectrum:
-    """
-    Convert a row from a DataFrame to a `MsmsSpectrum`.
-
-    Parameters
-    ----------
-    row : pd.Series
-        A row from a DataFrame containing the spectrum metadata.
-
-    Returns
-    -------
-    MsmsSpectrum
-        The spectrum object.
-    """
-    spectrum = MsmsSpectrum(
-        identifier=row["identifier"],
-        precursor_mz=row["precursor_mz"],
-        precursor_charge=row["precursor_charge"],
-        retention_time=row["retention_time"],
-        mz=row["mz"],
-        intensity=row["intensity"],
-    )
-    spectrum.filename = row["filename"]
-    return spectrum
 
 
 def _dist_mz_interval(
