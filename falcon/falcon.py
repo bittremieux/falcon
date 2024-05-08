@@ -134,17 +134,7 @@ def main(args: Union[str, List[str]] = None) -> int:
             os.remove(os.path.join(config.work_dir, "spectra", filename))
         for filename in os.listdir(os.path.join(config.work_dir, "nn")):
             os.remove(os.path.join(config.work_dir, "nn", filename))
-
-    # Read the spectra from the input files and partition them based on their
-    # precursor m/z.
-    if not any(
-        [
-            filename.endswith(".pkl")
-            for filename in os.listdir(
-                os.path.join(config.work_dir, "spectra")
-            )
-        ]
-    ):
+        # Recalculate the mass buckets.
         buckets = _prepare_spectra()
         joblib.dump(
             buckets, os.path.join(config.work_dir, "spectra", "buckets.joblib")

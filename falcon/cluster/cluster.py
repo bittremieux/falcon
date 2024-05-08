@@ -18,6 +18,7 @@ from sklearn.cluster._dbscan_inner import dbscan_inner
 
 from . import spectrum
 
+
 logger = logging.getLogger("falcon")
 
 
@@ -43,8 +44,10 @@ def compute_pairwise_distances(
     ----------
     n_spectra: int
         The total number of spectra to be processed.
-    bucket_filename : str
-        Mass bucket file name.
+    spectra_df : pd.DataFrame
+        The spectra to be indexed.
+    bucket_id : int
+        The mass bucket identifier.
     process_spectrum : Callable
         Function to preprocess the spectra.
     vectorize : Callable
@@ -149,8 +152,10 @@ def _build_query_ann_index(
 
     Parameters
     ----------
-    bucket_filename : str
-        Mass bucket file name.
+    spectra_df : pd.DataFrame
+        The spectra to be indexed.
+    bucket_id : int
+        The mass bucket identifier.
     process_spectrum : Callable
         Function to preprocess the spectra.
     vectorize : Callable
@@ -192,16 +197,24 @@ def _build_query_ann_index(
     spectra = nb.typed.List()
     indptr_i = 0
     msms_spectra = spectra_df.apply(spectrum.df_row_to_spec, axis=1).tolist()
+    low_quality = 0
     for spec_raw in msms_spectra:
         spec_processed = process_spectrum(spec_raw)
         # Discard low-quality spectra.
-        if spec_processed is not None:
-            spectra.append(spec_processed)
-            filenames.append(spec_processed.filename)
-            identifiers.append(spec_processed.identifier)
-            bucket_ids.append(bucket_id)
-            precursor_mzs.append(spec_processed.precursor_mz)
-            rts.append(spec_processed.retention_time)
+        if spec_processed is None:
+            low_quality += 1
+            continue
+        spectra.append(spec_processed)
+        filenames.append(spec_processed.filename)
+        identifiers.append(spec_processed.identifier)
+        bucket_ids.append(bucket_id)
+        precursor_mzs.append(spec_processed.precursor_mz)
+        rts.append(spec_processed.retention_time)
+    if low_quality > 0:
+        logger.warning(
+            "Skipped %d low-quality spectra during ANN index construction",
+            low_quality,
+        )
     if len(spectra) == 0:
         logger.warning("No spectra to cluster after quality inspection")
         return pd.DataFrame(
@@ -281,26 +294,15 @@ def _build_query_ann_index(
     index.reset()
     indptr_i += n_vectors
 
-    if len(identifiers) == 0:
-        return pd.DataFrame(
-            columns=[
-                "filename",
-                "spectrum_id",
-                "bucket_id",
-                "precursor_mz",
-                "retention_time",
-            ]
-        )
-    else:
-        return pd.DataFrame(
-            {
-                "filename": filenames,
-                "spectrum_id": identifiers,
-                "bucket_id": bucket_ids,
-                "precursor_mz": np.hstack(precursor_mzs),
-                "retention_time": np.hstack(rts),
-            }
-        )
+    return pd.DataFrame(
+        {
+            "filename": filenames,
+            "spectrum_id": identifiers,
+            "bucket_id": bucket_ids,
+            "precursor_mz": np.hstack(precursor_mzs),
+            "retention_time": np.hstack(rts),
+        }
+    )
 
 
 def _dist_mz_interval(
