@@ -10,7 +10,7 @@ import shutil
 import sys
 import tempfile
 import threading
-from typing import Dict, Iterator, List, Set, Tuple, Union
+from typing import Callable, Dict, Iterator, List, Set, Tuple, Union
 
 import joblib
 import lance
@@ -127,22 +127,6 @@ def main(args: Union[str, List[str]] = None) -> int:
     if exit_exists:
         logging.shutdown()
         return 1
-    if config.overwrite:
-        if os.path.isfile(os.path.join(config.work_dir, "spec_data.lance")):
-            os.remove(os.path.join(config.work_dir, "spec_data.lance"))
-        for filename in os.listdir(os.path.join(config.work_dir, "spectra")):
-            os.remove(os.path.join(config.work_dir, "spectra", filename))
-        for filename in os.listdir(os.path.join(config.work_dir, "nn")):
-            os.remove(os.path.join(config.work_dir, "nn", filename))
-        # Recalculate the charge buckets and recreate dataset.
-        charges = _prepare_spectra()
-        joblib.dump(
-            charges, os.path.join(config.work_dir, "spectra", "charges.joblib")
-        )
-    else:
-        charges = joblib.load(
-            os.path.join(config.work_dir, "spectra", "charges.joblib")
-        )
 
     vec_len, min_mz, max_mz = spectrum.get_dim(
         config.min_mz, config.max_mz, config.fragment_tol
@@ -158,6 +142,23 @@ def main(args: Union[str, List[str]] = None) -> int:
         max_peaks_used=config.max_peaks_used,
         scaling=None if config.scaling == "off" else config.scaling,
     )
+
+    if config.overwrite:
+        if os.path.isfile(os.path.join(config.work_dir, "spec_data.lance")):
+            os.remove(os.path.join(config.work_dir, "spec_data.lance"))
+        for filename in os.listdir(os.path.join(config.work_dir, "spectra")):
+            os.remove(os.path.join(config.work_dir, "spectra", filename))
+        for filename in os.listdir(os.path.join(config.work_dir, "nn")):
+            os.remove(os.path.join(config.work_dir, "nn", filename))
+        # Recalculate the charge buckets and recreate dataset.
+        charges = _prepare_spectra(process_spectrum)
+        joblib.dump(
+            charges, os.path.join(config.work_dir, "spectra", "charges.joblib")
+        )
+    else:
+        charges = joblib.load(
+            os.path.join(config.work_dir, "spectra", "charges.joblib")
+        )
 
     transformation = (
         SparseRandomProjection(config.low_dim, random_state=0)
@@ -182,12 +183,6 @@ def main(args: Union[str, List[str]] = None) -> int:
         column="precursor_charge", index_type="BTREE", replace=True
     )
     for bucket_id, charge in enumerate(charges):
-        query = f"precursor_charge == {charge}"
-        spectra = dataset.scanner(filter=query).to_table().to_pandas()
-        n_spectra = len(spectra)
-        logger.info(
-            f"Cluster {n_spectra} spectra with precursor charge {charge}"
-        )
         dist_filename = os.path.join(
             config.work_dir, "nn", f"dist_{bucket_id}.npz"
         )
@@ -199,10 +194,9 @@ def main(args: Union[str, List[str]] = None) -> int:
         ):
             pairwise_dist_matrix, metadata = (
                 cluster.compute_pairwise_distances(
-                    n_spectra,
-                    spectra,
+                    dataset,
+                    charge,
                     bucket_id,
-                    process_spectrum,
                     vectorize,
                     config.precursor_tol[0],
                     config.precursor_tol[1],
@@ -256,7 +250,11 @@ def main(args: Union[str, List[str]] = None) -> int:
                 pairwise_dist_matrix.indices,
                 pairwise_dist_matrix.data,
             )
-            representatives.append(spectra.iloc[charge_representatives])
+            representatives.append(
+                dataset.take(charge_representatives)
+                .to_pandas()
+                .apply(spectrum.df_row_to_spec, axis=1)
+            )
 
     # Export cluster memberships and representative spectra.
     clusters_all = pd.concat(clusters_all, ignore_index=True).sort_values(
@@ -275,15 +273,14 @@ def main(args: Union[str, List[str]] = None) -> int:
     )
     write_csv_worker.start()
     if config.export_representatives:
-        representatives = pd.concat(representatives, ignore_index=True)
+        representatives = pd.concat(
+            representatives, ignore_index=True
+        ).tolist()
         logger.info(
             "Export %d cluster representative spectra to output file " "%s",
             len(representatives),
             f"{config.output_filename}.mgf",
         )
-        representatives = representatives.apply(
-            spectrum.df_row_to_spec, axis=1
-        ).tolist()
         # Perform IO in a separate worker process.
         write_mgf_worker = threading.Thread(
             target=ms_io.write_spectra,
@@ -301,16 +298,15 @@ def main(args: Union[str, List[str]] = None) -> int:
     return 0
 
 
-def _prepare_spectra() -> Dict[int, Dict[int, List[Tuple[str, str]]]]:
+def _prepare_spectra(process_spectrum) -> Set[int]:
     """
     Read the spectra from the input peak files and partition to intermediate
     files split and sorted by precursor m/z.
 
     Returns
     -------
-    List[Tuple[int, str]]
-        The number of spectra per precursor m/z bucket and the filenames of the
-        intermediate files.
+    Set[int]
+        The precursor charges of the spectra.
     """
     input_filenames = [
         fn for pattern in config.input_filenames for fn in glob.glob(pattern)
@@ -329,18 +325,19 @@ def _prepare_spectra() -> Dict[int, Dict[int, List[Tuple[str, str]]]]:
     ):
         file_queue.put(filename)
     # Read the peak files and put their spectra in the queue for consumption.
-    precursor_mz = collections.defaultdict(list)
+    manager = multiprocessing.Manager()
+    low_quality_counter = manager.Value("i", 0)
     peak_readers = multiprocessing.pool.ThreadPool(
         max_file_workers,
         _read_spectra_queue,
-        (file_queue, spectra_queue, precursor_mz),
+        (file_queue, spectra_queue, process_spectrum, low_quality_counter),
     )
     # create lance dataset
     schema = pa.schema(
         [
             pa.field("identifier", pa.string()),
             pa.field("precursor_mz", pa.float32()),
-            pa.field("precursor_charge", pa.int32()),
+            pa.field("precursor_charge", pa.int8()),
             pa.field("mz", pa.list_(pa.float32())),
             pa.field("intensity", pa.list_(pa.float32())),
             pa.field("retention_time", pa.float32()),
@@ -357,19 +354,20 @@ def _prepare_spectra() -> Dict[int, Dict[int, List[Tuple[str, str]]]]:
     lance_lock = multiprocessing.Lock()
     charges = set()
     # Write the spectra to a lance file.
-    pkl_writers = multiprocessing.pool.ThreadPool(
+    lance_writers = multiprocessing.pool.ThreadPool(
         max_file_workers,
         _write_spectra_lance,
         (spectra_queue, lance_lock, schema, charges),
     )
     peak_readers.close()
     peak_readers.join()
+    logger.debug("Skipped %d low-quality spectra", low_quality_counter.value)
     # Add sentinels to indicate stopping. This needs to happen after all files
     # have been read (by joining `peak_readers`).
     for _ in range(max_file_workers):
         spectra_queue.put(None)
-    pkl_writers.close()
-    pkl_writers.join()
+    lance_writers.close()
+    lance_writers.join()
     # get dataset length
     dataset = lance.dataset(lance_path)
     n_spectra = dataset.count_rows()
@@ -382,7 +380,8 @@ def _prepare_spectra() -> Dict[int, Dict[int, List[Tuple[str, str]]]]:
 def _read_spectra_queue(
     file_queue: queue.Queue,
     spectra_queue: queue.Queue,
-    precursor_mz: Dict[int, List[float]],
+    process_spectrum: Callable,
+    low_quality_counter: multiprocessing.Value,
 ) -> None:
     """
     Get the spectra from the file queue and store them in the spectra queue.
@@ -401,15 +400,15 @@ def _read_spectra_queue(
         if filename is None:
             return
         for spec in _read_spectra(
-            filename,
-            precursor_mz,
+            filename, process_spectrum, low_quality_counter
         ):
             spectra_queue.put(spec)
 
 
 def _read_spectra(
     filename: str,
-    precursor_mz: Dict[int, List[float]],
+    process_spectrum: Callable,
+    low_quality_counter: multiprocessing.Value,
 ) -> Iterator[Tuple[MsmsSpectrum, str]]:
     """
     Get the spectra from the given file.
@@ -430,8 +429,11 @@ def _read_spectra(
     filename = os.path.abspath(filename)
     for spec in ms_io.get_spectra(filename):
         spec.filename = filename
-        precursor_mz[spec.precursor_charge].append(spec.precursor_mz)
-        yield spectrum.spec_to_dict(spec)
+        spec = process_spectrum(spec)
+        if spec is None:
+            low_quality_counter.value += 1
+            continue
+        yield spec
 
 
 def _write_spectra_lance(

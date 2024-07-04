@@ -152,15 +152,15 @@ def process_spectrum(
     intensity = _norm_intensity(spectrum.intensity)
 
     # noinspection PyUnresolvedReferences
-    return MsmsSpectrumNb(
-        spectrum.filename,
-        spectrum.identifier,
-        spectrum.precursor_mz,
-        spectrum.precursor_charge,
-        spectrum.retention_time,
-        spectrum.mz,
-        intensity,
-    )
+    return {
+        "identifier": spectrum.identifier,
+        "precursor_mz": spectrum.precursor_mz,
+        "precursor_charge": spectrum.precursor_charge,
+        "mz": spectrum.mz,
+        "intensity": intensity,
+        "retention_time": spectrum.retention_time,
+        "filename": spectrum.filename,
+    }
 
 
 @nb.njit("Tuple((u4, f4, f4))(f4, f4, f4)", cache=True)
@@ -297,15 +297,15 @@ def df_row_to_spec(row: pd.Series) -> sus.MsmsSpectrum:
     MsmsSpectrum
         The spectrum object.
     """
-    spectrum = sus.MsmsSpectrum(
-        identifier=row["identifier"],
-        precursor_mz=row["precursor_mz"],
-        precursor_charge=row["precursor_charge"],
-        retention_time=row["retention_time"],
-        mz=row["mz"],
-        intensity=row["intensity"],
+    spectrum = MsmsSpectrumNb(
+        row["filename"],
+        row["identifier"],
+        row["precursor_mz"],
+        row["precursor_charge"],
+        row["retention_time"],
+        row["mz"],
+        row["intensity"],
     )
-    spectrum.filename = row["filename"]
     return spectrum
 
 
@@ -334,3 +334,30 @@ def spec_to_dict(
         "retention_time": spectrum.retention_time,
         "filename": spectrum.filename,
     }
+
+
+def to_MsmsSpectrumNb(
+    spectrum: sus.MsmsSpectrum,
+) -> MsmsSpectrumNb:
+    """
+    Convert a MsmsSpectrum object to a MsmsSpectrumNb object.
+
+    Parameters
+    ----------
+    spectrum : MsmsSpectrum
+        The spectrum to convert.
+
+    Returns
+    -------
+    MsmsSpectrumNb
+        The spectrum as a MsmsSpectrumNb object.
+    """
+    return MsmsSpectrumNb(
+        spectrum.filename,
+        spectrum.identifier,
+        spectrum.precursor_mz,
+        spectrum.precursor_charge,
+        spectrum.retention_time,
+        spectrum.mz,
+        spectrum.intensity,
+    )

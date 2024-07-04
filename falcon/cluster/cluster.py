@@ -6,6 +6,7 @@ from typing import Callable, Iterator, List, Optional, Tuple
 
 import faiss
 import joblib
+import lance
 import numba as nb
 import numpy as np
 import pandas as pd
@@ -23,10 +24,9 @@ logger = logging.getLogger("falcon")
 
 
 def compute_pairwise_distances(
-    n_spectra: int,
-    spectra_df: pd.DataFrame,
+    dataset: lance.LanceDataset,
+    charge: int,
     bucket_id: int,
-    process_spectrum: Callable,
     vectorize: Callable,
     precursor_tol_mass: float,
     precursor_tol_mode: str,
@@ -78,6 +78,7 @@ def compute_pairwise_distances(
         corresponding spectrum metadata (identifier, precursor charge,
         precursor m/z).
     """
+    n_spectra = dataset.count_rows(filter=f"precursor_charge == {charge}")
     logger.debug(
         "Compute nearest neighbor pairwise distances (%d spectra, %d"
         " neighbors)",
@@ -94,9 +95,9 @@ def compute_pairwise_distances(
     # Create the ANN indexes (if this hasn't been done yet) and calculate
     # pairwise distances.
     metadata = _build_query_ann_index(
-        spectra_df,
+        dataset,
+        charge,
         bucket_id,
-        process_spectrum,
         vectorize,
         n_probe,
         batch_size,
@@ -131,9 +132,9 @@ def compute_pairwise_distances(
 
 
 def _build_query_ann_index(
-    spectra_df: pd.DataFrame,
+    dataset: lance.LanceDataset,
+    charge: int,
     bucket_id: int,
-    process_spectrum: Callable,
     vectorize: Callable,
     n_probe: int,
     batch_size: int,
@@ -192,67 +193,43 @@ def _build_query_ann_index(
         Metadata (filename, identifier, precursor charge, precursor m/z,
         retention time) of the spectra for which indexes were built.
     """
+    query = f"precursor_charge == {charge}"
+    n_spectra = dataset.count_rows(filter=query)
+
     # Read the spectra for the m/z bucket.
     filenames, identifiers, bucket_ids, precursor_mzs, rts = [], [], [], [], []
-    spectra = nb.typed.List()
     indptr_i = 0
-    msms_spectra = spectra_df.apply(spectrum.df_row_to_spec, axis=1).tolist()
-    low_quality = 0
-    for spec_raw in msms_spectra:
-        spec_processed = process_spectrum(spec_raw)
-        # Discard low-quality spectra.
-        if spec_processed is None:
-            low_quality += 1
-            continue
-        spectra.append(spec_processed)
-        filenames.append(spec_processed.filename)
-        identifiers.append(spec_processed.identifier)
-        bucket_ids.append(bucket_id)
-        precursor_mzs.append(spec_processed.precursor_mz)
-        rts.append(spec_processed.retention_time)
-    if low_quality > 0:
-        logger.warning(
-            "Skipped %d low-quality spectra during ANN index construction",
-            low_quality,
-        )
-    if len(spectra) == 0:
-        logger.warning("No spectra to cluster after quality inspection")
-        return pd.DataFrame(
-            columns=[
-                "filename",
-                "spectrum_id",
-                "precursor_mz",
-                "retention_time",
-            ]
-        )
-    precursor_mzs = np.asarray(precursor_mzs)
-    rts = np.asarray(rts)
-    # Convert the spectra to vectors.
-    vectors = vectorize(spectra=spectra)
-    n_vectors, dim = vectors.shape
+
     # Figure out a decent value for the n_list hyperparameter based on
     # the number of vectors.
     # Rules of thumb from the Faiss wiki:
     # https://github.com/facebookresearch/faiss/wiki/Guidelines-to-choose-an-index#how-big-is-the-dataset
     # if n_vectors == 0:
     #     continue
-    if n_vectors < 10**2:
+    if n_spectra < 10**2:
         # Use a brute-force index instead of an ANN index when there
         # are only a few items.
         n_list = -1
-    elif n_vectors < 10**6:
-        n_list = 2 ** math.floor(math.log2(n_vectors / 39))
-    elif n_vectors < 10**7:
+    elif n_spectra < 10**6:
+        n_list = 2 ** math.floor(math.log2(n_spectra / 39))
+    elif n_spectra < 10**7:
         n_list = 2**16
-    elif n_vectors < 10**8:
+    elif n_spectra < 10**8:
         n_list = 2**18
     else:
         n_list = 2**20
-        if n_vectors > 10**9:
+        if n_spectra > 10**9:
             logger.warning(
                 "More than 1B vectors to be indexed, consider "
                 "decreasing the ANN size"
             )
+    sample_size = min(50 * n_list, n_spectra)
+    train_spectra = dataset.sample(sample_size, filter=query).to_pandas()
+    train_spectra = train_spectra.apply(
+        spectrum.df_row_to_spec, axis=1
+    ).tolist()
+    train_vectors = vectorize(spectra=train_spectra)
+    dim = train_vectors.shape[1]
     # Create an ANN index using the inner product (proxy for cosine
     # distance) for fast NN queries.
     if n_list <= 0:
@@ -264,20 +241,46 @@ def _build_query_ann_index(
         index.nprobe = min(math.ceil(index.nlist / 8), n_probe)
     # Compute cluster centroids.
     # noinspection PyArgumentList
-    index.train(vectors)
+    index.train(train_vectors)
+
     # Add the vectors to the index in batches.
-    batch_size = min(n_vectors, batch_size)
-    for batch_start in range(0, n_vectors, batch_size):
-        batch_stop = min(batch_start + batch_size, n_vectors)
-        # noinspection PyArgumentList
+    batch_start = 0
+    for i, batch in enumerate(
+        dataset.to_batches(batch_size=batch_size, filter=query)
+    ):
+        logger.debug(
+            "Add batch %d/%d to ANN index (%d spectra)",
+            i + 1,
+            n_spectra // batch_size + 1,
+            len(batch),
+        )
+        batch_spectra = (
+            batch.to_pandas().apply(spectrum.df_row_to_spec, axis=1).tolist()
+        )
+        proc_batch = []
+        for spec in batch_spectra:
+            proc_batch.append(spec)
+            filenames.append(spec.filename)
+            identifiers.append(spec.identifier)
+            bucket_ids.append(bucket_id)
+            precursor_mzs.append(spec.precursor_mz)
+            rts.append(spec.retention_time)
+        batch_stop = batch_start + len(proc_batch)
+        precursor_mzs = np.asarray(precursor_mzs)
+        rts = np.asarray(rts)
+
+        batch_vectors = vectorize(spectra=proc_batch)
         index.add_with_ids(
-            vectors[batch_start:batch_stop],
+            batch_vectors,
             np.arange(batch_start, batch_stop, dtype=np.int64),
         )
+        batch_start = batch_stop
     # Query the index to calculate NN distances.
     _dist_mz_interval(
         index,
-        vectors,
+        dataset,
+        query,
+        vectorize,
         precursor_mzs,
         rts,
         batch_size,
@@ -292,7 +295,7 @@ def _build_query_ann_index(
         indptr_i,
     )
     index.reset()
-    indptr_i += n_vectors
+    indptr_i += n_spectra
 
     return pd.DataFrame(
         {
@@ -307,7 +310,9 @@ def _build_query_ann_index(
 
 def _dist_mz_interval(
     index: faiss.Index,
-    vectors: np.ndarray,
+    dataset: lance.LanceDataset,
+    query: str,
+    vectorize: Callable,
     precursor_mzs: np.ndarray,
     rts: np.ndarray,
     batch_size: int,
@@ -361,13 +366,17 @@ def _dist_mz_interval(
     indptr_i : int
         The current start index in `indptr`.
     """
-    for batch_start in range(0, vectors.shape[0], batch_size):
-        batch_stop = min(batch_start + batch_size, vectors.shape[0])
+    batch_start = 0
+    for batch in dataset.to_batches(batch_size=batch_size, filter=query):
+        batch_spectra = (
+            batch.to_pandas().apply(spectrum.df_row_to_spec, axis=1).tolist()
+        )
+        batch_spectra = nb.typed.List(batch_spectra)
+        vectors = vectorize(spectra=batch_spectra)
+        batch_stop = batch_start + vectors.shape[0]
         # Find nearest neighbors using ANN index searching.
         # noinspection PyArgumentList
-        nn_dists, nn_idx_ann = index.search(
-            vectors[batch_start:batch_stop], n_neighbors_ann
-        )
+        nn_dists, nn_idx_ann = index.search(vectors, n_neighbors_ann)
         # Filter the neighbors based on the precursor m/z tolerance and assign
         # distances.
         _filter_neighbors_mz(
@@ -386,6 +395,7 @@ def _dist_mz_interval(
             indptr,
             indptr_i + batch_start,
         )
+        batch_start = batch_stop
 
 
 @nb.njit(cache=True)
@@ -644,7 +654,7 @@ def generate_clusters(
         core_samples = n_neighbors >= min_samples
         # Run Scikit-Learn DBSCAN.
         # noinspection PyUnresolvedReferences
-        neighborhoods_arr = np.empty(len(neighborhoods), dtype=np.object)
+        neighborhoods_arr = np.empty(len(neighborhoods), dtype=object)
         neighborhoods_arr[:] = neighborhoods
         dbscan_inner(core_samples, neighborhoods_arr, clusters)
 
