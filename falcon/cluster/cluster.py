@@ -42,14 +42,12 @@ def compute_pairwise_distances(
 
     Parameters
     ----------
-    n_spectra: int
-        The total number of spectra to be processed.
-    spectra_df : pd.DataFrame
-        The spectra to be indexed.
+    dataset: lance.LanceDataset
+        The dataset containing the spectra to be indexed.
+    charge : int
+        The precursor charge for which to compute the pairwise distances.
     bucket_id : int
-        The mass bucket identifier.
-    process_spectrum : Callable
-        Function to preprocess the spectra.
+        The charge bucket identifier.
     vectorize : Callable
         Function to convert the spectra to vectors.
     precursor_tol_mass : float
@@ -110,11 +108,6 @@ def compute_pairwise_distances(
         indices,
         indptr,
     )
-    # Update the number of spectra because of skipped low-quality spectra.
-    n_spectra = len(metadata)
-    if n_spectra == 0:
-        return None, None
-    indptr = indptr[: n_spectra + 1]
     distances, indices = distances[: indptr[-1]], indices[: indptr[-1]]
     # Convert to a sparse pairwise distance matrix. This matrix might not be
     # entirely symmetrical, but that shouldn't matter too much.
@@ -153,12 +146,12 @@ def _build_query_ann_index(
 
     Parameters
     ----------
-    spectra_df : pd.DataFrame
-        The spectra to be indexed.
+    dataset : lance.LanceDataset
+        The dataset containing the spectra to be indexed.
+    charge : int
+        The precursor charge for which to compute the pairwise distances.
     bucket_id : int
-        The mass bucket identifier.
-    process_spectrum : Callable
-        Function to preprocess the spectra.
+        The charge bucket identifier.
     vectorize : Callable
         Function to convert the spectra to vectors.
     n_probe : int
@@ -223,8 +216,7 @@ def _build_query_ann_index(
                 "More than 1B vectors to be indexed, consider "
                 "decreasing the ANN size"
             )
-    sample_size = min(50 * n_list, n_spectra)
-    train_spectra = dataset.sample(sample_size, filter=query).to_pandas()
+    train_spectra = dataset.to_table(filter=query).to_pandas()
     train_spectra = train_spectra.apply(
         spectrum.df_row_to_spec, axis=1
     ).tolist()
@@ -266,8 +258,6 @@ def _build_query_ann_index(
             precursor_mzs.append(spec.precursor_mz)
             rts.append(spec.retention_time)
         batch_stop = batch_start + len(proc_batch)
-        precursor_mzs = np.asarray(precursor_mzs)
-        rts = np.asarray(rts)
 
         batch_vectors = vectorize(spectra=proc_batch)
         index.add_with_ids(
@@ -275,6 +265,8 @@ def _build_query_ann_index(
             np.arange(batch_start, batch_stop, dtype=np.int64),
         )
         batch_start = batch_stop
+    precursor_mzs = np.asarray(precursor_mzs)
+    rts = np.asarray(rts)
     # Query the index to calculate NN distances.
     _dist_mz_interval(
         index,
@@ -334,8 +326,12 @@ def _dist_mz_interval(
     ----------
     index : faiss.Index
         The NN index used to efficiently find distances to similar spectra.
-    vectors : np.ndarray
-        The spectrum vectors to be queried against the NN index.
+    dataset : lance.LanceDataset
+        The dataset containing the spectra to be indexed.
+    query : str
+        The query to filter the spectra.
+    vectorize : Callable
+        Function to convert the spectra to vectors.
     precursor_mzs : np.ndarray
         Precorsor m/z's of the spectra corresponding to the given vectors.
     rts : np.ndarray
@@ -367,6 +363,7 @@ def _dist_mz_interval(
         The current start index in `indptr`.
     """
     batch_start = 0
+    nn_mz = _get_mz_neighbors(precursor_mzs, precursor_tol_mass)
     for batch in dataset.to_batches(batch_size=batch_size, filter=query):
         batch_spectra = (
             batch.to_pandas().apply(spectrum.df_row_to_spec, axis=1).tolist()
@@ -375,218 +372,51 @@ def _dist_mz_interval(
         vectors = vectorize(spectra=batch_spectra)
         batch_stop = batch_start + vectors.shape[0]
         # Find nearest neighbors using ANN index searching.
-        # noinspection PyArgumentList
-        nn_dists, nn_idx_ann = index.search(vectors, n_neighbors_ann)
-        # Filter the neighbors based on the precursor m/z tolerance and assign
-        # distances.
-        _filter_neighbors_mz(
-            precursor_mzs,
-            rts,
-            batch_start,
-            batch_stop,
-            precursor_tol_mass,
-            precursor_tol_mode,
-            rt_tol,
-            nn_dists,
-            nn_idx_ann,
-            n_neighbors,
-            distances,
-            indices,
-            indptr,
-            indptr_i + batch_start,
-        )
+        for i, vec in enumerate(vectors, batch_start):
+            sel = faiss.IDSelectorBatch(nn_mz[i % batch_size])
+            params = faiss.SearchParametersIVF(sel=sel, nprobe=1)
+            # noinspection PyArgumentList
+            vec = vec.reshape(1, -1)
+            d, idx = index.search(vec, n_neighbors, params=params)
+            # filter out indices and distances < 0
+            mask = idx >= 0
+            d, idx = d[mask], idx[mask]
+            # Build csr matrix
+            indptr[i + 1] = indptr[i] + len(d)  # d.shape[1]  # len(d)
+            # Convert cosine similarity to cosine distance.
+            distances[indptr[i] : indptr[i + 1]] = np.maximum(1 - d, 0)
+            indices[indptr[i] : indptr[i + 1]] = idx
         batch_start = batch_stop
 
 
-@nb.njit(cache=True)
-def _filter_neighbors_mz(
-    precursor_mzs: np.ndarray,
-    rts: np.ndarray,
-    batch_start: int,
-    batch_stop: int,
-    precursor_tol_mass: float,
-    precursor_tol_mode: str,
-    rt_tol: float,
-    nn_dists: np.ndarray,
-    nn_idx_ann: np.ndarray,
-    n_neighbors: int,
-    distances: np.ndarray,
-    indices: np.ndarray,
-    indptr: np.ndarray,
-    indptr_i: int,
-) -> None:
+def _get_mz_neighbors(
+    precursor_mzs: np.ndarray, precursor_tol_mass: float
+) -> List[np.ndarray]:
     """
-    Filter ANN neighbor indexes by precursor m/z tolerances and assign
-    pairwise distances.
+    Get the mz neighbors for the given precursor m/z's.
 
     Parameters
     ----------
     precursor_mzs : np.ndarray
-        Precursor m/z's corresponding to the vectors.
-    rts : np.ndarray
-        Retention times corresponding to the vectors.
-    batch_start, batch_stop : int
-        The indexes in the precursor m/z's of the current batch.
-    precursor_tol_mass : float
+        Precursor m/z's of the spectra.
+    precursor_tol_mass: float
         The precursor tolerance mass for vectors to be considered as neighbors.
-    precursor_tol_mode : str
-        The unit of the precursor m/z tolerance ('Da' or 'ppm').
-    rt_tol : float
-        The retention time tolerance for vectors to be considered as neighbors.
-        If `None`, do not filter neighbors on retention time.
-    nn_dists : np.ndarray
-        Distances of the nearest neighbors.
-    nn_idx_ann : np.ndarray
-        Indexes of the nearest neighbors.
-    n_neighbors : int
-        The (maximum) number of neighbors to set for each vector.
-    distances : np.ndarray
-        The nearest neighbor distances. See `scipy.sparse.csr_matrix` (`data`).
-    indices : np.ndarray
-        The column indices for the nearest neighbor distances. See
-        `scipy.sparse.csr_matrix`.
-    indptr : np.ndarray
-        The index pointers for the nearest neighbor distances. See
-        `scipy.sparse.csr_matrix`.
-    indptr_i : int
-        The current start index in `indptr`.
-    """
-    nn_idx_mz = _get_neighbors_idx(
-        precursor_mzs,
-        batch_start,
-        batch_stop,
-        precursor_tol_mass,
-        precursor_tol_mode,
-    )
-    if rt_tol is not None:
-        nn_idx_rt = _get_neighbors_idx(
-            rts, batch_start, batch_stop, rt_tol, "rt"
-        )
-        nn_idx_mz = [
-            _intersect_idx_ann_mz(idx_mz, idx_rt, None, True)
-            for idx_mz, idx_rt in zip(nn_idx_mz, nn_idx_rt)
-        ]
-    indptr_i_start = indptr_i - batch_start
-    for i, (idx_ann, idx_mz, dists) in enumerate(
-        zip(nn_idx_ann, nn_idx_mz, nn_dists), indptr_i
-    ):
-        mask = _intersect_idx_ann_mz(idx_ann, idx_mz, n_neighbors)
-        indptr[i + 1] = indptr[i] + len(mask)
-        # Convert cosine similarity to cosine distance.
-        distances[indptr[i] : indptr[i + 1]] = np.maximum(1 - dists[mask], 0)
-        indices[indptr[i] : indptr[i + 1]] = indptr_i_start + idx_ann[mask]
-
-
-@nb.njit(cache=True)
-def _get_neighbors_idx(
-    values: np.ndarray, start_i: int, stop_i: int, tol: float, tol_mode: str
-) -> List[np.ndarray]:
-    """
-    Filter nearest neighbor candidates on precursor m/z or retention time.
-
-    Parameters
-    ----------
-    values : np.ndarray
-        The precursor m/z (sorted) or retention time (unsorted) values of the
-        candidates.
-    start_i, stop_i : int
-        Indexes used to slice the values to be considered in the batch
-        (inclusive start_i, exclusive stop_i).
-    tol : float
-        The tolerance for vectors to be considered as neighbors.
-    tol_mode : str
-        The unit of the tolerance ('Da' or 'ppm' for precursor m/z, 'rt' for
-        retention time).
 
     Returns
     -------
     List[np.ndarray]
-        A list of sorted NumPy arrays with the indexes of the nearest neighbor
-        candidates for each item.
+        The indices of the masses within tolerance.
     """
-    batch_values = values[start_i:stop_i]
-    if tol_mode in ("Da", "ppm"):
-        if tol_mode == "Da":
-            min_value = batch_values[0] - tol
-            max_value = batch_values[-1] + tol
-        elif tol_mode == "ppm":
-            min_value = batch_values[0] - batch_values[0] * tol / 10**6
-            max_value = batch_values[-1] + batch_values[-1] * tol / 10**6
-        # noinspection PyUnboundLocalVariable
-        min_value, max_value = max(0, min_value), max(0, max_value)
-        # noinspection PyUnresolvedReferences
-        match_i = np.searchsorted(values, [min_value, max_value])
-        match_values_i = np.arange(match_i[0], match_i[1])
-        match_values = values[match_i[0] : match_i[1]].reshape((1, -1))
-    elif tol_mode == "rt":
-        # RT values are not sorted.
-        min_value = max(0, batch_values.min() - tol)
-        max_value = max(0, batch_values.max() + tol)
-        match_values_i = np.where(
-            np.logical_and(values >= min_value, values <= max_value)
-        )[0]
-        match_values = values[match_values_i].reshape((1, -1))
-    else:
-        raise ValueError("Unknown tolerance filter")
-    batch_values = batch_values.reshape((stop_i - start_i, 1))
-    if tol_mode in ("Da", "rt"):
-        masks = np.abs(batch_values - match_values) < tol
-    elif tol_mode == "ppm":
-        masks = (
-            np.abs(batch_values - match_values) / match_values * 10**6 < tol
-        )
-    # noinspection PyUnboundLocalVariable, PyUnresolvedReferences
-    return [np.sort(match_values_i[mask]) for mask in masks]
-
-
-@nb.njit(cache=True)
-def _intersect_idx_ann_mz(
-    idx_ann: np.ndarray,
-    idx_mz: np.ndarray,
-    max_neighbors: int = None,
-    is_sorted: bool = False,
-) -> np.ndarray:
-    """
-    Find the intersection between identifiers from ANN filtering and precursor
-    m/z filtering.
-
-    Parameters
-    ----------
-    idx_ann : np.ndarray
-        Identifiers from ANN filtering.
-    idx_mz : np.ndarray
-        SORTED identifiers from precursor m/z filtering.
-    max_neighbors : int
-        The maximum number of best matching neighbors to retain.
-    is_sorted : bool
-        Flag indicating whether the first array is sorted or not.
-
-    Returns
-    -------
-    np.ndarray
-        A mask to select the joint identifiers in the `idx_ann` array.
-    """
-    i_mz = 0
-    # noinspection PyUnresolvedReferences
-    idx_ann_order = (
-        np.argsort(idx_ann) if not is_sorted else np.arange(len(idx_ann))
-    )
-    idx = []
-    for i_order, i_ann in enumerate(idx_ann_order):
-        if idx_ann[i_ann] != -1:
-            while i_mz < len(idx_mz) and idx_mz[i_mz] < idx_ann[i_ann]:
-                i_mz += 1
-            if i_mz == len(idx_mz):
-                break
-            if idx_ann[i_ann] == idx_mz[i_mz]:
-                idx.append(idx_ann_order[i_order])
-                i_mz += 1
-    idx = np.asarray(idx)
-    if max_neighbors is None or max_neighbors >= len(idx):
-        return idx
-    else:
-        # noinspection PyUnresolvedReferences
-        return np.partition(idx, max_neighbors)[:max_neighbors]
+    nn_mz = []
+    order = np.argsort(precursor_mzs)
+    for mz in precursor_mzs:
+        mz_min = mz - precursor_tol_mass
+        mz_max = mz + precursor_tol_mass
+        mz_min, mz_max = max(0, mz_min), max(0, mz_max)
+        match_i = np.searchsorted(precursor_mzs[order], [mz_min, mz_max])
+        idx = np.arange(match_i[0], match_i[1])
+        nn_mz.append(order[idx])
+    return nn_mz
 
 
 def generate_clusters(
