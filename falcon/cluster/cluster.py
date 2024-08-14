@@ -1,6 +1,7 @@
 import gc
 import logging
 import math
+import random
 import tempfile
 from typing import Callable, Iterator, List, Optional, Tuple
 
@@ -213,7 +214,9 @@ def _build_query_ann_index(
                 "More than 1B vectors to be indexed, consider "
                 "decreasing the ANN size"
             )
-    train_spectra = dataset.to_table(filter=query).to_pandas()
+    random.seed(42)
+    sample_size = min(50 * n_list, n_spectra)
+    train_spectra = dataset.sample(sample_size, filter=query).to_pandas()
     train_spectra = train_spectra.apply(
         spectrum.df_row_to_spec, axis=1
     ).tolist()
