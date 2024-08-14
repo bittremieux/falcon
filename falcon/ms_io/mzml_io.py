@@ -52,6 +52,7 @@ def _parse_spectrum(spectrum_dict: Dict) -> sus.MsmsSpectrum:
     MsmsSpectrum
         The parsed cluster.
     """
+    # print(spectrum_dict)
     spectrum_id = spectrum_dict["id"]
     mz_array = spectrum_dict["m/z array"]
     intensity_array = spectrum_dict["intensity array"]
@@ -67,7 +68,7 @@ def _parse_spectrum(spectrum_dict: Dict) -> sus.MsmsSpectrum:
     elif "possible charge state" in precursor_ion:
         precursor_charge = int(precursor_ion["possible charge state"])
     elif config.default_charge:
-        precursor_charge = config.default_charge
+        precursor_charge = -1
     else:
         raise ValueError("Unknown precursor charge")
 

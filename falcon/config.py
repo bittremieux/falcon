@@ -211,15 +211,6 @@ class Config:
             help="Peak scaling method used to reduce the influence of very "
             "intense peaks (default: %(default)s).",
         )
-
-        self._parser.add_argument(
-            "--default_charge",
-            default=None,
-            type=int,
-            help="Default precursor charge if not specified in the peak file "
-            "(default: None).",
-        )
-
         # Filled in 'parse', contains the specified settings.
         self._namespace = None
 

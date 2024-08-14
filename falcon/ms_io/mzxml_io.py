@@ -61,7 +61,7 @@ def _parse_spectrum(spectrum_dict: Dict) -> sus.MsmsSpectrum:
     if "precursorCharge" in spectrum_dict["precursorMz"][0]:
         precursor_charge = spectrum_dict["precursorMz"][0]["precursorCharge"]
     elif config.default_charge:
-        precursor_charge = config.default_charge
+        precursor_charge = -1
     else:
         raise ValueError("Unknown precursor charge")
 
