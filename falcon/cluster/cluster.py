@@ -32,7 +32,6 @@ def compute_pairwise_distances(
     precursor_tol_mode: str,
     rt_tol: float,
     n_neighbors: int,
-    n_neighbors_ann: int,
     batch_size: int,
     n_probe: int,
 ) -> Tuple[ss.csr_matrix, pd.DataFrame]:
@@ -100,7 +99,6 @@ def compute_pairwise_distances(
         n_probe,
         batch_size,
         n_neighbors,
-        n_neighbors_ann,
         precursor_tol_mass,
         precursor_tol_mode,
         rt_tol,
@@ -132,7 +130,6 @@ def _build_query_ann_index(
     n_probe: int,
     batch_size: int,
     n_neighbors: int,
-    n_neighbors_ann: int,
     precursor_tol_mass: float,
     precursor_tol_mode: str,
     rt_tol: float,
@@ -277,14 +274,12 @@ def _build_query_ann_index(
         rts,
         batch_size,
         n_neighbors,
-        n_neighbors_ann,
         precursor_tol_mass,
         precursor_tol_mode,
         rt_tol,
         distances,
         indices,
         indptr,
-        indptr_i,
     )
     index.reset()
     indptr_i += n_spectra
@@ -309,14 +304,12 @@ def _dist_mz_interval(
     rts: np.ndarray,
     batch_size: int,
     n_neighbors: int,
-    n_neighbors_ann: int,
     precursor_tol_mass: float,
     precursor_tol_mode: str,
     rt_tol: float,
     distances: np.ndarray,
     indices: np.ndarray,
     indptr: np.ndarray,
-    indptr_i: int,
 ) -> None:
     """
     Compute distances to the nearest neighbors for the given precursor m/z
@@ -363,7 +356,12 @@ def _dist_mz_interval(
         The current start index in `indptr`.
     """
     batch_start = 0
-    nn_mz = _get_mz_neighbors(precursor_mzs, precursor_tol_mass)
+    nn_mz = _get_mz_neighbors(
+        precursor_mzs, precursor_tol_mass, precursor_tol_mode
+    )
+    if rt_tol is not None:  # TODO: test this
+        nn_rt = _get_mz_neighbors(rts, rt_tol, "rt")
+        nn_mz = [np.intersect1d(mz, rt) for mz, rt in zip(nn_mz, nn_rt)]
     for batch in dataset.to_batches(batch_size=batch_size, filter=query):
         batch_spectra = (
             batch.to_pandas().apply(spectrum.df_row_to_spec, axis=1).tolist()
@@ -390,33 +388,53 @@ def _dist_mz_interval(
 
 
 def _get_mz_neighbors(
-    precursor_mzs: np.ndarray, precursor_tol_mass: float
+    values: np.ndarray,
+    tol: float,
+    tol_mode: str,
 ) -> List[np.ndarray]:
     """
     Get the mz neighbors for the given precursor m/z's.
 
     Parameters
     ----------
-    precursor_mzs : np.ndarray
-        Precursor m/z's of the spectra.
-    precursor_tol_mass: float
-        The precursor tolerance mass for vectors to be considered as neighbors.
+    values : np.ndarray
+        The precursor m/z or retention time values of the spectra.
+    tol: float
+        The tolerance for vectors to be considered as neighbors.
+    tol_mode : str
+        The unit of the tolerance ('Da' or 'ppm' for precursor m/z,
+        'rt' for rentention time).
 
     Returns
     -------
     List[np.ndarray]
-        The indices of the masses within tolerance.
+        The indices of the NN candidates.
     """
-    nn_mz = []
-    order = np.argsort(precursor_mzs)
-    for mz in precursor_mzs:
-        mz_min = mz - precursor_tol_mass
-        mz_max = mz + precursor_tol_mass
-        mz_min, mz_max = max(0, mz_min), max(0, mz_max)
-        match_i = np.searchsorted(precursor_mzs[order], [mz_min, mz_max])
-        idx = np.arange(match_i[0], match_i[1])
-        nn_mz.append(order[idx])
-    return nn_mz
+    nn = []
+    if tol_mode in ("Da", "ppm"):
+        order = np.argsort(values)
+        for mz in values:
+            if tol_mode == "ppm":
+                mz_min = mz - mz * tol / 1**6
+                mz_max = mz + mz * tol / 1**6
+            elif tol_mode == "Da":
+                mz_min = mz - tol
+                mz_max = mz + tol
+            mz_min, mz_max = max(0, mz_min), max(0, mz_max)
+            match_i = np.searchsorted(values[order], [mz_min, mz_max])
+            idx = np.arange(match_i[0], match_i[1])
+            nn.append(order[idx])
+    elif tol_mode == "rt":  # TODO: test this
+        for rt in values:
+            rt_min = max(0, rt - tol)
+            rt_max = max(0, rt + tol)
+            match_values_i = np.where(
+                np.logical_and(values >= rt_min, values <= rt_max)
+            )
+            nn.append(match_values_i)
+    else:
+        raise ValueError("Unknown tolerance filter")
+    return nn
 
 
 def generate_clusters(

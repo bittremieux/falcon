@@ -4,6 +4,7 @@ import itertools
 import glob
 import logging
 import multiprocessing
+import multiprocessing.sharedctypes
 import os
 import queue
 import shutil
@@ -65,7 +66,6 @@ def main(args: Union[str, List[str]] = None) -> int:
     logger.debug("mz_interval = %d", config.mz_interval)
     logger.debug("low_dim = %d", config.low_dim)
     logger.debug("n_neighbors = %d", config.n_neighbors)
-    logger.debug("n_neighbors_ann = %d", config.n_neighbors_ann)
     logger.debug("batch_size = %d", config.batch_size)
     logger.debug("n_probe = %d", config.n_probe)
     logger.debug("min_peaks = %d", config.min_peaks)
@@ -144,21 +144,20 @@ def main(args: Union[str, List[str]] = None) -> int:
     )
 
     if config.overwrite:
-        if os.path.isfile(os.path.join(config.work_dir, "spec_data.lance")):
-            os.remove(os.path.join(config.work_dir, "spec_data.lance"))
+        # if os.path.isfile(os.path.join(config.work_dir, "spec_data.lance")):
+        #     os.remove(os.path.join(config.work_dir, "spec_data.lance"))
         for filename in os.listdir(os.path.join(config.work_dir, "spectra")):
             os.remove(os.path.join(config.work_dir, "spectra", filename))
         for filename in os.listdir(os.path.join(config.work_dir, "nn")):
             os.remove(os.path.join(config.work_dir, "nn", filename))
+
+    charge_path = os.path.join(config.work_dir, "spectra", "charges.joblib")
+    if os.path.isfile(charge_path) and not config.overwrite:
+        charges = joblib.load(charge_path)
+    else:
         # Recalculate the charge buckets and recreate dataset.
         charges = _prepare_spectra(process_spectrum)
-        joblib.dump(
-            charges, os.path.join(config.work_dir, "spectra", "charges.joblib")
-        )
-    else:
-        charges = joblib.load(
-            os.path.join(config.work_dir, "spectra", "charges.joblib")
-        )
+        joblib.dump(charges, charge_path)
 
     transformation = (
         SparseRandomProjection(config.low_dim, random_state=0)
@@ -177,7 +176,9 @@ def main(args: Union[str, List[str]] = None) -> int:
 
     # Cluster the spectra per charge.
     clusters_all, current_label, representatives = [], 0, []
-    dataset = lance.dataset(os.path.join(config.work_dir, "spec_data.lance"))
+    dataset = lance.dataset(
+        os.path.join(config.work_dir, "spectra", "spec_data.lance")
+    )
     # Create index for fast spectrum retrieval
     dataset.create_scalar_index(
         column="precursor_charge", index_type="BTREE", replace=True
@@ -202,7 +203,6 @@ def main(args: Union[str, List[str]] = None) -> int:
                     config.precursor_tol[1],
                     config.rt_tol,
                     config.n_neighbors,
-                    config.n_neighbors_ann,
                     config.batch_size,
                     config.n_probe,
                 )
@@ -303,6 +303,11 @@ def _prepare_spectra(process_spectrum) -> Set[int]:
     Read the spectra from the input peak files and partition to intermediate
     files split and sorted by precursor m/z.
 
+    Parameters
+    ----------
+    process_spectrum : Callable
+        The function to process the spectra.
+
     Returns
     -------
     Set[int]
@@ -344,7 +349,7 @@ def _prepare_spectra(process_spectrum) -> Set[int]:
             pa.field("filename", pa.string()),
         ]
     )
-    lance_path = os.path.join(config.work_dir, "spec_data.lance")
+    lance_path = os.path.join(config.work_dir, "spectra", "spec_data.lance")
     lance.write_dataset(
         pa.Table.from_pylist([], schema),
         lance_path,
@@ -381,7 +386,7 @@ def _read_spectra_queue(
     file_queue: queue.Queue,
     spectra_queue: queue.Queue,
     process_spectrum: Callable,
-    low_quality_counter: multiprocessing.Value,
+    low_quality_counter: multiprocessing.sharedctypes.Synchronized,
 ) -> None:
     """
     Get the spectra from the file queue and store them in the spectra queue.
@@ -394,6 +399,8 @@ def _read_spectra_queue(
         Queue in which spectra are stored.
     precursor_mz : Dict[int, List[float]]
         List in which precursor m/z values are stored by charge.
+    low_quality_counter : multiprocessing.sharedctypes.Synchronized
+        Counter for low-quality spectra.
     """
     while True:
         filename = file_queue.get()
@@ -408,7 +415,7 @@ def _read_spectra_queue(
 def _read_spectra(
     filename: str,
     process_spectrum: Callable,
-    low_quality_counter: multiprocessing.Value,
+    low_quality_counter: multiprocessing.sharedctypes.Synchronized,
 ) -> Iterator[Tuple[MsmsSpectrum, str]]:
     """
     Get the spectra from the given file.
@@ -419,6 +426,8 @@ def _read_spectra(
         The path of the peak file to be read.
     precursor_mz : Dict[int, List[float]]
         Dictionary that will be filled with precursor m/z values per charge.
+    low_quality_counter : multiprocessing.sharedctypes.Synchronized
+        Counter for low-quality spectra.
 
     Returns
     -------
@@ -438,7 +447,7 @@ def _read_spectra(
 
 def _write_spectra_lance(
     spectra_queue: queue.Queue,
-    lance_lock: multiprocessing.Lock,
+    lance_lock: multiprocessing.synchronize.Lock,
     schema: pa.Schema,
     charges: Set,
 ) -> None:
@@ -480,10 +489,10 @@ def _write_spectra_lance(
 
 def _write_to_dataset(
     spec_to_write: List[Dict[str, Union[str, int, float]]],
-    lock: multiprocessing.Lock,
+    lock: multiprocessing.synchronize.Lock,
     schema: pa.Schema,
     work_dir: str,
-):
+) -> int:
     """
     Write a list of spectra to a lance dataset.
 
@@ -504,97 +513,10 @@ def _write_to_dataset(
         The number of spectra written to the dataset.
     """
     new_rows = pa.Table.from_pylist(spec_to_write, schema)
-    path = os.path.join(work_dir, "spec_data.lance")
+    path = os.path.join(work_dir, "spectra", "spec_data.lance")
     with lock:
         lance.write_dataset(new_rows, path, mode="append")
     return len(new_rows)
-
-
-def spectra_to_bucket(
-    precursor_mz: Dict[int, List[float]],
-    tol: float,
-    tol_mode: str,
-) -> Dict[int, List[Tuple[float, float]]]:
-    """
-    Group spectra with near-identical precursor m/z values in the same mass
-    bucket.
-
-    Parameters
-    ----------
-    precursor_mz : Dict[int, List[float]]
-        The precursor m/z values per charge.
-    tol : float
-        The precursor m/z tolerance.
-    tol_mode : str
-        The tolerance mode, either "Da" or "ppm".
-
-    Returns
-    -------
-    Dict[int, List[Tuple[str, str]]]
-        Bucket limits (min_mz, max_mz) per charge.
-    """
-    sorted_precursor_mz = {
-        charge: sorted(mz_values) for charge, mz_values in precursor_mz.items()
-    }
-    bucket_limits = _get_bucket_limits(sorted_precursor_mz, tol, tol_mode)
-
-    return bucket_limits
-
-
-def _get_bucket_limits(
-    precursor_mz: Dict[int, List[float]],
-    tol: float,
-    tol_mode: str,
-) -> Dict[int, List[Tuple[float, float]]]:
-    """
-    Create mass buckets.
-
-    Define mass bucket limits given all precursor m/z's and precursor tolerance.
-    Add tolerance to the lower and upper limits.
-
-    Parameters
-    ----------
-    precursor_mz : Dict[int, List[float]]
-        The precursor m/z values per charge.
-    tol : float
-        The precursor m/z tolerance.
-    tol_mode : str
-        The tolerance mode, either "Da" or "ppm".
-
-    Returns
-    -------
-    Dict[int, List[Tuple[float, float]]]
-        The mass bucket boundaries (min_mz, max_mz) per charge.
-    """
-    min_max_mz = collections.defaultdict(list)
-    for charge, mz_values in precursor_mz.items():
-        cluster_count = 0
-        i = 0
-        while i < len(mz_values):
-            cluster_min = mz_values[i]
-            if tol_mode == "Da":
-                cluster_min = cluster_min - tol
-                while (
-                    i < len(mz_values) - 1
-                    and mz_values[i + 1] - mz_values[i] < tol
-                ):
-                    i += 1
-                cluster_max = mz_values[i] + tol
-            elif tol_mode == "ppm":
-                cluster_min = cluster_min - cluster_min * tol / 10**6
-                while (
-                    i < len(mz_values) - 1
-                    and (mz_values[i + 1] - mz_values[i])
-                    / mz_values[i]
-                    * 10**6
-                    < tol
-                ):
-                    i += 1
-                cluster_max = mz_values[i] + mz_values[i] * tol / 10**6
-            min_max_mz[charge].append((cluster_min, cluster_max))
-            cluster_count += 1
-            i += 1
-    return min_max_mz
 
 
 def _write_cluster_info(clusters: pd.DataFrame) -> None:
@@ -624,7 +546,6 @@ def _write_cluster_info(clusters: pd.DataFrame) -> None:
         f_out.write(f"# mz_interval = {config.mz_interval}\n")
         f_out.write(f"# low_dim = {config.low_dim}\n")
         f_out.write(f"# n_neighbors = {config.n_neighbors}\n")
-        f_out.write(f"# n_neighbors_ann = {config.n_neighbors_ann}\n")
         f_out.write(f"# batch_size = {config.batch_size}\n")
         f_out.write(f"# n_probe = {config.n_probe}\n")
         f_out.write(f"# min_peaks = {config.min_peaks}\n")

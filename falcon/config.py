@@ -131,14 +131,6 @@ class Config:
             "matrix for each spectrum (default: %(default)s).",
         )
         self._parser.add_argument(
-            "--n_neighbors_ann",
-            default=128,
-            type=int,
-            help="Number of neighbors to retrieve from the nearest neighbor "
-            "indexes prior to precursor tolerance filtering "
-            "(default: %(default)s).",
-        )
-        self._parser.add_argument(
             "--batch_size",
             default=2**16,
             type=int,
