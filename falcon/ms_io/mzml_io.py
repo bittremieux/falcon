@@ -52,7 +52,6 @@ def _parse_spectrum(spectrum_dict: Dict) -> sus.MsmsSpectrum:
     MsmsSpectrum
         The parsed cluster.
     """
-    # print(spectrum_dict)
     spectrum_id = spectrum_dict["id"]
     mz_array = spectrum_dict["m/z array"]
     intensity_array = spectrum_dict["intensity array"]

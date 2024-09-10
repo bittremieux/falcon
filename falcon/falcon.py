@@ -7,6 +7,7 @@ import multiprocessing
 import multiprocessing.sharedctypes
 import os
 import queue
+import random
 import shutil
 import sys
 import tempfile
@@ -25,12 +26,15 @@ from sklearn.random_projection import SparseRandomProjection
 from spectrum_utils.spectrum import MsmsSpectrum
 
 from . import __version__
+from . import seed
 from .cluster import cluster, spectrum
 from .config import config
 from .ms_io import ms_io
 
 
 logger = logging.getLogger("falcon")
+
+seed.set_seeds()
 
 
 def main(args: Union[str, List[str]] = None) -> int:
@@ -144,8 +148,6 @@ def main(args: Union[str, List[str]] = None) -> int:
     )
 
     if config.overwrite:
-        # if os.path.isfile(os.path.join(config.work_dir, "spec_data.lance")):
-        #     os.remove(os.path.join(config.work_dir, "spec_data.lance"))
         for filename in os.listdir(os.path.join(config.work_dir, "spectra")):
             os.remove(os.path.join(config.work_dir, "spectra", filename))
         for filename in os.listdir(os.path.join(config.work_dir, "nn")):
@@ -298,7 +300,7 @@ def main(args: Union[str, List[str]] = None) -> int:
     return 0
 
 
-def _prepare_spectra(process_spectrum) -> Set[int]:
+def _prepare_spectra(process_spectrum: Callable) -> Set[int]:
     """
     Read the spectra from the input peak files and partition to intermediate
     files split and sorted by precursor m/z.
@@ -424,8 +426,8 @@ def _read_spectra(
     ----------
     filename : str
         The path of the peak file to be read.
-    precursor_mz : Dict[int, List[float]]
-        Dictionary that will be filled with precursor m/z values per charge.
+    process_spectrum : Callable
+        The function to process the spectra.
     low_quality_counter : multiprocessing.sharedctypes.Synchronized
         Counter for low-quality spectra.
 

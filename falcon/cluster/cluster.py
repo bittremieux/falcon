@@ -1,7 +1,6 @@
 import gc
 import logging
 import math
-import random
 import tempfile
 from typing import Callable, Iterator, List, Optional, Tuple
 
@@ -14,6 +13,7 @@ import pandas as pd
 import scipy.sparse as ss
 from scipy.cluster.hierarchy import fcluster
 from spectrum_utils.spectrum import MsmsSpectrum
+from tqdm import tqdm
 
 # noinspection PyProtectedMember
 from sklearn.cluster._dbscan_inner import dbscan_inner
@@ -76,12 +76,14 @@ def compute_pairwise_distances(
         corresponding spectrum metadata (identifier, precursor charge,
         precursor m/z).
     """
-    n_spectra = dataset.count_rows(filter=f"precursor_charge == {charge}")
+    query = f"precursor_charge == {charge}"
+    n_spectra = dataset.count_rows(filter=query)
     logger.debug(
         "Compute nearest neighbor pairwise distances (%d spectra, %d"
-        " neighbors)",
+        " neighbors) for charge %d",
         n_spectra,
         n_neighbors,
+        charge,
     )
     max_num_embeddings = n_spectra * n_neighbors
     dtype = (
@@ -94,7 +96,8 @@ def compute_pairwise_distances(
     # pairwise distances.
     metadata = _build_query_ann_index(
         dataset,
-        charge,
+        n_spectra,
+        query,
         bucket_id,
         vectorize,
         n_probe,
@@ -125,7 +128,8 @@ def compute_pairwise_distances(
 
 def _build_query_ann_index(
     dataset: lance.LanceDataset,
-    charge: int,
+    n_spectra: int,
+    query: str,
     bucket_id: int,
     vectorize: Callable,
     n_probe: int,
@@ -146,8 +150,10 @@ def _build_query_ann_index(
     ----------
     dataset : lance.LanceDataset
         The dataset containing the spectra to be indexed.
-    charge : int
-        The precursor charge for which to compute the pairwise distances.
+    n_spectra : int
+        The number of spectra to be indexed.
+    query : str
+        The query to filter the spectra.
     bucket_id : int
         The charge bucket identifier.
     vectorize : Callable
@@ -184,9 +190,6 @@ def _build_query_ann_index(
         Metadata (filename, identifier, precursor charge, precursor m/z,
         retention time) of the spectra for which indexes were built.
     """
-    query = f"precursor_charge == {charge}"
-    n_spectra = dataset.count_rows(filter=query)
-
     # Read the spectra for the m/z bucket.
     filenames, identifiers, bucket_ids, precursor_mzs, rts = [], [], [], [], []
     indptr_i = 0
@@ -195,8 +198,6 @@ def _build_query_ann_index(
     # the number of vectors.
     # Rules of thumb from the Faiss wiki:
     # https://github.com/facebookresearch/faiss/wiki/Guidelines-to-choose-an-index#how-big-is-the-dataset
-    # if n_vectors == 0:
-    #     continue
     if n_spectra < 10**2:
         # Use a brute-force index instead of an ANN index when there
         # are only a few items.
@@ -214,8 +215,12 @@ def _build_query_ann_index(
                 "More than 1B vectors to be indexed, consider "
                 "decreasing the ANN size"
             )
-    random.seed(42)
-    sample_size = min(50 * n_list, n_spectra)
+    if n_list > 0:
+        # Train on random subset of data
+        # https://github.com/facebookresearch/faiss/issues/2047
+        sample_size = min(50 * n_list, n_spectra)
+    else:
+        sample_size = n_spectra
     train_spectra = dataset.sample(sample_size, filter=query).to_pandas()
     train_spectra = train_spectra.apply(
         spectrum.df_row_to_spec, axis=1
@@ -237,17 +242,13 @@ def _build_query_ann_index(
 
     # Add the vectors to the index in batches.
     batch_start = 0
-    for i, batch in enumerate(
-        dataset.to_batches(batch_size=batch_size, filter=query)
+    for batch in tqdm(
+        dataset.to_batches(batch_size=batch_size, filter=query),
+        desc="Batches added to index",
+        unit="batch",
     ):
-        logger.debug(
-            "Add batch %d/%d to ANN index (%d spectra)",
-            i + 1,
-            n_spectra // batch_size + 1,
-            len(batch),
-        )
-        batch_spectra = (
-            batch.to_pandas().apply(spectrum.df_row_to_spec, axis=1).tolist()
+        batch_spectra = batch.to_pandas().apply(
+            spectrum.df_row_to_spec, axis=1
         )
         proc_batch = []
         for spec in batch_spectra:
@@ -359,11 +360,11 @@ def _dist_mz_interval(
         The current start index in `indptr`.
     """
     batch_start = 0
-    nn_mz = _get_mz_neighbors(
+    nn_mz = _get_neighbors(
         precursor_mzs, precursor_tol_mass, precursor_tol_mode
     )
     if rt_tol is not None:  # TODO: test this
-        nn_rt = _get_mz_neighbors(rts, rt_tol, "rt")
+        nn_rt = _get_neighbors(rts, rt_tol, "rt")
         nn_mz = [np.intersect1d(mz, rt) for mz, rt in zip(nn_mz, nn_rt)]
     for batch in dataset.to_batches(batch_size=batch_size, filter=query):
         batch_spectra = (
@@ -374,8 +375,14 @@ def _dist_mz_interval(
         batch_stop = batch_start + vectors.shape[0]
         # Find nearest neighbors using ANN index searching.
         for i, vec in enumerate(vectors, batch_start):
-            sel = faiss.IDSelectorBatch(nn_mz[i % batch_size])
-            params = faiss.SearchParametersIVF(sel=sel, nprobe=1)
+            sel = faiss.IDSelectorBatch(nn_mz[i])
+            # if index is IVF, use the same number of probes
+            if isinstance(index, faiss.IndexIVF):
+                params = faiss.SearchParametersIVF(
+                    sel=sel, nprobe=index.nprobe
+                )
+            else:
+                params = faiss.SearchParameters(sel=sel)
             # noinspection PyArgumentList
             vec = vec.reshape(1, -1)
             d, idx = index.search(vec, n_neighbors, params=params)
@@ -385,18 +392,18 @@ def _dist_mz_interval(
             # Build csr matrix
             indptr[i + 1] = indptr[i] + len(d)  # d.shape[1]  # len(d)
             # Convert cosine similarity to cosine distance.
-            distances[indptr[i] : indptr[i + 1]] = np.maximum(1 - d, 0)
+            distances[indptr[i] : indptr[i + 1]] = np.clip(1 - d, 0, 1)
             indices[indptr[i] : indptr[i + 1]] = idx
         batch_start = batch_stop
 
 
-def _get_mz_neighbors(
+def _get_neighbors(
     values: np.ndarray,
     tol: float,
     tol_mode: str,
 ) -> List[np.ndarray]:
     """
-    Get the mz neighbors for the given precursor m/z's.
+    Get the neighbors for the given precursor m/z's or retention time.
 
     Parameters
     ----------
