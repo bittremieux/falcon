@@ -28,7 +28,6 @@ def compute_pairwise_distances(
     dataset: lance.LanceDataset,
     charge: int,
     bucket_id: int,
-    vectorize: Callable,
     precursor_tol_mass: float,
     precursor_tol_mode: str,
     rt_tol: float,
@@ -99,7 +98,6 @@ def compute_pairwise_distances(
         n_spectra,
         query,
         bucket_id,
-        vectorize,
         n_probe,
         batch_size,
         n_neighbors,
@@ -131,7 +129,6 @@ def _build_query_ann_index(
     n_spectra: int,
     query: str,
     bucket_id: int,
-    vectorize: Callable,
     n_probe: int,
     batch_size: int,
     n_neighbors: int,
@@ -222,10 +219,7 @@ def _build_query_ann_index(
     else:
         sample_size = n_spectra
     train_spectra = dataset.sample(sample_size, filter=query).to_pandas()
-    train_spectra = train_spectra.apply(
-        spectrum.df_row_to_spec, axis=1
-    ).tolist()
-    train_vectors = vectorize(spectra=train_spectra)
+    train_vectors = np.stack(train_spectra["vector"].values)
     dim = train_vectors.shape[1]
     # Create an ANN index using the inner product (proxy for cosine
     # distance) for fast NN queries.
@@ -250,17 +244,17 @@ def _build_query_ann_index(
         batch_spectra = batch.to_pandas().apply(
             spectrum.df_row_to_spec, axis=1
         )
-        proc_batch = []
+        batch_vectors = []
         for spec in batch_spectra:
-            proc_batch.append(spec)
+            batch_vectors.append(spec.vector)
             filenames.append(spec.filename)
             identifiers.append(spec.identifier)
             bucket_ids.append(bucket_id)
             precursor_mzs.append(spec.precursor_mz)
             rts.append(spec.retention_time)
-        batch_stop = batch_start + len(proc_batch)
+        batch_stop = batch_start + len(batch_vectors)
 
-        batch_vectors = vectorize(spectra=proc_batch)
+        batch_vectors = np.stack(batch_vectors)
         index.add_with_ids(
             batch_vectors,
             np.arange(batch_start, batch_stop, dtype=np.int64),
@@ -273,7 +267,6 @@ def _build_query_ann_index(
         index,
         dataset,
         query,
-        vectorize,
         precursor_mzs,
         rts,
         batch_size,
@@ -303,7 +296,6 @@ def _dist_mz_interval(
     index: faiss.Index,
     dataset: lance.LanceDataset,
     query: str,
-    vectorize: Callable,
     precursor_mzs: np.ndarray,
     rts: np.ndarray,
     batch_size: int,
@@ -367,11 +359,7 @@ def _dist_mz_interval(
         nn_rt = _get_neighbors(rts, rt_tol, "rt")
         nn_mz = [np.intersect1d(mz, rt) for mz, rt in zip(nn_mz, nn_rt)]
     for batch in dataset.to_batches(batch_size=batch_size, filter=query):
-        batch_spectra = (
-            batch.to_pandas().apply(spectrum.df_row_to_spec, axis=1).tolist()
-        )
-        batch_spectra = nb.typed.List(batch_spectra)
-        vectors = vectorize(spectra=batch_spectra)
+        vectors = np.stack(batch.to_pandas()["vector"].values)
         batch_stop = batch_start + vectors.shape[0]
         # Find nearest neighbors using ANN index searching.
         for i, vec in enumerate(vectors, batch_start):
@@ -390,7 +378,7 @@ def _dist_mz_interval(
             mask = idx >= 0
             d, idx = d[mask], idx[mask]
             # Build csr matrix
-            indptr[i + 1] = indptr[i] + len(d)  # d.shape[1]  # len(d)
+            indptr[i + 1] = indptr[i] + len(d)
             # Convert cosine similarity to cosine distance.
             distances[indptr[i] : indptr[i + 1]] = np.clip(1 - d, 0, 1)
             indices[indptr[i] : indptr[i + 1]] = idx

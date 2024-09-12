@@ -147,20 +147,6 @@ def main(args: Union[str, List[str]] = None) -> int:
         scaling=None if config.scaling == "off" else config.scaling,
     )
 
-    if config.overwrite:
-        for filename in os.listdir(os.path.join(config.work_dir, "spectra")):
-            os.remove(os.path.join(config.work_dir, "spectra", filename))
-        for filename in os.listdir(os.path.join(config.work_dir, "nn")):
-            os.remove(os.path.join(config.work_dir, "nn", filename))
-
-    charge_path = os.path.join(config.work_dir, "spectra", "charges.joblib")
-    if os.path.isfile(charge_path) and not config.overwrite:
-        charges = joblib.load(charge_path)
-    else:
-        # Recalculate the charge buckets and recreate dataset.
-        charges = _prepare_spectra(process_spectrum)
-        joblib.dump(charges, charge_path)
-
     transformation = (
         SparseRandomProjection(config.low_dim, random_state=0)
         .fit(np.zeros((1, vec_len)))
@@ -175,6 +161,20 @@ def main(args: Union[str, List[str]] = None) -> int:
         dim=vec_len,
         norm=True,
     )
+
+    if config.overwrite:
+        for filename in os.listdir(os.path.join(config.work_dir, "spectra")):
+            os.remove(os.path.join(config.work_dir, "spectra", filename))
+        for filename in os.listdir(os.path.join(config.work_dir, "nn")):
+            os.remove(os.path.join(config.work_dir, "nn", filename))
+
+    charge_path = os.path.join(config.work_dir, "spectra", "charges.joblib")
+    if os.path.isfile(charge_path) and not config.overwrite:
+        charges = joblib.load(charge_path)
+    else:
+        # Recalculate the charge buckets and recreate dataset.
+        charges = _prepare_spectra(process_spectrum, vectorize)
+        joblib.dump(charges, charge_path)
 
     # Cluster the spectra per charge.
     clusters_all, current_label, representatives = [], 0, []
@@ -200,7 +200,6 @@ def main(args: Union[str, List[str]] = None) -> int:
                     dataset,
                     charge,
                     bucket_id,
-                    vectorize,
                     config.precursor_tol[0],
                     config.precursor_tol[1],
                     config.rt_tol,
@@ -300,7 +299,9 @@ def main(args: Union[str, List[str]] = None) -> int:
     return 0
 
 
-def _prepare_spectra(process_spectrum: Callable) -> Set[int]:
+def _prepare_spectra(
+    process_spectrum: Callable, vectorize: Callable
+) -> Set[int]:
     """
     Read the spectra from the input peak files and partition to intermediate
     files split and sorted by precursor m/z.
@@ -349,6 +350,7 @@ def _prepare_spectra(process_spectrum: Callable) -> Set[int]:
             pa.field("intensity", pa.list_(pa.float32())),
             pa.field("retention_time", pa.float32()),
             pa.field("filename", pa.string()),
+            pa.field("vector", pa.list_(pa.float32())),
         ]
     )
     lance_path = os.path.join(config.work_dir, "spectra", "spec_data.lance")
@@ -364,7 +366,7 @@ def _prepare_spectra(process_spectrum: Callable) -> Set[int]:
     lance_writers = multiprocessing.pool.ThreadPool(
         max_file_workers,
         _write_spectra_lance,
-        (spectra_queue, lance_lock, schema, charges),
+        (spectra_queue, lance_lock, schema, charges, vectorize),
     )
     peak_readers.close()
     peak_readers.join()
@@ -452,6 +454,7 @@ def _write_spectra_lance(
     lance_lock: multiprocessing.synchronize.Lock,
     schema: pa.Schema,
     charges: Set,
+    vectorize: Callable,
 ) -> None:
     """
     Read spectra from a queue and write to a lance dataset.
@@ -478,13 +481,14 @@ def _write_spectra_lance(
                     lance_lock,
                     schema,
                     config.work_dir,
+                    vectorize,
                 )
             return
         spec_to_write.append(spec)
         charges.add(spec["precursor_charge"])
         if len(spec_to_write) >= 10_000:
             _write_to_dataset(
-                spec_to_write, lance_lock, schema, config.work_dir
+                spec_to_write, lance_lock, schema, config.work_dir, vectorize
             )
             spec_to_write.clear()
 
@@ -494,6 +498,7 @@ def _write_to_dataset(
     lock: multiprocessing.synchronize.Lock,
     schema: pa.Schema,
     work_dir: str,
+    vectorize: Callable,
 ) -> int:
     """
     Write a list of spectra to a lance dataset.
@@ -514,6 +519,11 @@ def _write_to_dataset(
     int
         The number of spectra written to the dataset.
     """
+    # Vectorize the spectra and add them to the dictionary.
+    vectors = vectorize(spec_to_write)
+    for i, vector in enumerate(vectors):
+        spec_to_write[i]["vector"] = vector
+    # Write the spectra to the dataset.
     new_rows = pa.Table.from_pylist(spec_to_write, schema)
     path = os.path.join(work_dir, "spectra", "spec_data.lance")
     with lock:

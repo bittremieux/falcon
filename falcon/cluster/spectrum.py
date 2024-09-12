@@ -20,6 +20,7 @@ MsmsSpectrumNb = collections.namedtuple(
         "retention_time",
         "mz",
         "intensity",
+        "vector",
     ],
 )
 
@@ -194,7 +195,7 @@ def get_dim(
 
 
 def to_vector(
-    spectra: List[MsmsSpectrumNb],
+    spectra: List[Dict],
     transformation: ss.csr_matrix,
     min_mz: float,
     bin_size: float,
@@ -209,7 +210,7 @@ def to_vector(
 
     Parameters
     ----------
-    spectra : List[MsmsSpectrumNb]
+    spectra : List[Dict]
         The spectra to be converted to vectors.
     transformation : ss.csr_matrix
         Sparse random projection transformation to convert sparse spectrum
@@ -228,7 +229,9 @@ def to_vector(
     np.ndarray
         The low-dimensional transformed spectrum vectors.
     """
-    data, indices, indptr = _to_vector(spectra, min_mz, bin_size)
+    mzs = [spec["mz"] for spec in spectra]
+    intensities = [spec["intensity"] for spec in spectra]
+    data, indices, indptr = _to_vector(mzs, intensities, min_mz, bin_size)
     vectors = ss.csr_matrix(
         (data, indices, indptr), (len(spectra), dim), np.float32, False
     )
@@ -241,7 +244,10 @@ def to_vector(
 
 @nb.njit(cache=True)
 def _to_vector(
-    spectra: List[MsmsSpectrumNb], min_mz: float, bin_size: float
+    mzs: List[float],
+    intensities: List[float],
+    min_mz: float,
+    bin_size: float,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Convert spectra to a binned sparse vectors.
@@ -251,8 +257,10 @@ def _to_vector(
 
     Parameters
     ----------
-    spectra : List[MsmsSpectrumNb]
-        The spectra to be converted to sparse vectors.
+    mzs : List[float]
+        mz values of the peaks in the spectra.
+    intensities : List[float]
+        Intensities of the peaks in the spectra.
     min_mz : float
         The minimum m/z to include in the vectors.
     bin_size : float
@@ -264,18 +272,18 @@ def _to_vector(
         A SciPy CSR matrix represented by its `data`, `indices`, and `indptr`
         elements.
     """
-    n_spectra = len(spectra)
+    n_spectra = len(mzs)
     n_peaks = 0
-    for spec in spectra:
-        n_peaks += len(spec.mz)
+    for mz in mzs:
+        n_peaks += len(mz)
     data = np.zeros(n_peaks, np.float32)
     indices = np.zeros(n_peaks, np.int32)
     indptr = np.zeros(n_spectra + 1, np.int32)
     i, j = 0, 1
-    for spec in spectra:
-        n_peaks_spectra = len(spec.mz)
-        data[i : i + n_peaks_spectra] = spec.intensity
-        mz = [math.floor((mz - min_mz) / bin_size) for mz in spec.mz]
+    for mz, intensity in zip(mzs, intensities):
+        n_peaks_spectra = len(mz)
+        data[i : i + n_peaks_spectra] = intensity
+        mz = [math.floor((mz - min_mz) / bin_size) for mz in mz]
         indices[i : i + n_peaks_spectra] = mz
         indptr[j] = indptr[j - 1] + n_peaks_spectra
         i += n_peaks_spectra
@@ -305,5 +313,6 @@ def df_row_to_spec(row: pd.Series) -> sus.MsmsSpectrum:
         row["retention_time"],
         row["mz"],
         row["intensity"],
+        row["vector"],
     )
     return spectrum
