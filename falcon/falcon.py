@@ -5,6 +5,7 @@ import glob
 import logging
 import multiprocessing
 import multiprocessing.sharedctypes
+import multiprocessing.synchronize
 import os
 import queue
 import random
@@ -179,11 +180,10 @@ def main(args: Union[str, List[str]] = None) -> int:
     # Cluster the spectra per charge.
     clusters_all, current_label, representatives = [], 0, []
     for bucket_id, charge in enumerate(charges):
-        dataset = lance.dataset(
-            os.path.join(
-                config.work_dir, "spectra", f"spectra_charge_{charge}.lance"
-            )
+        dataset_path = os.path.join(
+            config.work_dir, "spectra", f"spectra_charge_{charge}.lance"
         )
+        dataset = lance.dataset(dataset_path)
         dist_filename = os.path.join(
             config.work_dir, "nn", f"dist_{bucket_id}.npz"
         )
@@ -339,9 +339,8 @@ def _prepare_spectra(
         (file_queue, spectra_queue, process_spectrum, low_quality_counter),
     )
     # Write the spectra to a lance file.
-    spec_to_write = collections.defaultdict(list)
+    lance_locks = collections.defaultdict(multiprocessing.Lock)
     charges = set()
-    lance_lock = multiprocessing.Lock()
     schema = pa.schema(
         [
             pa.field("identifier", pa.string()),
@@ -358,9 +357,8 @@ def _prepare_spectra(
         max_file_workers,
         _write_spectra_lance,
         (
-            spec_to_write,
             spectra_queue,
-            lance_lock,
+            lance_locks,
             schema,
             charges,
             vectorize,
@@ -375,17 +373,8 @@ def _prepare_spectra(
         spectra_queue.put(None)
     lance_writers.close()
     lance_writers.join()
-    # flush remaining spectra
-    for charge, spectra in spec_to_write.items():
-        _write_to_dataset(
-            spectra,
-            charge,
-            lance_lock,
-            schema,
-            config.work_dir,
-            vectorize,
-        )
-    # get all created datasets
+
+    # Count the total number of spectra in the datasets.
     dataset_paths = [
         os.path.join(
             config.work_dir, "spectra", f"spectra_charge_{charge}.lance"
@@ -394,7 +383,13 @@ def _prepare_spectra(
     ]
     n_spectra = 0
     for dataset_path in dataset_paths:
-        dataset = lance.dataset(dataset_path)
+        try:
+            dataset = lance.dataset(dataset_path)
+        except ValueError:
+            charge = int(dataset_path.split("_")[-1].split(".")[0])
+            logger.error("Failed to create dataset at for charge %d", charge)
+            charges.remove(charge)
+            continue
         n_spectra += dataset.count_rows()
     logger.debug(
         "Read %d spectra from %d peak files", n_spectra, len(input_filenames)
@@ -497,9 +492,8 @@ def _read_spectra(
 
 
 def _write_spectra_lance(
-    spec_to_write: Dict[int, List],
     spectra_queue: queue.Queue,
-    lance_lock: multiprocessing.synchronize.Lock,
+    lance_locks: Dict[int, multiprocessing.synchronize.Lock],
     schema: pa.Schema,
     charges: Set,
     vectorize: Callable,
@@ -509,21 +503,32 @@ def _write_spectra_lance(
 
     Parameters
     ----------
-    spec_to_write : Dict[int, List]
-        Dictionary with precursor charges as keys and lists of spectra as
-        values.
     spectra_queue : queue.Queue
         Queue from which to read spectra for writing to pickle files.
-    lance_lock : multiprocessing.Lock
-        Lock
+    lance_locks : Dict[int, multiprocessing.synchronize.Lock]
+        Locks to synchronize writing to the dataset.
     schema : pa.Schema
         The schema of the dataset.
     charges : set
         The precursor charges of the spectra.
+    vectorize : Callable
+        The function to vectorize the spectra.
     """
+    spec_to_write = collections.defaultdict(list)
     while True:
         spec = spectra_queue.get()
         if spec is None:
+            # Write remaining spectra to the dataset.
+            for charge in spec_to_write.keys():
+                _write_to_dataset(
+                    spec_to_write[charge],
+                    charge,
+                    lance_locks[charge],
+                    schema,
+                    config.work_dir,
+                    vectorize,
+                )
+                spec_to_write[charge].clear()
             return
         charge = spec["precursor_charge"]
         spec_to_write[charge].append(spec)
@@ -532,7 +537,7 @@ def _write_spectra_lance(
             _write_to_dataset(
                 spec_to_write[charge],
                 charge,
-                lance_lock,
+                lance_locks[charge],
                 schema,
                 config.work_dir,
                 vectorize,
@@ -558,11 +563,13 @@ def _write_to_dataset(
     charge : int
         The precursor charge of the spectra.
     lock : multiprocessing.Lock
-        Lock
+        Lock to synchronize writing to the dataset.
     schema : pa.Schema
         The schema of the dataset.
     work_dir : str
         The directory in which the dataset is stored.
+    vectorize : Callable
+        The function to vectorize the spectra.
 
     Returns
     -------
