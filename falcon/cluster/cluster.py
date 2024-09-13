@@ -75,8 +75,7 @@ def compute_pairwise_distances(
         corresponding spectrum metadata (identifier, precursor charge,
         precursor m/z).
     """
-    query = f"precursor_charge == {charge}"
-    n_spectra = dataset.count_rows(filter=query)
+    n_spectra = dataset.count_rows()
     logger.debug(
         "Compute nearest neighbor pairwise distances (%d spectra, %d"
         " neighbors) for charge %d",
@@ -96,7 +95,6 @@ def compute_pairwise_distances(
     metadata = _build_query_ann_index(
         dataset,
         n_spectra,
-        query,
         bucket_id,
         n_probe,
         batch_size,
@@ -127,7 +125,6 @@ def compute_pairwise_distances(
 def _build_query_ann_index(
     dataset: lance.LanceDataset,
     n_spectra: int,
-    query: str,
     bucket_id: int,
     n_probe: int,
     batch_size: int,
@@ -149,8 +146,6 @@ def _build_query_ann_index(
         The dataset containing the spectra to be indexed.
     n_spectra : int
         The number of spectra to be indexed.
-    query : str
-        The query to filter the spectra.
     bucket_id : int
         The charge bucket identifier.
     vectorize : Callable
@@ -218,7 +213,7 @@ def _build_query_ann_index(
         sample_size = min(50 * n_list, n_spectra)
     else:
         sample_size = n_spectra
-    train_spectra = dataset.sample(sample_size, filter=query).to_pandas()
+    train_spectra = dataset.sample(sample_size).to_pandas()
     train_vectors = np.stack(train_spectra["vector"].values)
     dim = train_vectors.shape[1]
     # Create an ANN index using the inner product (proxy for cosine
@@ -236,37 +231,34 @@ def _build_query_ann_index(
 
     # Add the vectors to the index in batches.
     batch_start = 0
-    for batch in tqdm(
-        dataset.to_batches(batch_size=batch_size, filter=query),
-        desc="Batches added to index",
-        unit="batch",
-    ):
-        batch_spectra = batch.to_pandas().apply(
-            spectrum.df_row_to_spec, axis=1
-        )
-        batch_vectors = []
-        for spec in batch_spectra:
-            batch_vectors.append(spec.vector)
-            filenames.append(spec.filename)
-            identifiers.append(spec.identifier)
-            bucket_ids.append(bucket_id)
-            precursor_mzs.append(spec.precursor_mz)
-            rts.append(spec.retention_time)
-        batch_stop = batch_start + len(batch_vectors)
+    with tqdm(desc="Batches added to index", unit="batch") as pbar:
+        for batch in dataset.to_batches(batch_size=batch_size):
+            batch_spectra = batch.to_pandas().apply(
+                spectrum.df_row_to_spec, axis=1
+            )
+            batch_vectors = []
+            for spec in batch_spectra:
+                batch_vectors.append(spec.vector)
+                filenames.append(spec.filename)
+                identifiers.append(spec.identifier)
+                bucket_ids.append(bucket_id)
+                precursor_mzs.append(spec.precursor_mz)
+                rts.append(spec.retention_time)
+            batch_stop = batch_start + len(batch_vectors)
 
-        batch_vectors = np.stack(batch_vectors)
-        index.add_with_ids(
-            batch_vectors,
-            np.arange(batch_start, batch_stop, dtype=np.int64),
-        )
-        batch_start = batch_stop
+            batch_vectors = np.stack(batch_vectors)
+            index.add_with_ids(
+                batch_vectors,
+                np.arange(batch_start, batch_stop, dtype=np.int64),
+            )
+            batch_start = batch_stop
+            pbar.update(1)
     precursor_mzs = np.asarray(precursor_mzs)
     rts = np.asarray(rts)
     # Query the index to calculate NN distances.
     _dist_mz_interval(
         index,
         dataset,
-        query,
         precursor_mzs,
         rts,
         batch_size,
@@ -295,7 +287,6 @@ def _build_query_ann_index(
 def _dist_mz_interval(
     index: faiss.Index,
     dataset: lance.LanceDataset,
-    query: str,
     precursor_mzs: np.ndarray,
     rts: np.ndarray,
     batch_size: int,
@@ -317,8 +308,6 @@ def _dist_mz_interval(
         The NN index used to efficiently find distances to similar spectra.
     dataset : lance.LanceDataset
         The dataset containing the spectra to be indexed.
-    query : str
-        The query to filter the spectra.
     vectorize : Callable
         Function to convert the spectra to vectors.
     precursor_mzs : np.ndarray
@@ -358,7 +347,7 @@ def _dist_mz_interval(
     if rt_tol is not None:  # TODO: test this
         nn_rt = _get_neighbors(rts, rt_tol, "rt")
         nn_mz = [np.intersect1d(mz, rt) for mz, rt in zip(nn_mz, nn_rt)]
-    for batch in dataset.to_batches(batch_size=batch_size, filter=query):
+    for batch in dataset.to_batches(batch_size=batch_size):
         vectors = np.stack(batch.to_pandas()["vector"].values)
         batch_stop = batch_start + vectors.shape[0]
         # Find nearest neighbors using ANN index searching.
