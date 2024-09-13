@@ -1,6 +1,7 @@
 import gc
 import logging
 import math
+from multiprocessing.pool import ThreadPool
 import tempfile
 from typing import Callable, Iterator, List, Optional, Tuple
 
@@ -350,19 +351,17 @@ def _dist_mz_interval(
     for batch in dataset.to_batches(batch_size=batch_size):
         vectors = np.stack(batch.to_pandas()["vector"].values)
         batch_stop = batch_start + vectors.shape[0]
-        # Find nearest neighbors using ANN index searching.
-        for i, vec in enumerate(vectors, batch_start):
-            sel = faiss.IDSelectorBatch(nn_mz[i])
-            # if index is IVF, use the same number of probes
-            if isinstance(index, faiss.IndexIVF):
-                params = faiss.SearchParametersIVF(
-                    sel=sel, nprobe=index.nprobe
-                )
-            else:
-                params = faiss.SearchParameters(sel=sel)
-            # noinspection PyArgumentList
-            vec = vec.reshape(1, -1)
-            d, idx = index.search(vec, n_neighbors, params=params)
+        pool = ThreadPool()
+        results = pool.starmap(
+            search,
+            [
+                (vec, nn_mz[i], index, n_neighbors)
+                for i, vec in enumerate(vectors, batch_start)
+            ],
+        )
+        pool.close()
+        pool.join()
+        for i, (d, idx) in enumerate(results, batch_start):
             # filter out indices and distances < 0
             mask = idx >= 0
             d, idx = d[mask], idx[mask]
@@ -422,6 +421,40 @@ def _get_neighbors(
     else:
         raise ValueError("Unknown tolerance filter")
     return nn
+
+
+def search(
+    vector: np.ndarray,
+    nn_mz: np.ndarray,
+    index: faiss.Index,
+    n_neighbors: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Search for the nearest neighbors of the given vector.
+
+    Parameters
+    ----------
+    vector : np.ndarray
+        The vector for which to find the nearest neighbors.
+    nn_mz : np.ndarray
+        The nearest neighbors to search in.
+    n_neighbors : int
+        The number of neighbors to retrieve.
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray]
+        The distances and indices of the nearest neighbors.
+    """
+    sel = faiss.IDSelectorBatch(nn_mz)
+    # if index is IVF, use the same number of probes
+    if isinstance(index, faiss.IndexIVF):
+        params = faiss.SearchParametersIVF(sel=sel, nprobe=index.nprobe)
+    else:
+        params = faiss.SearchParameters(sel=sel)
+    # noinspection PyArgumentList
+    vector = vector.reshape(1, -1)
+    return index.search(vector, n_neighbors, params=params)
 
 
 def generate_clusters(
