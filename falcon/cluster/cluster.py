@@ -373,6 +373,7 @@ def _dist_mz_interval(
         batch_start = batch_stop
 
 
+@nb.njit(cache=True)
 def _get_neighbors(
     values: np.ndarray,
     tol: float,
@@ -389,35 +390,43 @@ def _get_neighbors(
         The tolerance for vectors to be considered as neighbors.
     tol_mode : str
         The unit of the tolerance ('Da' or 'ppm' for precursor m/z,
-        'rt' for rentention time).
+        'rt' for retention time).
 
     Returns
     -------
     List[np.ndarray]
         The indices of the NN candidates.
     """
-    nn = []
+    n = len(values)
+    nn = [np.empty(0, dtype=np.int64)] * n  # Pre-allocate list of empty arrays
+
     if tol_mode in ("Da", "ppm"):
         order = np.argsort(values)
-        for mz in values:
+        sorted_values = values[order]
+        for i in range(n):
+            mz = values[i]
             if tol_mode == "ppm":
-                mz_min = mz - mz * tol / 1**6
-                mz_max = mz + mz * tol / 1**6
+                mz_min = mz - mz * tol / 1e6
+                mz_max = mz + mz * tol / 1e6
             elif tol_mode == "Da":
                 mz_min = mz - tol
                 mz_max = mz + tol
-            mz_min, mz_max = max(0, mz_min), max(0, mz_max)
-            match_i = np.searchsorted(values[order], [mz_min, mz_max])
+            mz_min = max(0, mz_min)
+            mz_max = max(0, mz_max)
+            match_i = np.searchsorted(sorted_values, [mz_min, mz_max])
             idx = np.arange(match_i[0], match_i[1])
-            nn.append(order[idx])
-    elif tol_mode == "rt":  # TODO: test this
-        for rt in values:
+            nn[i] = order[idx]
+
+    elif tol_mode == "rt":
+        for i in range(n):
+            rt = values[i]
             rt_min = max(0, rt - tol)
             rt_max = max(0, rt + tol)
-            match_values_i = np.where(
-                np.logical_and(values >= rt_min, values <= rt_max)
-            )
-            nn.append(match_values_i)
+            match_values_i = np.where((values >= rt_min) & (values <= rt_max))[
+                0
+            ]
+            nn[i] = match_values_i
+
     else:
         raise ValueError("Unknown tolerance filter")
     return nn
