@@ -1,6 +1,5 @@
 import collections
 import functools
-import itertools
 import glob
 import logging
 import multiprocessing
@@ -8,7 +7,6 @@ import multiprocessing.sharedctypes
 import multiprocessing.synchronize
 import os
 import queue
-import random
 import shutil
 import sys
 import tempfile
@@ -320,24 +318,22 @@ def _prepare_spectra(
     logger.info("Read spectra from %d peak file(s)", len(input_filenames))
     # Use multiple worker processes to read the peak files.
     max_file_workers = min(len(input_filenames), multiprocessing.cpu_count())
-    file_queue = queue.Queue()
     # Restrict the number of spectra simultaneously in memory to avoid
     # excessive memory requirements.
     max_spectra_in_memory = 1_000_000
     spectra_queue = queue.Queue(maxsize=max_spectra_in_memory)
-    # Include sentinels at the end to stop the worker file readers.
-    for filename in itertools.chain(
-        input_filenames, itertools.repeat(None, max_file_workers)
-    ):
-        file_queue.put(filename)
     # Read the peak files and put their spectra in the queue for consumption.
     manager = multiprocessing.Manager()
     low_quality_counter = manager.Value("i", 0)
-    peak_readers = multiprocessing.pool.ThreadPool(
-        max_file_workers,
-        _read_spectra_queue,
-        (file_queue, spectra_queue, process_spectrum, low_quality_counter),
-    )
+    for file_spectra in joblib.Parallel(n_jobs=max_file_workers)(
+        joblib.delayed(_read_spectra)(
+            file, process_spectrum, low_quality_counter
+        )
+        for file in input_filenames
+    ):
+        for spec in file_spectra:
+            spectra_queue.put(spec)
+
     # Write the spectra to a lance file.
     lance_locks = collections.defaultdict(multiprocessing.Lock)
     charges = set()
@@ -364,9 +360,6 @@ def _prepare_spectra(
             vectorize,
         ),
     )
-    peak_readers.close()
-    peak_readers.join()
-    logger.debug("Skipped %d low-quality spectra", low_quality_counter.value)
     # Add sentinels to indicate stopping. This needs to happen after all files
     # have been read (by joining `peak_readers`).
     for _ in range(max_file_workers):
@@ -394,6 +387,7 @@ def _prepare_spectra(
     logger.debug(
         "Read %d spectra from %d peak files", n_spectra, len(input_filenames)
     )
+    logger.debug("Skipped %d low-quality spectra", low_quality_counter.value)
     return charges, dataset_paths
 
 
@@ -428,41 +422,11 @@ def _create_lance_dataset(
     return dataset
 
 
-def _read_spectra_queue(
-    file_queue: queue.Queue,
-    spectra_queue: queue.Queue,
-    process_spectrum: Callable,
-    low_quality_counter: multiprocessing.sharedctypes.Synchronized,
-) -> None:
-    """
-    Get the spectra from the file queue and store them in the spectra queue.
-
-    Parameters
-    ----------
-    file_queue : queue.Queue
-        Queue from which the file names are retrieved.
-    spectra_queue : queue.Queue
-        Queue in which spectra are stored.
-    precursor_mz : Dict[int, List[float]]
-        List in which precursor m/z values are stored by charge.
-    low_quality_counter : multiprocessing.sharedctypes.Synchronized
-        Counter for low-quality spectra.
-    """
-    while True:
-        filename = file_queue.get()
-        if filename is None:
-            return
-        for spec in _read_spectra(
-            filename, process_spectrum, low_quality_counter
-        ):
-            spectra_queue.put(spec)
-
-
 def _read_spectra(
     filename: str,
     process_spectrum: Callable,
     low_quality_counter: multiprocessing.sharedctypes.Synchronized,
-) -> Iterator[Tuple[MsmsSpectrum, str]]:
+) -> List[Dict[str, Union[str, float, int, np.ndarray]]]:
     """
     Get the spectra from the given file.
 
@@ -477,10 +441,10 @@ def _read_spectra(
 
     Returns
     -------
-    Iterator[Tuple[MsmsSpectrum, str]]
-        The spectra read from the given file and their bucket filenames
-        (based on precursor charge and m/z).
+    List[Dict[str, Union[str, float, int, np.ndarray]]]
+        The spectra read from the given file as a list of dictionaries.
     """
+    spectra = []
     filename = os.path.abspath(filename)
     for spec in ms_io.get_spectra(filename):
         spec.filename = filename
@@ -488,7 +452,8 @@ def _read_spectra(
         if spec is None:
             low_quality_counter.value += 1
             continue
-        yield spec
+        spectra.append(spec)
+    return spectra
 
 
 def _write_spectra_lance(
@@ -520,6 +485,8 @@ def _write_spectra_lance(
         if spec is None:
             # Write remaining spectra to the dataset.
             for charge in spec_to_write.keys():
+                if len(spec_to_write[charge]) == 0:
+                    continue
                 _write_to_dataset(
                     spec_to_write[charge],
                     charge,

@@ -81,7 +81,7 @@ def process_spectrum(
     min_intensity: Optional[float] = None,
     max_peaks_used: Optional[int] = None,
     scaling: Optional[str] = None,
-) -> Optional[MsmsSpectrumNb]:
+) -> Dict[str, Union[str, int, float, np.ndarray]]:
     """
     Process a cluster.
 
@@ -129,8 +129,8 @@ def process_spectrum(
 
     Returns
     -------
-    MsmsSpectrumNb
-        The processed cluster.
+    Dict[str, Union[str, int, float, np.ndarray]]
+        The processed spectrum as a dictionary.
     """
     spectrum = spectrum.set_mz_range(mz_min, mz_max)
     if not _check_spectrum_valid(spectrum.mz, min_peaks, min_mz_range):

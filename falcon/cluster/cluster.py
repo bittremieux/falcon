@@ -417,7 +417,7 @@ def _get_neighbors(
             idx = np.arange(match_i[0], match_i[1])
             nn[i] = order[idx]
 
-    elif tol_mode == "rt":
+    elif tol_mode == "rt":  # TODO: test this
         for i in range(n):
             rt = values[i]
             rt_min = max(0, rt - tol)
