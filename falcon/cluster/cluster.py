@@ -78,11 +78,8 @@ def compute_pairwise_distances(
     """
     n_spectra = dataset.count_rows()
     logger.debug(
-        "Compute nearest neighbor pairwise distances (%d spectra, %d"
-        " neighbors) for charge %d",
-        n_spectra,
-        n_neighbors,
-        charge,
+        f"Compute nearest neighbor pairwise distances ({n_spectra} spectra, {n_neighbors}"
+        f" neighbors) for charge {charge}",
     )
     max_num_embeddings = n_spectra * n_neighbors
     dtype = (

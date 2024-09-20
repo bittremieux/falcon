@@ -132,14 +132,20 @@ def process_spectrum(
     Dict[str, Union[str, int, float, np.ndarray]]
         The processed spectrum as a dictionary.
     """
+    none_charge = True if spectrum.precursor_charge is None else False
     spectrum = spectrum.set_mz_range(mz_min, mz_max)
     if not _check_spectrum_valid(spectrum.mz, min_peaks, min_mz_range):
         return None
 
     if remove_precursor_tolerance is not None:
+        # Temporarily set the precursor charge to 1 to remove the precursor peak
+        if none_charge:
+            spectrum.precursor_charge = 1
         spectrum = spectrum.remove_precursor_peak(
             remove_precursor_tolerance, "Da", 0
         )
+        if none_charge:
+            spectrum.precursor_charge = None
         if not _check_spectrum_valid(spectrum.mz, min_peaks, min_mz_range):
             return None
 

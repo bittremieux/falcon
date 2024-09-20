@@ -1,3 +1,4 @@
+import math
 from typing import Dict, IO, Iterable, Union
 
 import pyteomics.mgf
@@ -53,7 +54,7 @@ def _parse_spectrum(spectrum_dict: Dict) -> sus.MsmsSpectrum:
     if "charge" in spectrum_dict["params"]:
         precursor_charge = int(spectrum_dict["params"]["charge"][0])
     else:
-        precursor_charge = -1
+        precursor_charge = None
 
     return sus.MsmsSpectrum(
         identifier,
@@ -96,11 +97,17 @@ def _spectra_to_dicts(spectra: Iterable[sus.MsmsSpectrum]) -> Iterable[Dict]:
         The given spectra as Pyteomics MGF dictionaries.
     """
     for spectrum in spectra:
-        params = {
-            "title": spectrum.identifier,
-            "pepmass": spectrum.precursor_mz,
-            "charge": spectrum.precursor_charge,
-        }
+        if math.isnan(spectrum.precursor_charge):
+            params = {
+                "title": spectrum.identifier,
+                "pepmass": spectrum.precursor_mz,
+            }
+        else:
+            params = {
+                "title": spectrum.identifier,
+                "pepmass": spectrum.precursor_mz,
+                "charge": spectrum.precursor_charge,
+            }
         if hasattr(spectrum, "retention_time"):
             params["rtinseconds"] = spectrum.retention_time
         if hasattr(spectrum, "scan"):

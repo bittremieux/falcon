@@ -67,7 +67,7 @@ def _parse_spectrum(spectrum_dict: Dict) -> sus.MsmsSpectrum:
     elif "possible charge state" in precursor_ion:
         precursor_charge = int(precursor_ion["possible charge state"])
     else:
-        precursor_charge = -1
+        precursor_charge = None
 
     return sus.MsmsSpectrum(
         spectrum_id,
