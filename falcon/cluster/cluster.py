@@ -342,7 +342,7 @@ def _dist_mz_interval(
     nn_mz = _get_neighbors(
         precursor_mzs, precursor_tol_mass, precursor_tol_mode
     )
-    if rt_tol is not None:  # TODO: test this
+    if rt_tol is not None:
         nn_rt = _get_neighbors(rts, rt_tol, "rt")
         nn_mz = [np.intersect1d(mz, rt) for mz, rt in zip(nn_mz, nn_rt)]
     for batch in dataset.to_batches(batch_size=batch_size):
@@ -394,8 +394,9 @@ def _get_neighbors(
     List[np.ndarray]
         The indices of the NN candidates.
     """
+    # Pre-allocate list of empty arrays
     n = len(values)
-    nn = [np.empty(0, dtype=np.int64)] * n  # Pre-allocate list of empty arrays
+    nn = [np.empty(0, dtype=np.int64)] * n
 
     if tol_mode in ("Da", "ppm"):
         order = np.argsort(values)
@@ -414,7 +415,7 @@ def _get_neighbors(
             idx = np.arange(match_i[0], match_i[1])
             nn[i] = order[idx]
 
-    elif tol_mode == "rt":  # TODO: test this
+    elif tol_mode == "rt":
         for i in range(n):
             rt = values[i]
             rt_min = max(0, rt - tol)
