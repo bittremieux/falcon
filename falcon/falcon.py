@@ -24,8 +24,7 @@ import scipy.sparse as ss
 from sklearn.random_projection import SparseRandomProjection
 from spectrum_utils.spectrum import MsmsSpectrum
 
-from . import __version__
-from . import seed
+from . import __version__, seed
 from .cluster import cluster, spectrum
 from .config import config
 from .ms_io import ms_io
@@ -274,7 +273,7 @@ def main(args: Union[str, List[str]] = None) -> int:
             representatives, ignore_index=True
         ).tolist()
         logger.info(
-            "Export %d cluster representative spectra to output file " "%s",
+            "Export %d cluster representative spectra to output file %s",
             len(representatives),
             f"{config.output_filename}.mgf",
         )
@@ -380,7 +379,7 @@ def _prepare_spectra(
             dataset = lance.dataset(dataset_path)
         except ValueError:
             charge = int(dataset_path.split("_")[-1].split(".")[0])
-            logger.error("Failed to create dataset at for charge %d", charge)
+            logger.error("Failed to create dataset for charge %d", charge)
             charges.remove(charge)
             continue
         n_spectra += dataset.count_rows()

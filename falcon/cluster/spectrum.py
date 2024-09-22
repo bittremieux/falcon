@@ -132,7 +132,7 @@ def process_spectrum(
     Dict[str, Union[str, int, float, np.ndarray]]
         The processed spectrum as a dictionary.
     """
-    none_charge = True if spectrum.precursor_charge is None else False
+    none_charge = spectrum.precursor_charge is None
     spectrum = spectrum.set_mz_range(mz_min, mz_max)
     if not _check_spectrum_valid(spectrum.mz, min_peaks, min_mz_range):
         return None
@@ -250,8 +250,8 @@ def to_vector(
 
 @nb.njit(cache=True)
 def _to_vector(
-    mzs: List[float],
-    intensities: List[float],
+    mzs: List[np.ndarray],
+    intensities: List[np.ndarray],
     min_mz: float,
     bin_size: float,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -263,9 +263,9 @@ def _to_vector(
 
     Parameters
     ----------
-    mzs : List[float]
+    mzs : List[np.ndarray]
         mz values of the peaks in the spectra.
-    intensities : List[float]
+    intensities : List[np.ndarray]
         Intensities of the peaks in the spectra.
     min_mz : float
         The minimum m/z to include in the vectors.
@@ -297,7 +297,7 @@ def _to_vector(
     return data, indices, indptr
 
 
-def df_row_to_spec(row: pd.Series) -> sus.MsmsSpectrum:
+def df_row_to_spec(row: pd.Series) -> MsmsSpectrumNb:
     """
     Convert a row from a DataFrame to a `MsmsSpectrum`.
 
@@ -308,7 +308,7 @@ def df_row_to_spec(row: pd.Series) -> sus.MsmsSpectrum:
 
     Returns
     -------
-    MsmsSpectrum
+    MsmsSpectrumNb
         The spectrum object.
     """
     spectrum = MsmsSpectrumNb(

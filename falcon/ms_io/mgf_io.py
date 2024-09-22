@@ -97,17 +97,12 @@ def _spectra_to_dicts(spectra: Iterable[sus.MsmsSpectrum]) -> Iterable[Dict]:
         The given spectra as Pyteomics MGF dictionaries.
     """
     for spectrum in spectra:
-        if math.isnan(spectrum.precursor_charge):
-            params = {
-                "title": spectrum.identifier,
-                "pepmass": spectrum.precursor_mz,
-            }
-        else:
-            params = {
-                "title": spectrum.identifier,
-                "pepmass": spectrum.precursor_mz,
-                "charge": spectrum.precursor_charge,
-            }
+        params = {
+            "title": spectrum.identifier,
+            "pepmass": spectrum.precursor_mz,
+        }
+        if not math.isnan(spectrum.precursor_charge):
+            params["charge"] = spectrum.precursor_charge
         if hasattr(spectrum, "retention_time"):
             params["rtinseconds"] = spectrum.retention_time
         if hasattr(spectrum, "scan"):

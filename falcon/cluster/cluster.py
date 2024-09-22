@@ -1,8 +1,8 @@
 import gc
 import logging
 import math
-from multiprocessing.pool import ThreadPool
 import tempfile
+from multiprocessing.pool import ThreadPool
 from typing import Callable, Iterator, List, Optional, Tuple
 
 import faiss
@@ -48,8 +48,6 @@ def compute_pairwise_distances(
         The precursor charge for which to compute the pairwise distances.
     bucket_id : int
         The charge bucket identifier.
-    vectorize : Callable
-        Function to convert the spectra to vectors.
     precursor_tol_mass : float
         The precursor tolerance mass for vectors to be considered as neighbors.
     precursor_tol_mode : str
@@ -59,10 +57,6 @@ def compute_pairwise_distances(
         If `None`, do not filter neighbors on retention time.
     n_neighbors : int
         The final (maximum) number of neighbors to retrieve for each vector.
-    n_neighbors_ann : int
-        The number of neighbors to retrieve using the ANN index. This can
-        exceed the final number of neighbors (`n_neighbors`) to maximize the
-        number of neighbors within the precursor m/z tolerance.
     batch_size : int
         The number of vectors to be simultaneously processed.
     n_probe : int
@@ -78,8 +72,11 @@ def compute_pairwise_distances(
     """
     n_spectra = dataset.count_rows()
     logger.debug(
-        f"Compute nearest neighbor pairwise distances ({n_spectra} spectra, {n_neighbors}"
-        f" neighbors) for charge {charge}",
+        "Compute nearest neighbor pairwise distances (%d spectra, %d"
+        " neighbors) for charge %s",
+        n_spectra,
+        n_neighbors,
+        str(charge),  # charge is int or None
     )
     max_num_embeddings = n_spectra * n_neighbors
     dtype = (
@@ -146,18 +143,12 @@ def _build_query_ann_index(
         The number of spectra to be indexed.
     bucket_id : int
         The charge bucket identifier.
-    vectorize : Callable
-        Function to convert the spectra to vectors.
     n_probe : int
         The number of cells to consider during NN index querying.
     batch_size : int
         The number of vectors to be simultaneously added to the index.
     n_neighbors : int
         The final (maximum) number of neighbors to retrieve for each vector.
-    n_neighbors_ann : int
-        The number of neighbors to retrieve using the ANN index. This can
-        exceed the final number of neighbors (`n_neighbors`) to maximize the
-        number of neighbors within the precursor m/z tolerance.
     precursor_tol_mass : float
         The precursor tolerance mass for vectors to be considered as neighbors.
     precursor_tol_mode : str
@@ -229,28 +220,30 @@ def _build_query_ann_index(
 
     # Add the vectors to the index in batches.
     batch_start = 0
-    with tqdm(desc="Batches added to index", unit="batch") as pbar:
-        for batch in dataset.to_batches(batch_size=batch_size):
-            batch_spectra = batch.to_pandas().apply(
-                spectrum.df_row_to_spec, axis=1
-            )
-            batch_vectors = []
-            for spec in batch_spectra:
-                batch_vectors.append(spec.vector)
-                filenames.append(spec.filename)
-                identifiers.append(spec.identifier)
-                bucket_ids.append(bucket_id)
-                precursor_mzs.append(spec.precursor_mz)
-                rts.append(spec.retention_time)
-            batch_stop = batch_start + len(batch_vectors)
+    for batch in tqdm(
+        dataset.to_batches(batch_size=batch_size),
+        desc="Batches added to index",
+        unit="batch",
+    ):
+        batch_spectra = batch.to_pandas().apply(
+            spectrum.df_row_to_spec, axis=1
+        )
+        batch_vectors = []
+        for spec in batch_spectra:
+            batch_vectors.append(spec.vector)
+            filenames.append(spec.filename)
+            identifiers.append(spec.identifier)
+            bucket_ids.append(bucket_id)
+            precursor_mzs.append(spec.precursor_mz)
+            rts.append(spec.retention_time)
+        batch_stop = batch_start + len(batch_vectors)
 
-            batch_vectors = np.stack(batch_vectors)
-            index.add_with_ids(
-                batch_vectors,
-                np.arange(batch_start, batch_stop, dtype=np.int64),
-            )
-            batch_start = batch_stop
-            pbar.update(1)
+        batch_vectors = np.stack(batch_vectors)
+        index.add_with_ids(
+            batch_vectors,
+            np.arange(batch_start, batch_stop, dtype=np.int64),
+        )
+        batch_start = batch_stop
     precursor_mzs = np.asarray(precursor_mzs)
     rts = np.asarray(rts)
     # Query the index to calculate NN distances.
@@ -276,8 +269,8 @@ def _build_query_ann_index(
             "filename": filenames,
             "spectrum_id": identifiers,
             "bucket_id": bucket_ids,
-            "precursor_mz": np.hstack(precursor_mzs),
-            "retention_time": np.hstack(rts),
+            "precursor_mz": precursor_mzs,
+            "retention_time": rts,
         }
     )
 
@@ -306,8 +299,6 @@ def _dist_mz_interval(
         The NN index used to efficiently find distances to similar spectra.
     dataset : lance.LanceDataset
         The dataset containing the spectra to be indexed.
-    vectorize : Callable
-        Function to convert the spectra to vectors.
     precursor_mzs : np.ndarray
         Precorsor m/z's of the spectra corresponding to the given vectors.
     rts : np.ndarray
@@ -316,10 +307,6 @@ def _dist_mz_interval(
         The number of vectors to be simultaneously queried.
     n_neighbors : int
         The final (maximum) number of neighbors to retrieve for each vector.
-    n_neighbors_ann : int
-        The number of neighbors to retrieve using the ANN index. This can
-        exceed the final number of neighbors (`n_neighbors`) to maximize the
-        number of neighbors within the precursor m/z tolerance.
     precursor_tol_mass : float
         The precursor tolerance mass for vectors to be considered as neighbors.
     precursor_tol_mode : str
@@ -335,8 +322,6 @@ def _dist_mz_interval(
     indptr : np.ndarray
         The index pointers for the nearest neighbor distances. See
         `scipy.sparse.csr_matrix`.
-    indptr_i : int
-        The current start index in `indptr`.
     """
     batch_start = 0
     nn_mz = _get_neighbors(
@@ -445,6 +430,8 @@ def search(
         The vector for which to find the nearest neighbors.
     nn_mz : np.ndarray
         The nearest neighbors to search in.
+    index : faiss.Index
+        The ANN index to use for the search.
     n_neighbors : int
         The number of neighbors to retrieve.
 
