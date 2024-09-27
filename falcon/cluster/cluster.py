@@ -8,6 +8,7 @@ from typing import Callable, Iterator, List, Optional, Tuple
 import faiss
 import joblib
 import lance
+import more_itertools as mit
 import numba as nb
 import numpy as np
 import pandas as pd
@@ -28,7 +29,6 @@ logger = logging.getLogger("falcon")
 def compute_pairwise_distances(
     dataset: lance.LanceDataset,
     charge: int,
-    bucket_id: int,
     precursor_tol_mass: float,
     precursor_tol_mode: str,
     rt_tol: float,
@@ -46,8 +46,6 @@ def compute_pairwise_distances(
         The dataset containing the spectra to be indexed.
     charge : int
         The precursor charge for which to compute the pairwise distances.
-    bucket_id : int
-        The charge bucket identifier.
     precursor_tol_mass : float
         The precursor tolerance mass for vectors to be considered as neighbors.
     precursor_tol_mode : str
@@ -90,7 +88,6 @@ def compute_pairwise_distances(
     metadata = _build_query_ann_index(
         dataset,
         n_spectra,
-        bucket_id,
         n_probe,
         batch_size,
         n_neighbors,
@@ -120,7 +117,6 @@ def compute_pairwise_distances(
 def _build_query_ann_index(
     dataset: lance.LanceDataset,
     n_spectra: int,
-    bucket_id: int,
     n_probe: int,
     batch_size: int,
     n_neighbors: int,
@@ -141,8 +137,6 @@ def _build_query_ann_index(
         The dataset containing the spectra to be indexed.
     n_spectra : int
         The number of spectra to be indexed.
-    bucket_id : int
-        The charge bucket identifier.
     n_probe : int
         The number of cells to consider during NN index querying.
     batch_size : int
@@ -172,7 +166,7 @@ def _build_query_ann_index(
         retention time) of the spectra for which indexes were built.
     """
     # Read the spectra for the m/z bucket.
-    filenames, identifiers, bucket_ids, precursor_mzs, rts = [], [], [], [], []
+    vectors, precursor_mzs, rts = [], [], []
     indptr_i = 0
 
     # Figure out a decent value for the n_list hyperparameter based on
@@ -202,8 +196,8 @@ def _build_query_ann_index(
         sample_size = min(50 * n_list, n_spectra)
     else:
         sample_size = n_spectra
-    train_spectra = dataset.sample(sample_size).to_pandas()
-    train_vectors = np.stack(train_spectra["vector"].values)
+    train_spectra = dataset.sample(sample_size)
+    train_vectors = np.stack(train_spectra["vector"].to_numpy())
     dim = train_vectors.shape[1]
     # Create an ANN index using the inner product (proxy for cosine
     # distance) for fast NN queries.
@@ -221,7 +215,7 @@ def _build_query_ann_index(
     # Add the vectors to the index in batches.
     batch_start = 0
     for batch in tqdm(
-        dataset.to_batches(batch_size=batch_size),
+        dataset.to_batches(batch_size=batch_size, scan_in_order=True),
         desc="Batches added to index",
         unit="batch",
     ):
@@ -231,12 +225,10 @@ def _build_query_ann_index(
         batch_vectors = []
         for spec in batch_spectra:
             batch_vectors.append(spec.vector)
-            filenames.append(spec.filename)
-            identifiers.append(spec.identifier)
-            bucket_ids.append(bucket_id)
             precursor_mzs.append(spec.precursor_mz)
             rts.append(spec.retention_time)
         batch_stop = batch_start + len(batch_vectors)
+        vectors.extend(batch_vectors)
 
         batch_vectors = np.stack(batch_vectors)
         index.add_with_ids(
@@ -249,7 +241,7 @@ def _build_query_ann_index(
     # Query the index to calculate NN distances.
     _dist_mz_interval(
         index,
-        dataset,
+        vectors,
         precursor_mzs,
         rts,
         batch_size,
@@ -264,20 +256,25 @@ def _build_query_ann_index(
     index.reset()
     indptr_i += n_spectra
 
-    return pd.DataFrame(
-        {
-            "filename": filenames,
-            "spectrum_id": identifiers,
-            "bucket_id": bucket_ids,
-            "precursor_mz": precursor_mzs,
-            "retention_time": rts,
-        }
+    metadata = (
+        dataset.to_table(
+            columns=[
+                "filename",
+                "identifier",
+                "precursor_mz",
+                "retention_time",
+            ],
+            scan_in_order=True,
+        )
+        .to_pandas()
+        .rename(columns={"identifier": "spectrum_id"})
     )
+    return metadata
 
 
 def _dist_mz_interval(
     index: faiss.Index,
-    dataset: lance.LanceDataset,
+    vectors: List[np.ndarray],
     precursor_mzs: np.ndarray,
     rts: np.ndarray,
     batch_size: int,
@@ -297,8 +294,8 @@ def _dist_mz_interval(
     ----------
     index : faiss.Index
         The NN index used to efficiently find distances to similar spectra.
-    dataset : lance.LanceDataset
-        The dataset containing the spectra to be indexed.
+    vectors : List[np.ndarray]
+        The vectors for which to find the nearest neighbors.
     precursor_mzs : np.ndarray
         Precorsor m/z's of the spectra corresponding to the given vectors.
     rts : np.ndarray
@@ -330,8 +327,8 @@ def _dist_mz_interval(
     if rt_tol is not None:
         nn_rt = _get_neighbors(rts, rt_tol, "rt")
         nn_mz = [np.intersect1d(mz, rt) for mz, rt in zip(nn_mz, nn_rt)]
-    for batch in dataset.to_batches(batch_size=batch_size):
-        vectors = np.stack(batch.to_pandas()["vector"].values)
+    for batch in mit.chunked(vectors, batch_size):
+        vectors = np.stack(batch)
         batch_stop = batch_start + vectors.shape[0]
         pool = ThreadPool()
         results = pool.starmap(

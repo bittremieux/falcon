@@ -176,16 +176,16 @@ def main(args: Union[str, List[str]] = None) -> int:
 
     # Cluster the spectra per charge.
     clusters_all, current_label, representatives = [], 0, []
-    for bucket_id, charge in enumerate(charges):
+    for charge in charges:
         dataset_path = os.path.join(
             config.work_dir, "spectra", f"spectra_charge_{charge}.lance"
         )
         dataset = lance.dataset(dataset_path)
         dist_filename = os.path.join(
-            config.work_dir, "nn", f"dist_{bucket_id}.npz"
+            config.work_dir, "nn", f"dist_{charge}.npz"
         )
         metadata_filename = os.path.join(
-            config.work_dir, "nn", f"metadata_{bucket_id}.parquet"
+            config.work_dir, "nn", f"metadata_{charge}.parquet"
         )
         if not os.path.isfile(dist_filename) or not os.path.isfile(
             metadata_filename
@@ -194,7 +194,6 @@ def main(args: Union[str, List[str]] = None) -> int:
                 cluster.compute_pairwise_distances(
                     dataset,
                     charge,
-                    bucket_id,
                     config.precursor_tol[0],
                     config.precursor_tol[1],
                     config.rt_tol,
