@@ -3,7 +3,7 @@ import logging
 import math
 import tempfile
 from multiprocessing.pool import ThreadPool
-from typing import Callable, Iterator, List, Optional, Tuple
+from typing import Iterator, List, Optional, Tuple
 
 import faiss
 import joblib
@@ -12,9 +12,9 @@ import more_itertools as mit
 import numba as nb
 import numpy as np
 import pandas as pd
+import pyarrow.compute as pc
 import scipy.sparse as ss
 from scipy.cluster.hierarchy import fcluster
-from spectrum_utils.spectrum import MsmsSpectrum
 from tqdm import tqdm
 
 # noinspection PyProtectedMember
@@ -196,7 +196,14 @@ def _build_query_ann_index(
         sample_size = min(50 * n_list, n_spectra)
     else:
         sample_size = n_spectra
-    train_spectra = dataset.sample(sample_size)
+    # Sort dataset to avoid non-deterministic behavior.
+    spectra = dataset.to_table(scan_in_order=True)
+    sort_keys = [("filename", "ascending"), ("identifier", "ascending")]
+    sorted_idx = pc.sort_indices(spectra, sort_keys)
+    spectra = spectra.take(sorted_idx)
+    # Train index on random subset of data.
+    sample_idx = np.random.choice(n_spectra, sample_size, replace=False)
+    train_spectra = spectra.take(sample_idx)
     train_vectors = np.stack(train_spectra["vector"].to_numpy())
     dim = train_vectors.shape[1]
     # Create an ANN index using the inner product (proxy for cosine
@@ -215,7 +222,7 @@ def _build_query_ann_index(
     # Add the vectors to the index in batches.
     batch_start = 0
     for batch in tqdm(
-        dataset.to_batches(batch_size=batch_size, scan_in_order=True),
+        spectra.to_batches(max_chunksize=batch_size),
         desc="Batches added to index",
         unit="batch",
     ):
@@ -256,19 +263,9 @@ def _build_query_ann_index(
     index.reset()
     indptr_i += n_spectra
 
-    metadata = (
-        dataset.to_table(
-            columns=[
-                "filename",
-                "identifier",
-                "precursor_mz",
-                "retention_time",
-            ],
-            scan_in_order=True,
-        )
-        .to_pandas()
-        .rename(columns={"identifier": "spectrum_id"})
-    )
+    metadata = spectra.to_pandas()[
+        ["filename", "identifier", "precursor_mz", "retention_time"]
+    ].rename(columns={"identifier": "spectrum_id"})
     return metadata
 
 
