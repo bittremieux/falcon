@@ -196,14 +196,14 @@ def _build_query_ann_index(
         sample_size = min(50 * n_list, n_spectra)
     else:
         sample_size = n_spectra
-    # Sort dataset to avoid non-deterministic behavior.
-    spectra = dataset.to_table(scan_in_order=True)
-    sort_keys = [("filename", "ascending"), ("identifier", "ascending")]
-    sorted_idx = pc.sort_indices(spectra, sort_keys)
-    spectra = spectra.take(sorted_idx)
-    # Train index on random subset of data.
-    sample_idx = np.random.choice(n_spectra, sample_size, replace=False)
-    train_spectra = spectra.take(sample_idx)
+    # This code can introduce non-determinism because spectra are not added
+    # to the Lance dataset in a consistent order. This affects training
+    # samples for the index and the order of added vectors, causing
+    # variations in the index structure. Consequently, ANN search results
+    # may differ across runs. Solution is to sort the Lance dataset before
+    # constructing the index, but this is less efficient for large datasets.
+    # In practice, this doesn't seem to have a significant impact on performance.
+    train_spectra = dataset.sample(sample_size)
     train_vectors = np.stack(train_spectra["vector"].to_numpy())
     dim = train_vectors.shape[1]
     # Create an ANN index using the inner product (proxy for cosine
@@ -222,7 +222,7 @@ def _build_query_ann_index(
     # Add the vectors to the index in batches.
     batch_start = 0
     for batch in tqdm(
-        spectra.to_batches(max_chunksize=batch_size),
+        dataset.to_batches(max_chunksize=batch_size),
         desc="Batches added to index",
         unit="batch",
     ):
@@ -263,9 +263,19 @@ def _build_query_ann_index(
     index.reset()
     indptr_i += n_spectra
 
-    metadata = spectra.to_pandas()[
-        ["filename", "identifier", "precursor_mz", "retention_time"]
-    ].rename(columns={"identifier": "spectrum_id"})
+    metadata = (
+        dataset.to_table(
+            columns=[
+                "filename",
+                "identifier",
+                "precursor_mz",
+                "retention_time",
+            ],
+            scan_in_order=True,
+        )
+        .to_pandas()
+        .rename(columns={"identifier": "spectrum_id"})
+    )
     return metadata
 
 
