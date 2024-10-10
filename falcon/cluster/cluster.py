@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as ss
 from scipy.cluster.hierarchy import fcluster
+from scipy.spatial.distance import squareform
 from tqdm import tqdm
 # fmt: off
 # noinspection PyProtectedMember
@@ -659,8 +660,10 @@ def hierarchical_clustering(
     )
     # Run scipy clustering.
     if pairwise_dist_matrix.shape[0] > 1:
-        dist_matrix = pairwise_dist_matrix.todense()
-        link_matrix = fastcluster.linkage(dist_matrix, method=linkage)
+        tri_dist_matrix = squareform(
+            pairwise_dist_matrix.todense(), checks=False
+        )
+        link_matrix = fastcluster.linkage(tri_dist_matrix, method=linkage)
         clusters = fcluster(link_matrix, eps, criterion="distance")
         clusters[:] = _singletons_to_noise(clusters, min_samples)
     else:
