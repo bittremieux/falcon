@@ -5,8 +5,10 @@ import pyteomics.mzxml
 import spectrum_utils.spectrum as sus
 from lxml.etree import LxmlError
 
+from ..config import config
 
-logger = logging.getLogger('falcon')
+
+logger = logging.getLogger("falcon")
 
 
 def get_spectra(source: Union[IO, str]) -> Iterable[sus.MsmsSpectrum]:
@@ -27,13 +29,13 @@ def get_spectra(source: Union[IO, str]) -> Iterable[sus.MsmsSpectrum]:
     with pyteomics.mzxml.MzXML(source) as f_in:
         try:
             for spectrum_dict in f_in:
-                if int(spectrum_dict.get('msLevel', -1)) > 1:
+                if int(spectrum_dict.get("msLevel", -1)) > 1:
                     try:
                         yield _parse_spectrum(spectrum_dict)
                     except (ValueError, KeyError):
                         pass
         except LxmlError as e:
-            logger.warning('Failed to read file %s: %s', source, e)
+            logger.warning("Failed to read file %s: %s", source, e)
 
 
 def _parse_spectrum(spectrum_dict: Dict) -> sus.MsmsSpectrum:
@@ -50,16 +52,23 @@ def _parse_spectrum(spectrum_dict: Dict) -> sus.MsmsSpectrum:
     MsmsSpectrum
         The parsed cluster.
     """
-    spectrum_id = spectrum_dict['id']
-    mz_array = spectrum_dict['m/z array']
-    intensity_array = spectrum_dict['intensity array']
-    retention_time = spectrum_dict.get('retentionTime', -1)
+    spectrum_id = spectrum_dict["id"]
+    mz_array = spectrum_dict["m/z array"]
+    intensity_array = spectrum_dict["intensity array"]
+    retention_time = spectrum_dict.get("retentionTime", -1)
 
-    precursor_mz = spectrum_dict['precursorMz'][0]['precursorMz']
-    if 'precursorCharge' in spectrum_dict['precursorMz'][0]:
-        precursor_charge = spectrum_dict['precursorMz'][0]['precursorCharge']
+    precursor_mz = spectrum_dict["precursorMz"][0]["precursorMz"]
+    if "precursorCharge" in spectrum_dict["precursorMz"][0]:
+        precursor_charge = spectrum_dict["precursorMz"][0]["precursorCharge"]
     else:
-        raise ValueError('Unknown precursor charge')
+        precursor_charge = None
 
-    return sus.MsmsSpectrum(spectrum_id, precursor_mz, precursor_charge,
-                            mz_array, intensity_array, None, retention_time)
+    return sus.MsmsSpectrum(
+        spectrum_id,
+        precursor_mz,
+        precursor_charge,
+        mz_array,
+        intensity_array,
+        None,
+        retention_time,
+    )

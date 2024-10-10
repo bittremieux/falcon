@@ -1,4 +1,4 @@
-pkg_name = 'falcon-ms'
+pkg_name = "falcon-ms"
 
 try:
     from importlib.metadata import version, PackageNotFoundError
