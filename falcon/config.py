@@ -95,6 +95,23 @@ class Config:
         )
 
         self._parser.add_argument(
+            "--cluster_method",
+            type=str,
+            default="density",
+            choices=["density", "hierarchical"],
+            help="Clustering method (default: %(default)s).",
+        )
+        self._parser.add_argument(
+            "--linkage",
+            type=str,
+            default=None,
+            help="Linkage criterion for hierarchical clustering "
+            "(default: %(default)s). Should be one of "
+            "'single', 'complete', 'average'. 'None' for density "
+            "based clustering",
+        )
+
+        self._parser.add_argument(
             "--eps",
             type=float,
             default=0.1,

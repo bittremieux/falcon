@@ -221,6 +221,8 @@ def main(args: Union[str, List[str]] = None) -> int:
         # Cluster using the pairwise distance matrix.
         clusters = cluster.generate_clusters(
             pairwise_dist_matrix,
+            config.cluster_method,
+            config.linkage,
             config.eps,
             metadata["precursor_mz"].values,
             metadata["retention_time"].values,

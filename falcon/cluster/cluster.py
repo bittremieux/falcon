@@ -6,6 +6,7 @@ from multiprocessing.pool import ThreadPool
 from typing import Iterator, List, Optional, Tuple
 
 import faiss
+import fastcluster
 import joblib
 import lance
 import numba as nb
@@ -457,6 +458,73 @@ def search(
 
 def generate_clusters(
     pairwise_dist_matrix: ss.csr_matrix,
+    cluster_method: str,
+    linkage: str,
+    eps: float,
+    precursor_mzs: np.ndarray,
+    rts: np.ndarray,
+    precursor_tol_mass: float,
+    precursor_tol_mode: str,
+    rt_tol: float,
+) -> np.ndarray:
+    """
+    Generate clusters based on the pairwise distance matrix.
+
+    Parameters
+    ----------
+    pairwise_dist_matrix : ss.csr_matrix
+        A sparse pairwise distance matrix used for clustering.
+    cluster_method : str
+        The clustering method to use ('density' or 'hierarchical').
+    linkage: str
+        The linkage method to use for hierarchical clustering. 'None' for
+        density based clustering.
+    eps : float
+        The maximum distance between two samples for one to be considered as in
+        the neighborhood of the other.
+    precursor_mzs : np.ndarray
+        Precursor m/z's matching the pairwise distance matrix.
+    rts : np.ndarray
+        Retention times matching the pairwise distance matrix.
+    precursor_tol_mass : float
+        Maximum precursor mass tolerance for points to be clustered together.
+    precursor_tol_mode : str
+        The unit of the precursor m/z tolerance ('Da' or 'ppm').
+    rt_tol : float
+        The retention time tolerance for points to be clustered together. If
+        `None`, do not restrict the retention time.
+
+    Returns
+    -------
+    np.ndarray
+        Cluster labels. Noisy samples are given the label -1.
+    """
+
+    if cluster_method == "density":
+        return density_clustering(
+            pairwise_dist_matrix,
+            eps,
+            precursor_mzs,
+            rts,
+            precursor_tol_mass,
+            precursor_tol_mode,
+            rt_tol,
+        )
+    elif cluster_method == "hierarchical":
+        return hierarchical_clustering(
+            pairwise_dist_matrix,
+            linkage,
+            eps,
+            precursor_mzs,
+            rts,
+            precursor_tol_mass,
+            precursor_tol_mode,
+            rt_tol,
+        )
+
+
+def density_clustering(
+    pairwise_dist_matrix: ss.csr_matrix,
     eps: float,
     precursor_mzs: np.ndarray,
     rts: np.ndarray,
@@ -531,60 +599,202 @@ def generate_clusters(
 
         # Refine initial clusters to make sure spectra within a cluster don't
         # have an excessive precursor m/z difference.
-        # noinspection PyUnresolvedReferences
-        order = np.argsort(clusters)
-        # noinspection PyUnresolvedReferences
-        reverse_order = np.argsort(order)
-        clusters[:] = clusters[order]
-        precursor_mzs, rts = precursor_mzs[order], rts[order]
-        logger.debug(
-            "Finetune %d initial unique non-singleton clusters to not"
-            " exceed %.2f %s precursor m/z tolerance%s",
-            clusters[-1] + 1,
+        return _refine_clusters(
+            clusters,
+            precursor_mzs,
+            rts,
+            min_samples,
             precursor_tol_mass,
             precursor_tol_mode,
-            (
-                f" and {rt_tol} retention time tolerance"
-                if rt_tol is not None
-                else ""
-            ),
+            rt_tol,
         )
-        if clusters[-1] == -1:  # Only noise samples.
-            clusters.fill(-1)
-            noise_mask = np.ones_like(clusters, dtype=np.bool_)
-            n_clusters, n_noise = 0, len(noise_mask)
-        else:
-            group_idx = nb.typed.List(_get_cluster_group_idx(clusters))
-            n_clusters = nb.typed.List(
-                joblib.Parallel(n_jobs=-1, prefer="threads")(
-                    joblib.delayed(_postprocess_cluster)(
-                        clusters[start_i:stop_i],
-                        precursor_mzs[start_i:stop_i],
-                        rts[start_i:stop_i],
-                        precursor_tol_mass,
-                        precursor_tol_mode,
-                        rt_tol,
-                        min_samples,
-                    )
-                    for start_i, stop_i in group_idx
+
+
+def hierarchical_clustering(
+    pairwise_dist_matrix: ss.csr_matrix,
+    linkage: str,
+    eps: float,
+    precursor_mzs: np.ndarray,
+    rts: np.ndarray,
+    precursor_tol_mass: float,
+    precursor_tol_mode: str,
+    rt_tol: float,
+) -> np.ndarray:
+    """
+    Hierarchical clustering of the given pairwise distance matrix.
+
+    Parameters
+    ----------
+    pairwise_dist_matrix : ss.csr_matrix
+        A sparse pairwise distance matrix used for clustering.
+    linkage: str
+        The linkage method to use for hierarchical clustering.
+    eps : float
+        The maximum distance between two samples for one to be considered as in
+        the neighborhood of the other.
+    precursor_mzs : np.ndarray
+        Precursor m/z's matching the pairwise distance matrix.
+    rts : np.ndarray
+        Retention times matching the pairwise distance matrix.
+    precursor_tol_mass : float
+        Maximum precursor mass tolerance for points to be clustered together.
+    precursor_tol_mode : str
+        The unit of the precursor m/z tolerance ('Da' or 'ppm').
+    rt_tol : float
+        The retention time tolerance for points to be clustered together. If
+        `None`, do not restrict the retention time.
+
+    Returns
+    -------
+    np.ndarray
+        Cluster labels. Noisy samples are given the label -1.
+    """
+    # Hierarchical clustering using the precomputed pairwise distance matrix.
+    min_samples = 2
+    logger.debug(
+        "Hierarchical clustering (eps=%.4f, min_samples=%d) of precomputed "
+        "pairwise distance matrix",
+        eps,
+        min_samples,
+    )
+    # Run scipy clustering.
+    if pairwise_dist_matrix.shape[0] > 1:
+        dist_matrix = pairwise_dist_matrix.todense()
+        link_matrix = fastcluster.linkage(dist_matrix, method=linkage)
+        clusters = fcluster(link_matrix, eps, criterion="distance")
+        clusters[:] = _singletons_to_noise(clusters, min_samples)
+    else:
+        clusters = np.asarray([-1])
+
+    # Refine initial clusters to make sure spectra within a cluster don't
+    # have an excessive precursor m/z difference.
+    return _refine_clusters(
+        clusters,
+        precursor_mzs,
+        rts,
+        min_samples,
+        precursor_tol_mass,
+        precursor_tol_mode,
+        rt_tol,
+    )
+
+
+def _singletons_to_noise(labels: np.ndarray, threshold: int) -> np.ndarray:
+    """
+    Convert singleton clusters to noise.
+
+    Parameters
+    ----------
+    labels : np.ndarray
+        Cluster labels.
+    threshold : int
+        The minimum number of samples in a cluster.
+
+    Returns
+    -------
+    np.ndarray
+        Cluster labels with singleton clusters converted to noise.
+    """
+    unique, counts = np.unique(labels, return_counts=True)
+    frequencies = dict(zip(unique, counts))
+
+    infrequent_labels = [
+        label for label, count in frequencies.items() if count < threshold
+    ]
+
+    new_labels = np.where(np.isin(labels, infrequent_labels), -1, labels)
+    return new_labels
+
+
+def _refine_clusters(
+    clusters: np.ndarray,
+    precursor_mzs: np.ndarray,
+    rts: np.ndarray,
+    min_samples: int,
+    precursor_tol_mass: float,
+    precursor_tol_mode: str,
+    rt_tol: float,
+) -> np.ndarray:
+    """
+    Refine initial clusters to make sure spectra within a cluster don't have an
+    excessive precursor m/z difference.
+
+    Parameters
+    ----------
+    clusters : np.ndarray
+        Initial cluster labels.
+    precursor_mzs : np.ndarray
+        Precursor m/z's of the samples.
+    rts : np.ndarray
+        Retention times of the samples.
+    min_samples : int
+        The minimum number of samples in a cluster.
+    precursor_tol_mass : float
+        Maximum precursor mass tolerance for points to be clustered together.
+    precursor_tol_mode : str
+        The unit of the precursor m/z tolerance ('Da' or 'ppm').
+    rt_tol : float
+        The retention time tolerance for points to be clustered together. If
+        `None`, do not restrict the retention time.
+
+    Returns
+    -------
+    np.ndarray
+        The refined cluster labels.
+    """
+    order = np.argsort(clusters)
+    # noinspection PyUnresolvedReferences
+    reverse_order = np.argsort(order)
+    clusters[:] = clusters[order]
+    precursor_mzs, rts = precursor_mzs[order], rts[order]
+    logger.debug(
+        "Finetune %d initial unique non-singleton clusters to not"
+        " exceed %.2f %s precursor m/z tolerance%s",
+        clusters[-1] + 1,
+        precursor_tol_mass,
+        precursor_tol_mode,
+        (
+            f" and {rt_tol} retention time tolerance"
+            if rt_tol is not None
+            else ""
+        ),
+    )
+    if clusters[-1] == -1:  # Only noise samples.
+        clusters.fill(-1)
+        noise_mask = np.ones_like(clusters, dtype=np.bool_)
+        n_clusters, n_noise = 0, len(noise_mask)
+    else:
+        group_idx = nb.typed.List(_get_cluster_group_idx(clusters))
+        n_clusters = nb.typed.List(
+            joblib.Parallel(n_jobs=-1, prefer="threads")(
+                joblib.delayed(_postprocess_cluster)(
+                    clusters[start_i:stop_i],
+                    precursor_mzs[start_i:stop_i],
+                    rts[start_i:stop_i],
+                    precursor_tol_mass,
+                    precursor_tol_mode,
+                    rt_tol,
+                    min_samples,
                 )
+                for start_i, stop_i in group_idx
             )
-            _assign_unique_cluster_labels(
-                clusters, group_idx, n_clusters, min_samples
-            )
-            clusters[:] = clusters[reverse_order]
-            noise_mask = clusters == -1
-            # noinspection PyUnresolvedReferences
-            n_clusters, n_noise = np.amax(clusters) + 1, noise_mask.sum()
-        logger.debug(
-            "%d unique non-singleton clusters after precursor m/z "
-            "finetuning, %d total clusters",
-            n_clusters,
-            n_clusters + n_noise,
         )
-        # Reassign noise points to singleton clusters.
-        clusters[noise_mask] = np.arange(n_clusters, n_clusters + n_noise)
-        return np.asarray(clusters)
+        _assign_unique_cluster_labels(
+            clusters, group_idx, n_clusters, min_samples
+        )
+        clusters[:] = clusters[reverse_order]
+        noise_mask = clusters == -1
+        # noinspection PyUnresolvedReferences
+        n_clusters, n_noise = np.amax(clusters) + 1, noise_mask.sum()
+    logger.debug(
+        "%d unique non-singleton clusters after precursor m/z "
+        "finetuning, %d total clusters",
+        n_clusters,
+        n_clusters + n_noise,
+    )
+    # Reassign noise points to singleton clusters.
+    clusters[noise_mask] = np.arange(n_clusters, n_clusters + n_noise)
+    return np.asarray(clusters)
 
 
 @nb.njit
