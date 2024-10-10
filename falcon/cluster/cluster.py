@@ -8,17 +8,16 @@ from typing import Iterator, List, Optional, Tuple
 import faiss
 import joblib
 import lance
-import more_itertools as mit
 import numba as nb
 import numpy as np
 import pandas as pd
-import pyarrow.compute as pc
 import scipy.sparse as ss
 from scipy.cluster.hierarchy import fcluster
 from tqdm import tqdm
-
+# fmt: off
 # noinspection PyProtectedMember
 from sklearn.cluster._dbscan_inner import dbscan_inner
+# fmt: on
 
 from . import spectrum
 
@@ -327,26 +326,28 @@ def _dist_mz_interval(
         The index pointers for the nearest neighbor distances. See
         `scipy.sparse.csr_matrix`.
     """
-    batch_start = 0
     nn_mz = _get_neighbors(
         precursor_mzs, precursor_tol_mass, precursor_tol_mode
     )
     if rt_tol is not None:
         nn_rt = _get_neighbors(rts, rt_tol, "rt")
         nn_mz = [np.intersect1d(mz, rt) for mz, rt in zip(nn_mz, nn_rt)]
-    for batch in mit.chunked(vectors, batch_size):
-        vectors = np.stack(batch)
-        batch_stop = batch_start + vectors.shape[0]
+
+    for batch_start in range(0, len(vectors), batch_size):
+        batch = vectors[batch_start : batch_start + batch_size]
+        batch_vectors = np.stack(batch)
+
         pool = ThreadPool()
         results = pool.starmap(
             search,
             [
                 (vec, nn_mz[i], index, n_neighbors)
-                for i, vec in enumerate(vectors, batch_start)
+                for i, vec in enumerate(batch_vectors, batch_start)
             ],
         )
         pool.close()
         pool.join()
+
         for i, (d, idx) in enumerate(results, batch_start):
             # filter out indices and distances < 0
             mask = idx >= 0
@@ -356,7 +357,6 @@ def _dist_mz_interval(
             # Convert cosine similarity to cosine distance.
             distances[indptr[i] : indptr[i + 1]] = np.clip(1 - d, 0, 1)
             indices[indptr[i] : indptr[i + 1]] = idx
-        batch_start = batch_stop
 
 
 @nb.njit(cache=True)

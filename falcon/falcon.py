@@ -11,18 +11,16 @@ import shutil
 import sys
 import tempfile
 import threading
-from typing import Callable, Dict, Iterator, List, Set, Tuple, Union
+from typing import Callable, Dict, List, Set, Tuple, Union
 
 import joblib
 import lance
 import natsort
-import numba as nb
 import numpy as np
 import pandas as pd
 import pyarrow as pa
 import scipy.sparse as ss
 from sklearn.random_projection import SparseRandomProjection
-from spectrum_utils.spectrum import MsmsSpectrum
 
 from . import __version__, seed
 from .cluster import cluster, spectrum
@@ -321,14 +319,12 @@ def _prepare_spectra(
     max_spectra_in_memory = 1_000_000
     spectra_queue = queue.Queue(maxsize=max_spectra_in_memory)
     # Read the peak files and put their spectra in the queue for consumption.
-    manager = multiprocessing.Manager()
-    low_quality_counter = manager.Value("i", 0)
-    for file_spectra in joblib.Parallel(n_jobs=max_file_workers)(
-        joblib.delayed(_read_spectra)(
-            file, process_spectrum, low_quality_counter
-        )
+    low_quality_counter = 0
+    for file_spectra, lqc in joblib.Parallel(n_jobs=max_file_workers)(
+        joblib.delayed(_read_spectra)(file, process_spectrum)
         for file in input_filenames
     ):
+        low_quality_counter += lqc
         for spec in file_spectra:
             spectra_queue.put(spec)
 
@@ -382,10 +378,10 @@ def _prepare_spectra(
             charges.remove(charge)
             continue
         n_spectra += dataset.count_rows()
-    logger.debug(
+    logger.info(
         "Read %d spectra from %d peak files", n_spectra, len(input_filenames)
     )
-    logger.debug("Skipped %d low-quality spectra", low_quality_counter.value)
+    logger.info("Skipped %d low-quality spectra", low_quality_counter)
     return charges, dataset_paths
 
 
@@ -423,8 +419,7 @@ def _create_lance_dataset(
 def _read_spectra(
     filename: str,
     process_spectrum: Callable,
-    low_quality_counter: multiprocessing.sharedctypes.Synchronized,
-) -> List[Dict[str, Union[str, float, int, np.ndarray]]]:
+) -> Tuple[List[Dict[str, Union[str, float, int, np.ndarray]]], int]:
     """
     Get the spectra from the given file.
 
@@ -434,24 +429,24 @@ def _read_spectra(
         The path of the peak file to be read.
     process_spectrum : Callable
         The function to process the spectra.
-    low_quality_counter : multiprocessing.sharedctypes.Synchronized
-        Counter for low-quality spectra.
 
     Returns
     -------
-    List[Dict[str, Union[str, float, int, np.ndarray]]]
-        The spectra read from the given file as a list of dictionaries.
+    Tuple[List[Dict[str, Union[str, float, int, np.ndarray]]], int]
+        The spectra read from the given file as a list of dictionaries and
+        the number of low-quality spectra.
     """
+    low_quality_counter = 0
     spectra = []
     filename = os.path.abspath(filename)
     for spec in ms_io.get_spectra(filename):
         spec.filename = filename
         spec = process_spectrum(spec)
         if spec is None:
-            low_quality_counter.value += 1
-            continue
-        spectra.append(spec)
-    return spectra
+            low_quality_counter += 1
+        else:
+            spectra.append(spec)
+    return spectra, low_quality_counter
 
 
 def _write_spectra_lance(
