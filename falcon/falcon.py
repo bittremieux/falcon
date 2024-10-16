@@ -62,7 +62,7 @@ def main(args: Union[str, List[str]] = None) -> int:
     logger.debug("precursor_tol = %.2f %s", *config.precursor_tol)
     logger.debug("rt_tol = %s", config.rt_tol)
     logger.debug("fragment_tol = %.2f", config.fragment_tol)
-    logger.debug("eps = %.3f", config.eps)
+    logger.debug("distance_threshold = %.3f", config.distance_threshold)
     logger.debug("mz_interval = %d", config.mz_interval)
     logger.debug("low_dim = %d", config.low_dim)
     logger.debug("n_neighbors = %d", config.n_neighbors)
@@ -179,59 +179,37 @@ def main(args: Union[str, List[str]] = None) -> int:
             config.work_dir, "spectra", f"spectra_charge_{charge}.lance"
         )
         dataset = lance.dataset(dataset_path)
-        dist_filename = os.path.join(
-            config.work_dir, "nn", f"dist_{charge}.npz"
-        )
-        metadata_filename = os.path.join(
-            config.work_dir, "nn", f"metadata_{charge}.parquet"
-        )
-        if not os.path.isfile(dist_filename) or not os.path.isfile(
-            metadata_filename
-        ):
-            pairwise_dist_matrix, metadata = (
-                cluster.compute_pairwise_distances(
-                    dataset,
-                    charge,
-                    config.precursor_tol[0],
-                    config.precursor_tol[1],
-                    config.rt_tol,
-                    config.n_neighbors,
-                    config.batch_size,
-                    config.n_probe,
-                )
-            )
-            metadata.insert(2, "precursor_charge", charge)
-            logger.debug(
-                "Export pairwise distance matrix to file %s",
-                dist_filename,
-            )
-            ss.save_npz(dist_filename, pairwise_dist_matrix, False)
-            metadata.to_parquet(metadata_filename, index=False)
-        else:
-            logger.debug(
-                "Load previously computed pairwise distance matrix "
-                "from file %s",
-                dist_filename,
-            )
-            pairwise_dist_matrix = ss.load_npz(dist_filename)
-            metadata = pd.read_parquet(metadata_filename)
         # No valid spectra found with the current charge.
-        if len(metadata) == 0:
+        if dataset.count_rows() == 0:
             continue
+        metadata = (
+            dataset.to_table(
+                columns=[
+                    "filename",
+                    "identifier",
+                    "precursor_charge",
+                    "precursor_mz",
+                    "retention_time",
+                ]
+            )
+            .to_pandas()
+            .rename(
+                {"identifier": "spectrum_id", "precursor_charge": "charge"},
+                axis=1,
+            )
+        )
         # Cluster using the pairwise distance matrix.
-        clusters = cluster.generate_clusters(
-            pairwise_dist_matrix,
-            config.cluster_method,
+        clusters, medoids = cluster.generate_clusters(
+            dataset,
             config.linkage,
-            config.eps,
-            metadata["precursor_mz"].values,
-            metadata["retention_time"].values,
+            config.distance_threshold,
             config.precursor_tol[0],
             config.precursor_tol[1],
             config.rt_tol,
         )
         # Make sure that different charges have non-overlapping cluster labels.
-        clusters += current_label
+        # only change labels that are not -1 (noise)
+        clusters[clusters != -1] += current_label
         # noinspection PyUnresolvedReferences
         current_label = np.amax(clusters) + 1
         # Save cluster assignments.
@@ -239,14 +217,8 @@ def main(args: Union[str, List[str]] = None) -> int:
         clusters_all.append(metadata)
         # Extract identifiers for cluster representatives (medoids).
         if config.export_representatives:
-            charge_representatives = cluster.get_cluster_representatives(
-                clusters,
-                pairwise_dist_matrix.indptr,
-                pairwise_dist_matrix.indices,
-                pairwise_dist_matrix.data,
-            )
             representatives.append(
-                dataset.take(charge_representatives)
+                dataset.take(medoids)
                 .to_pandas()
                 .apply(spectrum.df_row_to_spec, axis=1)
             )
@@ -259,7 +231,7 @@ def main(args: Union[str, List[str]] = None) -> int:
         "Export cluster assignments of %d spectra to %d unique "
         "clusters to output file %s",
         len(clusters_all),
-        clusters_all["cluster"].nunique(),
+        clusters_all[clusters_all["cluster"] != -1]["cluster"].nunique(),
         f"{config.output_filename}.csv",
     )
     # Perform IO in a separate worker process.
@@ -575,7 +547,9 @@ def _write_cluster_info(clusters: pd.DataFrame) -> None:
         )
         f_out.write(f"# rt_tol = {config.rt_tol}\n")
         f_out.write(f"# fragment_tol = {config.fragment_tol:.2f}\n")
-        f_out.write(f"# eps = {config.eps:.3f}\n")
+        f_out.write(
+            f"# distance_threshold = {config.distance_threshold:.3f}\n"
+        )
         f_out.write(f"# mz_interval = {config.mz_interval}\n")
         f_out.write(f"# low_dim = {config.low_dim}\n")
         f_out.write(f"# n_neighbors = {config.n_neighbors}\n")
