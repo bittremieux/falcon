@@ -1,19 +1,20 @@
 import gc
 import logging
 import math
-from typing import Iterator, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor
+from typing import Iterator, List, Optional, Tuple
 
 import fastcluster
 import joblib
 import lance
 import numba as nb
 import numpy as np
-import scipy.spatial.distance as ssd
 import scipy.cluster.hierarchy as sch
 from scipy.cluster.hierarchy import fcluster
 import spectrum_utils.utils as suu
 from tqdm import tqdm
 
+from . import similarity
 
 logger = logging.getLogger("falcon")
 
@@ -71,6 +72,7 @@ def hierarchical_clustering(
     precursor_tol_mass: float,
     precursor_tol_mode: str,
     rt_tol: float,
+    fragment_mz_tol: float = 0.05,
     clusters_filename: str = "clusters.npy",
 ) -> np.ndarray:
     """
@@ -96,6 +98,10 @@ def hierarchical_clustering(
     rt_tol : float
         The retention time tolerance for points to be clustered together. If
         `None`, do not restrict the retention time.
+    fragment_mz_tol: float
+        The fragment m/z tolerance.
+    clusters_filename : str
+        The filename to store the cluster labels.
 
     Returns
     -------
@@ -111,7 +117,16 @@ def hierarchical_clustering(
     )
     # Sort the metadata by increasing precursor m/z for easy subsetting.
     data = (
-        dataset.to_table(columns=["precursor_mz", "retention_time", "vector"])
+        dataset.to_table(
+            columns=[
+                "precursor_mz",
+                "precursor_charge",
+                "retention_time",
+                "vector",
+                "mz",
+                "intensity",
+            ]
+        )
         .to_pandas()
         .reset_index()
         .sort_values("precursor_mz")
@@ -140,12 +155,15 @@ def hierarchical_clustering(
         splits = _get_precursor_mz_splits(
             mz, precursor_tol_mass, precursor_tol_mode, 2**15
         )
+        spec_tuples = data.apply(
+            similarity._df_row_to_spectrum_tuple, axis=1
+        ).tolist()
         # Per-split cluster labels.
         for interval_medoids in joblib.Parallel(
             n_jobs=-1, backend="threading"
         )(
             joblib.delayed(_cluster_interval)(
-                np.stack(data["vector"].values),
+                spec_tuples,
                 idx,
                 mz,
                 rt,
@@ -157,6 +175,7 @@ def hierarchical_clustering(
                 precursor_tol_mass,
                 precursor_tol_mode,
                 rt_tol,
+                fragment_mz_tol,
                 pbar,
             )
             for i in range(len(splits) - 1)
@@ -232,7 +251,7 @@ def _get_precursor_mz_splits(
 
 
 def _cluster_interval(
-    vectors: np.ndarray,
+    data: List,
     idx: np.ndarray,
     mzs: np.ndarray,
     rts: np.ndarray,
@@ -244,6 +263,7 @@ def _cluster_interval(
     precursor_tol_mass: float,
     precursor_tol_mode: str,
     rt_tol: float,
+    fragment_mz_tol: float,
     pbar: tqdm,
 ) -> Optional[np.ndarray]:
     """
@@ -285,12 +305,12 @@ def _cluster_interval(
         idx_interval = idx[interval_start:interval_stop]
         mzs_interval = mzs[interval_start:interval_stop]
         rts_interval = rts[interval_start:interval_stop]
-        vectors_interval = vectors[idx_interval]
         # Hierarchical clustering of the vectors.
         # Subtract 1 because fcluster starts with cluster label 1 instead of 0
         # (like Scikit-Learn does).
-        pdist = np.empty(n_vectors * (n_vectors - 1) // 2, np.float64)
-        ssd.pdist(vectors_interval, "cosine", out=pdist)
+        pdist = compute_condensed_distance_matrix(
+            data[interval_start:interval_stop], fragment_mz_tol, False
+        )
         labels = (
             sch.fcluster(
                 fastcluster.linkage(pdist, linkage),
@@ -698,3 +718,74 @@ def _get_cluster_medoid_index(
         if row_avg < min_avg:
             min_i, min_avg = row_i, row_avg
     return cluster_mask[min_i]
+
+
+def compute_condensed_distance_matrix(
+    spec_tuples, fragment_mz_tol, allow_shift
+):
+    """
+    Compute the condensed pairwise distance matrix for the given spectra.
+
+    Parameters
+    ----------
+    spec_tuples : List[Tuple]
+        The spectra to compute the pairwise distance matrix for.
+    fragment_mz_tolerance : float
+        The fragment m/z tolerance.
+    allow_shift : bool
+        Whether to allow peak shifts.
+
+    Returns
+    -------
+    np.ndarray
+        The condensed pairwise distance matrix.
+    """
+    n = len(spec_tuples)
+    condensed_dist_matrix = np.zeros(n * (n - 1) // 2)
+
+    def worker(i, j):
+        spec_tup1 = spec_tuples[i]
+        spec_tup2 = spec_tuples[j]
+        sim, _, _, _, _, _, _ = similarity._cosine_fast(
+            spec_tup1, spec_tup2, fragment_mz_tol, allow_shift
+        )
+        distance = 1.0 - sim
+        idx = condensed_index(i, j, n)
+        condensed_dist_matrix[idx] = abs(distance)
+
+    with ThreadPoolExecutor() as executor:
+        futures = [
+            executor.submit(worker, i, j)
+            for i in range(n - 1)
+            for j in range(i + 1, n)
+        ]
+        for future in futures:
+            future.result()
+
+    return condensed_dist_matrix
+
+
+@nb.njit
+def condensed_index(i, j, n):
+    """
+    Get the index of the condensed distance matrix.
+
+    Parameters
+    ----------
+    i : int
+        The row index.
+    j : int
+        The column index.
+    n : int
+        The number of spectra.
+
+    Returns
+    -------
+    int
+        The index of the condensed distance matrix.
+    """
+    if i == j:
+        raise ValueError("No diagonal elements in condensed matrix")
+    if i > j:
+        i, j = j, i
+    return int(n * i + j - ((i + 2) * (i + 1)) // 2)
