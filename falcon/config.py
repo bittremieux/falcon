@@ -95,10 +95,20 @@ class Config:
         )
 
         self._parser.add_argument(
-            "--eps",
+            "--linkage",
+            type=str,
+            default=None,
+            help="Linkage criterion for hierarchical clustering "
+            "(default: %(default)s). Should be one of "
+            "'single', 'complete', 'average'. 'None' for density "
+            "based clustering",
+        )
+
+        self._parser.add_argument(
+            "--distance_threshold",
             type=float,
             default=0.1,
-            help="The eps parameter (cosine distance) for DBSCAN clustering "
+            help="The distance threshold parameter (cosine distance) for clustering "
             "(default: %(default)s). Relevant cosine distance thresholds "
             "are typically between 0.05 and 0.30.",
         )
