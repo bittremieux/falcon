@@ -122,7 +122,6 @@ def hierarchical_clustering(
                 "precursor_mz",
                 "precursor_charge",
                 "retention_time",
-                "vector",
                 "mz",
                 "intensity",
             ]
@@ -158,6 +157,7 @@ def hierarchical_clustering(
         spec_tuples = data.apply(
             similarity._df_row_to_spectrum_tuple, axis=1
         ).tolist()
+        del data
         # Per-split cluster labels.
         for interval_medoids in joblib.Parallel(
             n_jobs=-1, backend="threading"
@@ -188,12 +188,16 @@ def hierarchical_clustering(
     cluster_labels.flush()
     medoids = np.hstack(medoids)
     np.save(clusters_filename.replace(".npy", "_medoids.npy"), medoids)
+    noise_mask = cluster_labels == -1
+    n_clusters, n_noise = np.amax(cluster_labels) + 1, noise_mask.sum()
     logger.info(
-        "%d spectra grouped in %d clusters, %d singleton clusters",
+        "%d spectra grouped in %d clusters, %d spectra remain as singletons",
         (cluster_labels != -1).sum(),
-        max_label + 1,
-        (cluster_labels == -1).sum(),
+        n_clusters,
+        n_noise,
     )
+    # Reassign noise points to singleton clusters.
+    cluster_labels[noise_mask] = np.arange(n_clusters, n_clusters + n_noise)
     return cluster_labels, medoids
 
 
@@ -251,7 +255,7 @@ def _get_precursor_mz_splits(
 
 
 def _cluster_interval(
-    data: List,
+    spectra: List[similarity.SpectrumTuple],
     idx: np.ndarray,
     mzs: np.ndarray,
     rts: np.ndarray,
@@ -265,18 +269,20 @@ def _cluster_interval(
     rt_tol: float,
     fragment_mz_tol: float,
     pbar: tqdm,
-) -> Optional[np.ndarray]:
+) -> np.ndarray:
     """
     Cluster the vectors in the given interval.
 
     Parameters
     ----------
-    vectors : np.ndarray
-        _All_ vectors.
+    spectra : List[similarity.SpectrumTuple]
+        The spectra to cluster.
     idx : np.ndarray
         The indexes of the vectors in the current interval.
     mzs : np.ndarray
         The precursor m/z's corresponding to the current interval indexes.
+    rts : np.ndarray
+        The retention times corresponding to the current interval indexes.
     cluster_labels : np.ndarray
         Array in which to fill the cluster label assignments.
     interval_start : int
@@ -292,12 +298,17 @@ def _cluster_interval(
         The value of the precursor m/z tolerance.
     precursor_tol_mode : str
         The unit of the precursor m/z tolerance ('Da' or 'ppm').
+    rt_tol : float
+        The retention time tolerance for points to be clustered together. If
+        `None`, do not restrict the retention time.
+    fragment_mz_tol : float
+        The fragment m/z tolerance.
     pbar : tqdm.tqdm
         Tqdm progress bar.
 
     Returns
     -------
-    Optional[np.ndarray]
+    np.ndarray
         List with indexes of the medoids for each cluster.
     """
     n_vectors = interval_stop - interval_start
@@ -309,7 +320,7 @@ def _cluster_interval(
         # Subtract 1 because fcluster starts with cluster label 1 instead of 0
         # (like Scikit-Learn does).
         pdist = compute_condensed_distance_matrix(
-            data[interval_start:interval_stop], fragment_mz_tol, False
+            spectra[interval_start:interval_stop], fragment_mz_tol, False
         )
         labels = (
             sch.fcluster(
@@ -322,7 +333,11 @@ def _cluster_interval(
         # Refine initial clusters to make sure spectra within a cluster don't
         # have an excessive precursor m/z difference.
         order = np.argsort(labels)
-        idx_interval, mzs_interval = idx_interval[order], mzs_interval[order]
+        idx_interval, mzs_interval, rts_interval = (
+            idx_interval[order],
+            mzs_interval[order],
+            rts_interval[order],
+        )
         labels, current_label = labels[order], 0
         for start_i, stop_i in _get_cluster_group_idx(labels):
             n_clusters = _postprocess_cluster(
@@ -408,12 +423,18 @@ def _postprocess_cluster(
         Array in which to write the cluster labels.
     cluster_mzs : np.ndarray
         Precursor m/z's of the samples in a single initial cluster.
+    cluster_rts: np.ndarray
+        Retention times of the samples in a single intial cluster.
     precursor_tol_mass : float
         Maximum precursor mass tolerance for points to be clustered together.
     precursor_tol_mode : str
         The unit of the precursor m/z tolerance ('Da' or 'ppm').
+    rt_tol: float
+        Maximum retention time tolerance for points to be clustered together.
     min_samples : int
         The minimum number of samples in a cluster.
+    start_label : int
+        The first cluster label.
 
     Returns
     -------
@@ -721,14 +742,16 @@ def _get_cluster_medoid_index(
 
 
 def compute_condensed_distance_matrix(
-    spec_tuples, fragment_mz_tol, allow_shift
-):
+    spec_tuples: List[similarity.SpectrumTuple],
+    fragment_mz_tol: float,
+    allow_shift: bool,
+) -> np.ndarray:
     """
     Compute the condensed pairwise distance matrix for the given spectra.
 
     Parameters
     ----------
-    spec_tuples : List[Tuple]
+    spec_tuples : List[similarity.SpectrumTuple]
         The spectra to compute the pairwise distance matrix for.
     fragment_mz_tolerance : float
         The fragment m/z tolerance.
@@ -766,7 +789,7 @@ def compute_condensed_distance_matrix(
 
 
 @nb.njit
-def condensed_index(i, j, n):
+def condensed_index(i: int, j: int, n: int) -> int:
     """
     Get the index of the condensed distance matrix.
 

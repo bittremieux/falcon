@@ -19,7 +19,6 @@ import natsort
 import numpy as np
 import pandas as pd
 import pyarrow as pa
-import scipy.sparse as ss
 from sklearn.random_projection import SparseRandomProjection
 
 from . import __version__, seed
@@ -209,7 +208,7 @@ def main(args: Union[str, List[str]] = None) -> int:
         )
         # Make sure that different charges have non-overlapping cluster labels.
         # only change labels that are not -1 (noise)
-        clusters[clusters != -1] += current_label
+        clusters += current_label
         # noinspection PyUnresolvedReferences
         current_label = np.amax(clusters) + 1
         # Save cluster assignments.
@@ -231,7 +230,7 @@ def main(args: Union[str, List[str]] = None) -> int:
         "Export cluster assignments of %d spectra to %d unique "
         "clusters to output file %s",
         len(clusters_all),
-        clusters_all[clusters_all["cluster"] != -1]["cluster"].nunique(),
+        clusters_all["cluster"].nunique(),
         f"{config.output_filename}.csv",
     )
     # Perform IO in a separate worker process.
