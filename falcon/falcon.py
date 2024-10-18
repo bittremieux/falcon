@@ -60,12 +60,8 @@ def main(args: Union[str, List[str]] = None) -> int:
     logger.debug("precursor_tol = %.2f %s", *config.precursor_tol)
     logger.debug("rt_tol = %s", config.rt_tol)
     logger.debug("fragment_tol = %.2f", config.fragment_tol)
+    logger.debug("linkage = %s", config.linkage)
     logger.debug("distance_threshold = %.3f", config.distance_threshold)
-    logger.debug("mz_interval = %d", config.mz_interval)
-    logger.debug("low_dim = %d", config.low_dim)
-    logger.debug("n_neighbors = %d", config.n_neighbors)
-    logger.debug("batch_size = %d", config.batch_size)
-    logger.debug("n_probe = %d", config.n_probe)
     logger.debug("min_peaks = %d", config.min_peaks)
     logger.debug("min_mz_range = %.2f", config.min_mz_range)
     logger.debug("min_mz = %.2f", config.min_mz)
@@ -87,7 +83,6 @@ def main(args: Union[str, List[str]] = None) -> int:
         )
     os.makedirs(config.work_dir, exist_ok=True)
     os.makedirs(os.path.join(config.work_dir, "spectra"), exist_ok=True)
-    os.makedirs(os.path.join(config.work_dir, "nn"), exist_ok=True)
 
     # Clean all intermediate and final results if "overwrite" is specified,
     # otherwise abort if the output files already exist.
@@ -144,8 +139,6 @@ def main(args: Union[str, List[str]] = None) -> int:
     if config.overwrite:
         for filename in os.listdir(os.path.join(config.work_dir, "spectra")):
             os.remove(os.path.join(config.work_dir, "spectra", filename))
-        for filename in os.listdir(os.path.join(config.work_dir, "nn")):
-            os.remove(os.path.join(config.work_dir, "nn", filename))
 
     charge_path = os.path.join(config.work_dir, "spectra", "charges.joblib")
     if os.path.isfile(charge_path) and not config.overwrite:
@@ -189,6 +182,8 @@ def main(args: Union[str, List[str]] = None) -> int:
             config.precursor_tol[0],
             config.precursor_tol[1],
             config.rt_tol,
+            config.fragment_tol,
+            os.path.join(config.work_dir, f"clusters_{charge}.npy"),
         )
         # Make sure that different charges have non-overlapping cluster labels.
         # only change labels that are not -1 (noise)
@@ -508,14 +503,10 @@ def _write_cluster_info(clusters: pd.DataFrame) -> None:
         )
         f_out.write(f"# rt_tol = {config.rt_tol}\n")
         f_out.write(f"# fragment_tol = {config.fragment_tol:.2f}\n")
+        f_out.write(f"# linkage = {config.linkage}\n")
         f_out.write(
             f"# distance_threshold = {config.distance_threshold:.3f}\n"
         )
-        f_out.write(f"# mz_interval = {config.mz_interval}\n")
-        f_out.write(f"# low_dim = {config.low_dim}\n")
-        f_out.write(f"# n_neighbors = {config.n_neighbors}\n")
-        f_out.write(f"# batch_size = {config.batch_size}\n")
-        f_out.write(f"# n_probe = {config.n_probe}\n")
         f_out.write(f"# min_peaks = {config.min_peaks}\n")
         f_out.write(f"# min_mz_range = {config.min_mz_range:.2f}\n")
         f_out.write(f"# min_mz = {config.min_mz:.2f}\n")

@@ -26,6 +26,8 @@ def generate_clusters(
     precursor_tol_mass: float,
     precursor_tol_mode: str,
     rt_tol: float,
+    fragment_tol: float,
+    cluster_filename: str,
 ) -> np.ndarray:
     """
     Generate clusters based on the pairwise distance matrix.
@@ -49,6 +51,10 @@ def generate_clusters(
     rt_tol : float
         The retention time tolerance for points to be clustered together. If
         `None`, do not restrict the retention time.
+    fragment_tol: float
+        The fragment m/z tolerance for cosine similarity calculation.
+    cluster_filename: str
+        The filename to store the cluster labels.
 
     Returns
     -------
@@ -62,6 +68,8 @@ def generate_clusters(
         precursor_tol_mass,
         precursor_tol_mode,
         rt_tol,
+        fragment_tol,
+        cluster_filename,
     )
 
 
@@ -72,8 +80,8 @@ def hierarchical_clustering(
     precursor_tol_mass: float,
     precursor_tol_mode: str,
     rt_tol: float,
-    fragment_mz_tol: float = 0.05,
-    clusters_filename: str = "clusters.npy",
+    fragment_tol: float,
+    cluster_filename: str,
 ) -> np.ndarray:
     """
     Hierarchical clustering of the given pairwise distance matrix.
@@ -98,9 +106,9 @@ def hierarchical_clustering(
     rt_tol : float
         The retention time tolerance for points to be clustered together. If
         `None`, do not restrict the retention time.
-    fragment_mz_tol: float
+    fragment_tol: float
         The fragment m/z tolerance.
-    clusters_filename : str
+    cluster_filename : str
         The filename to store the cluster labels.
 
     Returns
@@ -141,7 +149,7 @@ def hierarchical_clustering(
     # Initially, all samples are noise. (Memmap for memory efficiency.)
     # noinspection PyUnresolvedReferences
     cluster_labels = np.lib.format.open_memmap(
-        clusters_filename, mode="w+", dtype=np.int32, shape=(data.shape[0],)
+        cluster_filename, mode="w+", dtype=np.int32, shape=(data.shape[0],)
     )
     cluster_labels.fill(-1)
     max_label, medoids = 0, []
@@ -175,7 +183,7 @@ def hierarchical_clustering(
                 precursor_tol_mass,
                 precursor_tol_mode,
                 rt_tol,
-                fragment_mz_tol,
+                fragment_tol,
                 pbar,
             )
             for i in range(len(splits) - 1)
@@ -187,7 +195,6 @@ def hierarchical_clustering(
         )
     cluster_labels.flush()
     medoids = np.hstack(medoids)
-    np.save(clusters_filename.replace(".npy", "_medoids.npy"), medoids)
     noise_mask = cluster_labels == -1
     n_clusters, n_noise = np.amax(cluster_labels) + 1, noise_mask.sum()
     logger.info(
