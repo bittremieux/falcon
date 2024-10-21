@@ -96,11 +96,10 @@ class Config:
         self._parser.add_argument(
             "--linkage",
             type=str,
-            default=None,
+            default="complete",
             help="Linkage criterion for hierarchical clustering "
             "(default: %(default)s). Should be one of "
-            "'single', 'complete', 'average'. 'None' for density "
-            "based clustering",
+            "'single', 'complete', 'average'.",
         )
         self._parser.add_argument(
             "--distance_threshold",
