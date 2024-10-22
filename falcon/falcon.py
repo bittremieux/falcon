@@ -60,6 +60,7 @@ def main(args: Union[str, List[str]] = None) -> int:
     logger.debug("fragment_tol = %.2f", config.fragment_tol)
     logger.debug("linkage = %s", config.linkage)
     logger.debug("distance_threshold = %.3f", config.distance_threshold)
+    logger.debug("min_matched_peaks = %d", config.min_matched_peaks)
     logger.debug("min_peaks = %d", config.min_peaks)
     logger.debug("min_mz_range = %.2f", config.min_mz_range)
     logger.debug("min_mz = %.2f", config.min_mz)
@@ -177,6 +178,7 @@ def main(args: Union[str, List[str]] = None) -> int:
             dataset,
             config.linkage,
             config.distance_threshold,
+            config.min_matched_peaks,
             config.precursor_tol[0],
             config.precursor_tol[1],
             config.rt_tol,
@@ -504,6 +506,7 @@ def _write_cluster_info(clusters: pd.DataFrame) -> None:
         f_out.write(
             f"# distance_threshold = {config.distance_threshold:.3f}\n"
         )
+        f_out.write(f"# min_matched_peaks = {config.min_matched_peaks}\n")
         f_out.write(f"# min_peaks = {config.min_peaks}\n")
         f_out.write(f"# min_mz_range = {config.min_mz_range:.2f}\n")
         f_out.write(f"# min_mz = {config.min_mz:.2f}\n")

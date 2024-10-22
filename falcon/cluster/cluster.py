@@ -25,6 +25,7 @@ def generate_clusters(
     dataset: lance.LanceDataset,
     linkage: str,
     distance_threshold: float,
+    min_matches: int,
     precursor_tol_mass: float,
     precursor_tol_mode: str,
     rt_tol: float,
@@ -41,6 +42,8 @@ def generate_clusters(
         The linkage method to use for hierarchical clustering.
     distance_threshold : float
         The linkage distance threshold at or above which clusters will not be merged.
+    min_matches: int
+        The minimum number of matched peaks to consider the spectra similar.
     precursor_tol_mass : float
         Maximum precursor mass tolerance for points to be clustered together.
     precursor_tol_mode : str
@@ -120,6 +123,7 @@ def generate_clusters(
                 splits[i + 1],
                 linkage,
                 distance_threshold,
+                min_matches,
                 precursor_tol_mass,
                 precursor_tol_mode,
                 rt_tol,
@@ -211,6 +215,7 @@ def _cluster_interval(
     interval_stop: int,
     linkage: str,
     distance_threshold: float,
+    min_matches: int,
     precursor_tol_mass: float,
     precursor_tol_mode: str,
     rt_tol: float,
@@ -241,6 +246,8 @@ def _cluster_interval(
         `scipy.cluster.hierarchy.linkage` for possible options.
     distance_threshold : float
         The maximum linkage distance threshold during clustering.
+    min_matches: int
+        The minimum number of matched peaks to consider the spectra similar.
     precursor_tol_mass : float
         The value of the precursor m/z tolerance.
     precursor_tol_mode : str
@@ -267,7 +274,7 @@ def _cluster_interval(
         # Subtract 1 because fcluster starts with cluster label 1 instead of 0
         # (like Scikit-Learn does).
         pdist = compute_condensed_distance_matrix(
-            spectra[interval_start:interval_stop], fragment_mz_tol
+            spectra[interval_start:interval_stop], fragment_mz_tol, min_matches
         )
         labels = (
             sch.fcluster(
@@ -691,6 +698,7 @@ def _get_cluster_medoid_index(
 def compute_condensed_distance_matrix(
     spec_tuples: List[similarity.SpectrumTuple],
     fragment_mz_tol: float,
+    min_matches: int,
 ) -> np.ndarray:
     """
     Compute the condensed pairwise distance matrix for the given spectra.
@@ -701,6 +709,8 @@ def compute_condensed_distance_matrix(
         The spectra to compute the pairwise distance matrix for.
     fragment_mz_tolerance : float
         The fragment m/z tolerance.
+    min_matches : int
+        The minimum number of matched peaks to consider the spectra similar.
 
     Returns
     -------
@@ -713,7 +723,11 @@ def compute_condensed_distance_matrix(
     def worker(i, j):
         spec_tup1 = spec_tuples[i]
         spec_tup2 = spec_tuples[j]
-        sim, _ = similarity.cosine_fast(spec_tup1, spec_tup2, fragment_mz_tol)
+        sim, n_match = similarity.cosine_fast(
+            spec_tup1, spec_tup2, fragment_mz_tol
+        )
+        if n_match < min_matches:
+            sim = 0.0
         distance = 1.0 - sim
         idx = condensed_index(i, j, n)
         condensed_dist_matrix[idx] = distance

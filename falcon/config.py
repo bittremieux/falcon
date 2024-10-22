@@ -109,6 +109,13 @@ class Config:
             "(default: %(default)s). Relevant cosine distance thresholds "
             "are typically between 0.05 and 0.30.",
         )
+        self._parser.add_argument(
+            "--min_matched_peaks",
+            type=int,
+            default=0,
+            help="Minimum number of matched peaks to consider the spectra similar "
+            "(default: %(default)s). Typically 6 for metabolomics data.",
+        )
 
         # PREPROCESSING
         self._parser.add_argument(
