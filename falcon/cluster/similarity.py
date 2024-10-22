@@ -1,4 +1,5 @@
 import collections
+from typing import Tuple
 
 import numba as nb
 import numpy as np
@@ -12,63 +13,13 @@ SpectrumTuple = collections.namedtuple(
     "SpectrumTuple", ["precursor_mz", "precursor_charge", "mz", "intensity"]
 )
 
-#  return type
-SimilarityTuple = collections.namedtuple(
-    "SimilarityTuple",
-    [
-        "score",
-        "matched_intensity",
-        "max_contribution",
-        "n_greq_2p",  # signals contributing >= 2% score
-        "matches",  # number of matches
-        "matched_indices",
-        "matched_indices_other",
-    ],
-)
-
-
-def cosine(
-    spectrum1: pd.Series,
-    spectrum2: pd.Series,
-    fragment_mz_tolerance: float,
-    allow_shift: bool,
-) -> SimilarityTuple:
-    """
-    Compute the cosine similarity between the given spectra.
-
-    Parameters
-    ----------
-    spectrum1 : pd.Series
-        The first spectrum as a pandas Series.
-    spectrum2 : pd.Series
-        The second spectrum as a pandas Series.
-    fragment_mz_tolerance : float
-        The fragment m/z tolerance used to match peaks.
-    allow_shift : bool
-        Boolean flag indicating whether to allow peak shifts or not.
-
-    Returns
-    -------
-    SimilarityTuple
-        A tuple consisting of the cosine similarity between both spectra,
-        matched intensity, maximum contribution by a signal pair, matched
-        signals, and arrays of the matching peak indexes in the first and
-        second spectrum.
-    """
-    spec_tup1 = _df_row_to_spectrum_tuple(spectrum1)
-    spec_tup2 = _df_row_to_spectrum_tuple(spectrum2)
-    return _cosine_fast(
-        spec_tup1, spec_tup2, fragment_mz_tolerance, allow_shift
-    )
-
 
 @nb.njit(fastmath=True, boundscheck=False)
-def _cosine_fast(
+def cosine_fast(
     spec: SpectrumTuple,
     spec_other: SpectrumTuple,
     fragment_mz_tolerance: float,
-    allow_shift: bool,
-) -> SimilarityTuple:
+) -> Tuple[float, int]:
     """
     Compute the cosine similarity between the given spectra.
 
@@ -81,64 +32,35 @@ def _cosine_fast(
     fragment_mz_tolerance : float
         The fragment m/z tolerance used to match peaks in both spectra with
         each other.
-    allow_shift : bool
-        Boolean flag indicating whether to allow peak shifts or not.
 
     Returns
     -------
-    SimilarityTuple
-        A tuple consisting of the cosine similarity between both spectra,
-        matched intensity, maximum contribution by a signal pair, matched
-        signals, and arrays of the matching peak indexes in the first and
-        second spectrum.
+    Tuple[float, int]
+        A tuple containing the cosine similarity between both spectra and the
+        number of matched peaks.
     """
-    # Find the matching peaks between both spectra, optionally allowing for
-    # shifted peaks.
-    # Candidate peak indices depend on whether we allow shifts
-    # (check all shifted peaks as well) or not.
-    # Account for unknown precursor charge (default: 1).
-    precursor_charge = max(spec.precursor_charge, 1)
-    precursor_mass_diff = (
-        spec.precursor_mz - spec_other.precursor_mz
-    ) * precursor_charge
-    # Only take peak shifts into account if the mass difference is relevant.
-    num_shifts = 1
-    if allow_shift and abs(precursor_mass_diff) >= fragment_mz_tolerance:
-        num_shifts += precursor_charge
-    num_shifts = int(num_shifts)
-    other_peak_index = np.zeros(num_shifts, np.uint16)
-    mass_diff = np.zeros(num_shifts, np.float32)
-    for charge in range(1, num_shifts):
-        mass_diff[charge] = precursor_mass_diff / charge
-
     # Find the matching peaks between both spectra.
+    other_peak_index = 0
     cost_matrix = np.zeros((len(spec.mz), len(spec_other.mz)), np.float32)
     for peak_index, (peak_mz, peak_intensity) in enumerate(
         zip(spec.mz, spec.intensity)
     ):
         # Advance while there is an excessive mass difference.
-        for cpi in range(num_shifts):
-            while other_peak_index[cpi] < len(spec_other.mz) - 1 and (
-                peak_mz - fragment_mz_tolerance
-                > spec_other.mz[other_peak_index[cpi]] + mass_diff[cpi]
-            ):
-                other_peak_index[cpi] += 1
+        while other_peak_index < len(spec_other.mz) - 1 and (
+            peak_mz - fragment_mz_tolerance > spec_other.mz[other_peak_index]
+        ):
+            other_peak_index += 1
         # Match the peaks within the fragment mass window if possible.
-        for cpi in range(num_shifts):
-            index = 0
-            other_peak_i = other_peak_index[cpi] + index
-            while (
-                other_peak_i < len(spec_other.mz)
-                and abs(
-                    peak_mz - (spec_other.mz[other_peak_i] + mass_diff[cpi])
-                )
-                <= fragment_mz_tolerance
-            ):
-                cost_matrix[peak_index, other_peak_i] = (
-                    peak_intensity * spec_other.intensity[other_peak_i]
-                )
-                index += 1
-                other_peak_i = other_peak_index[cpi] + index
+        other_peak_i = other_peak_index
+        while (
+            other_peak_i < len(spec_other.mz)
+            and abs(peak_mz - (spec_other.mz[other_peak_i]))
+            <= fragment_mz_tolerance
+        ):
+            cost_matrix[peak_index, other_peak_i] = (
+                peak_intensity * spec_other.intensity[other_peak_i]
+            )
+            other_peak_i += 1
 
     with nb.objmode(row_ind="int64[:]", col_ind="int64[:]"):
         row_ind, col_ind = scipy.optimize.linear_sum_assignment(
@@ -146,37 +68,18 @@ def _cosine_fast(
         )
 
     score = 0.0
-    matched_intensity = 0.0
-    max_contribution = 0.0
-    # Signals with contribution to cosine score greater 2%.
-    n_greq_2p = 0
 
     row_mask = np.zeros_like(row_ind, np.bool_)
-    col_mask = np.zeros_like(col_ind, np.bool_)
-    for (i, row), (j, col) in zip(enumerate(row_ind), enumerate(col_ind)):
+    for (i, row), col in zip(enumerate(row_ind), col_ind):
         pair_score = cost_matrix[row, col]
         if pair_score > 0.0:
             score += pair_score
-            matched_intensity += (
-                spec.intensity[row] + spec_other.intensity[col]
-            )
-            row_mask[i] = col_mask[j] = True
-            n_greq_2p += pair_score >= 0.02
-            max_contribution = max(max_contribution, pair_score)
-    matched_intensity /= spec.intensity.sum() + spec_other.intensity.sum()
+            row_mask[i] = True
 
-    return SimilarityTuple(
-        score,
-        matched_intensity,
-        max_contribution,
-        n_greq_2p,
-        row_mask.sum(),
-        row_ind[row_mask],
-        col_ind[col_mask],
-    )
+    return score, row_mask.sum()
 
 
-def _df_row_to_spectrum_tuple(row: pd.Series) -> SpectrumTuple:
+def df_row_to_spectrum_tuple(row: pd.Series) -> SpectrumTuple:
     """
     Convert a row of a DataFrame to a SpectrumTuple.
 

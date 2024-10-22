@@ -3,7 +3,6 @@ import functools
 import glob
 import logging
 import multiprocessing
-import multiprocessing.sharedctypes
 import multiprocessing.synchronize
 import os
 import queue
@@ -182,7 +181,6 @@ def main(args: Union[str, List[str]] = None) -> int:
             config.precursor_tol[1],
             config.rt_tol,
             config.fragment_tol,
-            os.path.join(config.work_dir, f"clusters_{charge}.npy"),
         )
         # Make sure that different charges have non-overlapping cluster labels.
         # only change labels that are not -1 (noise)

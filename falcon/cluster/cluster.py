@@ -1,6 +1,7 @@
 import gc
 import logging
 import math
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from typing import Iterator, List, Optional, Tuple
 
@@ -9,9 +10,10 @@ import joblib
 import lance
 import numba as nb
 import numpy as np
+import pyarrow as pa
 import scipy.cluster.hierarchy as sch
-from scipy.cluster.hierarchy import fcluster
 import spectrum_utils.utils as suu
+from scipy.cluster.hierarchy import fcluster
 from tqdm import tqdm
 
 from . import similarity
@@ -27,61 +29,6 @@ def generate_clusters(
     precursor_tol_mode: str,
     rt_tol: float,
     fragment_tol: float,
-    cluster_filename: str,
-) -> np.ndarray:
-    """
-    Generate clusters based on the pairwise distance matrix.
-
-    Parameters
-    ----------
-    dataset : lance.LanceDataset
-        The dataset containing the spectra to be clustered.
-    cluster_method : str
-        The clustering method to use ('density' or 'hierarchical').
-    linkage: str
-        The linkage method to use for hierarchical clustering. 'None' for
-        density based clustering.
-    distance_threshold : float
-        The maximum distance between two samples for one to be considered as in
-        the neighborhood of the other.
-    precursor_tol_mass : float
-        Maximum precursor mass tolerance for points to be clustered together.
-    precursor_tol_mode : str
-        The unit of the precursor m/z tolerance ('Da' or 'ppm').
-    rt_tol : float
-        The retention time tolerance for points to be clustered together. If
-        `None`, do not restrict the retention time.
-    fragment_tol: float
-        The fragment m/z tolerance for cosine similarity calculation.
-    cluster_filename: str
-        The filename to store the cluster labels.
-
-    Returns
-    -------
-    np.ndarray
-        Cluster labels. Noisy samples are given the label -1.
-    """
-    return hierarchical_clustering(
-        dataset,
-        linkage,
-        distance_threshold,
-        precursor_tol_mass,
-        precursor_tol_mode,
-        rt_tol,
-        fragment_tol,
-        cluster_filename,
-    )
-
-
-def hierarchical_clustering(
-    dataset: lance.LanceDataset,
-    linkage: str,
-    distance_threshold: float,
-    precursor_tol_mass: float,
-    precursor_tol_mode: str,
-    rt_tol: float,
-    fragment_tol: float,
-    cluster_filename: str,
 ) -> np.ndarray:
     """
     Hierarchical clustering of the given pairwise distance matrix.
@@ -93,12 +40,7 @@ def hierarchical_clustering(
     linkage: str
         The linkage method to use for hierarchical clustering.
     distance_threshold : float
-        The maximum distance between two samples for one to be considered as in
-        the neighborhood of the other.
-    precursor_mzs : np.ndarray
-        Precursor m/z's matching the pairwise distance matrix.
-    rts : np.ndarray
-        Retention times matching the pairwise distance matrix.
+        The linkage distance threshold at or above which clusters will not be merged.
     precursor_tol_mass : float
         Maximum precursor mass tolerance for points to be clustered together.
     precursor_tol_mode : str
@@ -108,8 +50,6 @@ def hierarchical_clustering(
         `None`, do not restrict the retention time.
     fragment_tol: float
         The fragment m/z tolerance.
-    cluster_filename : str
-        The filename to store the cluster labels.
 
     Returns
     -------
@@ -134,9 +74,9 @@ def hierarchical_clustering(
                 "intensity",
             ]
         )
+        .add_column(0, "index", pa.array(range(dataset.count_rows())))
+        .sort_by("precursor_mz")
         .to_pandas()
-        .reset_index()
-        .sort_values("precursor_mz")
     )
     # Cluster per contiguous block of precursor m/z's (relative to the
     # precursor m/z threshold).
@@ -146,8 +86,8 @@ def hierarchical_clustering(
         linkage,
         distance_threshold,
     )
-    # Initially, all samples are noise. (Memmap for memory efficiency.)
-    # noinspection PyUnresolvedReferences
+    with tempfile.NamedTemporaryFile(suffix=".npy") as cluster_file:
+        cluster_filename = cluster_file.name
     cluster_labels = np.lib.format.open_memmap(
         cluster_filename, mode="w+", dtype=np.int32, shape=(data.shape[0],)
     )
@@ -163,7 +103,7 @@ def hierarchical_clustering(
             mz, precursor_tol_mass, precursor_tol_mode, 2**15
         )
         spec_tuples = data.apply(
-            similarity._df_row_to_spectrum_tuple, axis=1
+            similarity.df_row_to_spectrum_tuple, axis=1
         ).tolist()
         del data
         # Per-split cluster labels.
@@ -327,7 +267,7 @@ def _cluster_interval(
         # Subtract 1 because fcluster starts with cluster label 1 instead of 0
         # (like Scikit-Learn does).
         pdist = compute_condensed_distance_matrix(
-            spectra[interval_start:interval_stop], fragment_mz_tol, False
+            spectra[interval_start:interval_stop], fragment_mz_tol
         )
         labels = (
             sch.fcluster(
@@ -751,7 +691,6 @@ def _get_cluster_medoid_index(
 def compute_condensed_distance_matrix(
     spec_tuples: List[similarity.SpectrumTuple],
     fragment_mz_tol: float,
-    allow_shift: bool,
 ) -> np.ndarray:
     """
     Compute the condensed pairwise distance matrix for the given spectra.
@@ -762,8 +701,6 @@ def compute_condensed_distance_matrix(
         The spectra to compute the pairwise distance matrix for.
     fragment_mz_tolerance : float
         The fragment m/z tolerance.
-    allow_shift : bool
-        Whether to allow peak shifts.
 
     Returns
     -------
@@ -776,12 +713,10 @@ def compute_condensed_distance_matrix(
     def worker(i, j):
         spec_tup1 = spec_tuples[i]
         spec_tup2 = spec_tuples[j]
-        sim, _, _, _, _, _, _ = similarity._cosine_fast(
-            spec_tup1, spec_tup2, fragment_mz_tol, allow_shift
-        )
+        sim, _ = similarity.cosine_fast(spec_tup1, spec_tup2, fragment_mz_tol)
         distance = 1.0 - sim
         idx = condensed_index(i, j, n)
-        condensed_dist_matrix[idx] = abs(distance)
+        condensed_dist_matrix[idx] = distance
 
     with ThreadPoolExecutor() as executor:
         futures = [
