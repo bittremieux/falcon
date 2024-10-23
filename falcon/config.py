@@ -116,6 +116,13 @@ class Config:
             help="Minimum number of matched peaks to consider the spectra similar "
             "(default: %(default)s). Typically 6 for metabolomics data.",
         )
+        self._parser.add_argument(
+            "--consensus_method",
+            type=str,
+            default="medoid",
+            help="Method to use for consensus spectrum computation "
+            "(default: %(default)s). Should be one of 'medoid', 'average'.",
+        )
 
         # PREPROCESSING
         self._parser.add_argument(

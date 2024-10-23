@@ -98,9 +98,10 @@ def _spectra_to_dicts(spectra: Iterable[sus.MsmsSpectrum]) -> Iterable[Dict]:
     """
     for spectrum in spectra:
         params = {
-            "title": spectrum.identifier,
             "pepmass": spectrum.precursor_mz,
         }
+        if hasattr(spectrum, "identifier"):
+            params["title"] = spectrum.identifier
         if not math.isnan(spectrum.precursor_charge):
             params["charge"] = spectrum.precursor_charge
         if hasattr(spectrum, "retention_time"):

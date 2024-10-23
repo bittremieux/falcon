@@ -174,7 +174,7 @@ def main(args: Union[str, List[str]] = None) -> int:
             )
         )
         # Cluster using the pairwise distance matrix.
-        clusters, medoids = cluster.generate_clusters(
+        clusters, rep_spectra = cluster.generate_clusters(
             dataset,
             config.linkage,
             config.distance_threshold,
@@ -183,6 +183,7 @@ def main(args: Union[str, List[str]] = None) -> int:
             config.precursor_tol[1],
             config.rt_tol,
             config.fragment_tol,
+            config.consensus_method,
         )
         # Make sure that different charges have non-overlapping cluster labels.
         # only change labels that are not -1 (noise)
@@ -194,11 +195,7 @@ def main(args: Union[str, List[str]] = None) -> int:
         clusters_all.append(metadata)
         # Extract identifiers for cluster representatives (medoids).
         if config.export_representatives:
-            representatives.append(
-                dataset.take(medoids)
-                .to_pandas()
-                .apply(spectrum.df_row_to_spec, axis=1)
-            )
+            representatives.extend(rep_spectra)
 
     # Export cluster memberships and representative spectra.
     clusters_all = pd.concat(clusters_all, ignore_index=True).sort_values(
@@ -217,9 +214,6 @@ def main(args: Union[str, List[str]] = None) -> int:
     )
     write_csv_worker.start()
     if config.export_representatives:
-        representatives = pd.concat(
-            representatives, ignore_index=True
-        ).tolist()
         logger.info(
             "Export %d cluster representative spectra to output file %s",
             len(representatives),
