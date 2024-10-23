@@ -75,6 +75,7 @@ def cosine_fast(
         if pair_score > 0.0:
             score += pair_score
             row_mask[i] = True
+    score = max(0.0, min(score, 1.0))
 
     return score, row_mask.sum()
 
