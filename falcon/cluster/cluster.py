@@ -31,6 +31,10 @@ def generate_clusters(
     rt_tol: float,
     fragment_tol: float,
     consensus_method: str,
+    min_mz: float,
+    max_mz: float,
+    bin_size: float,
+    n_std: float,
 ) -> np.ndarray:
     """
     Hierarchical clustering of the given pairwise distance matrix.
@@ -56,6 +60,14 @@ def generate_clusters(
         The fragment m/z tolerance.
     consensus_method : str
         The method to use for consensus spectrum computation.
+    min_mz : float
+        The minimum m/z value to consider for binning.
+    max_mz : float
+        The maximum m/z value to consider for binning.
+    bin_size : float
+        The width of each bin in m/z units.
+    n_std : float
+        The number of standard deviations to consider for outlier rejection.
 
     Returns
     -------
@@ -132,6 +144,10 @@ def generate_clusters(
                 rt_tol,
                 fragment_tol,
                 consensus_method,
+                min_mz,
+                max_mz,
+                bin_size,
+                n_std,
                 pbar,
             )
             for i in range(len(splits) - 1)
@@ -224,6 +240,10 @@ def _cluster_interval(
     rt_tol: float,
     fragment_mz_tol: float,
     consensus_method: str,
+    min_mz: float,
+    max_mz: float,
+    bin_size: float,
+    n_std: float,
     pbar: tqdm,
 ) -> np.ndarray:
     """
@@ -263,6 +283,14 @@ def _cluster_interval(
         The fragment m/z tolerance.
     consensus_method : str
         The method to use for consensus spectrum computation.
+    min_mz : float
+        The minimum m/z value to consider for binning.
+    max_mz : float
+        The maximum m/z value to consider for binning.
+    bin_size : float
+        The width of each bin in m/z units.
+    n_std : float
+        The number of standard deviations to consider for outlier rejection.
     pbar : tqdm.tqdm
         Tqdm progress bar.
 
@@ -324,6 +352,10 @@ def _cluster_interval(
                 labels,
                 consensus_method,
                 order_map,
+                min_mz,
+                max_mz,
+                bin_size,
+                n_std,
             )
         else:
             rep_spectra = spectra[interval_start:interval_stop]
@@ -521,6 +553,10 @@ def _get_representative_spectra(
     labels: np.ndarray,
     consensus_method: str,
     order_map: np.ndarray,
+    min_mz: float,
+    max_mz: float,
+    bin_size: float,
+    n_std: float,
 ) -> List[similarity.SpectrumTuple]:
     """
     Get the representative spectra for each cluster.
@@ -537,6 +573,14 @@ def _get_representative_spectra(
         The method to use for consensus spectrum computation.
     order_map : np.ndarray
         Map to convert label indexes to pairwise distance matrix indexes.
+    min_mz : float
+        The minimum m/z value to consider for binning.
+    max_mz : float
+        The maximum m/z value to consider for binning.
+    bin_size : float
+        The width of each bin in m/z units.
+    n_std : float
+        The number of standard deviations to consider for outlier rejection.
 
     Returns
     -------
@@ -546,7 +590,9 @@ def _get_representative_spectra(
     if consensus_method == "medoid":
         return _get_cluster_medoids(spectra, labels, pdist, order_map)
     elif consensus_method == "average":
-        return _get_cluster_average(spectra, labels, order_map)
+        return _get_cluster_average(
+            spectra, labels, order_map, min_mz, max_mz, bin_size, n_std
+        )
     else:
         raise ValueError(
             f"Unknown consensus spectrum method: {consensus_method}"
@@ -601,6 +647,10 @@ def _get_cluster_average(
     spectra: List[similarity.SpectrumTuple],
     labels: np.ndarray,
     order_map: np.ndarray,
+    min_mz: float,
+    max_mz: float,
+    bin_size: float,
+    n_std: float,
 ) -> List[similarity.SpectrumTuple]:
     """
     Get the average spectra for each cluster.
@@ -613,6 +663,14 @@ def _get_cluster_average(
         Cluster labels.
     order_map : np.ndarray
         Map to convert label indexes to pairwise distance matrix indexes.
+    min_mz : float
+        The minimum m/z value to consider for binning.
+    max_mz : float
+        The maximum m/z value to consider for binning.
+    bin_size : float
+        The width of each bin in m/z units.
+    n_std : float
+        The number of standard deviations to consider for outlier rejection.
 
     Returns
     -------
@@ -633,11 +691,11 @@ def _get_cluster_average(
 
             # Bin the spectra
             bins_idx, bins_peaks = _spectrum_binning(
-                spectra_to_average, 0, 1000, 0.1
+                spectra_to_average, min_mz, max_mz, bin_size
             )
             del spectra_to_average
             # Outlier rejection
-            bins_peaks = _outlier_rejection(bins_idx, bins_peaks, 3)
+            bins_peaks = _outlier_rejection(bins_idx, bins_peaks, n_std)
             # Average peaks
             bins_peaks = _average_peaks(bins_idx, bins_peaks)
             # Construct average spectrum

@@ -184,6 +184,10 @@ def main(args: Union[str, List[str]] = None) -> int:
             config.rt_tol,
             config.fragment_tol,
             config.consensus_method,
+            config.min_mz,
+            config.max_mz,
+            config.bin_size,
+            config.n_std,
         )
         # Make sure that different charges have non-overlapping cluster labels.
         # only change labels that are not -1 (noise)

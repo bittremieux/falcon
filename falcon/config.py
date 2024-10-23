@@ -123,6 +123,13 @@ class Config:
             help="Method to use for consensus spectrum computation "
             "(default: %(default)s). Should be one of 'medoid', 'average'.",
         )
+        self._parser.add_argument(
+            "--n_std",
+            type=float,
+            default=1.5,
+            help="Number of standard deviations to consider for outlier rejection "
+            "(default: %(default)s). Only used when consensus_method='average'.",
+        )
 
         # PREPROCESSING
         self._parser.add_argument(
