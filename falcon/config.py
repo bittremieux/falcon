@@ -93,56 +93,28 @@ class Config:
             default=0.05,
             help="Fragment mass tolerance in m/z (default: %(default)s m/z).",
         )
-
         self._parser.add_argument(
-            "--eps",
+            "--linkage",
+            type=str,
+            default="complete",
+            help="Linkage criterion for hierarchical clustering "
+            "(default: %(default)s). Should be one of "
+            "'single', 'complete', 'average'.",
+        )
+        self._parser.add_argument(
+            "--distance_threshold",
             type=float,
             default=0.1,
-            help="The eps parameter (cosine distance) for DBSCAN clustering "
+            help="The distance threshold parameter (cosine distance) for clustering "
             "(default: %(default)s). Relevant cosine distance thresholds "
             "are typically between 0.05 and 0.30.",
         )
-
         self._parser.add_argument(
-            "--mz_interval",
+            "--min_matched_peaks",
             type=int,
-            default=1,
-            help="Precursor m/z interval (centered around x.5 Da) to process "
-            "spectra simultaneously (default: %(default)s m/z).",
-        )
-        self._parser.add_argument(
-            "--mass_bucket_width",
-            type=float,
-            default=100,
-            help="Width of the mass buckets, for IO purposes "
-            "(default: %(default)s Da).",
-        )
-        self._parser.add_argument(
-            "--low_dim",
-            default=400,
-            type=int,
-            help="Low-dimensional vector length (default: %(default)s).",
-        )
-        self._parser.add_argument(
-            "--n_neighbors",
-            default=64,
-            type=int,
-            help="Number of neighbors to include in the pairwise distance "
-            "matrix for each spectrum (default: %(default)s).",
-        )
-        self._parser.add_argument(
-            "--batch_size",
-            default=2**16,
-            type=int,
-            help="Number of spectra to process simultaneously "
-            "(default: %(default)s).",
-        )
-        self._parser.add_argument(
-            "--n_probe",
-            default=32,
-            type=int,
-            help="Maximum number of lists in the inverted index to inspect "
-            "during querying (default: %(default)s).",
+            default=0,
+            help="Minimum number of matched peaks to consider the spectra similar "
+            "(default: %(default)s). Typically 6 for metabolomics data.",
         )
 
         # PREPROCESSING

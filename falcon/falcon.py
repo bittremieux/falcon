@@ -3,7 +3,6 @@ import functools
 import glob
 import logging
 import multiprocessing
-import multiprocessing.sharedctypes
 import multiprocessing.synchronize
 import os
 import queue
@@ -19,8 +18,6 @@ import natsort
 import numpy as np
 import pandas as pd
 import pyarrow as pa
-import scipy.sparse as ss
-from sklearn.random_projection import SparseRandomProjection
 
 from . import __version__, seed
 from .cluster import cluster, spectrum
@@ -49,7 +46,6 @@ def main(args: Union[str, List[str]] = None) -> int:
     )
     root.addHandler(handler)
     # Disable dependency non-critical log messages.
-    logging.getLogger("faiss").setLevel(logging.WARNING)
     logging.getLogger("numba").setLevel(logging.WARNING)
     logging.getLogger("numexpr").setLevel(logging.WARNING)
 
@@ -62,12 +58,9 @@ def main(args: Union[str, List[str]] = None) -> int:
     logger.debug("precursor_tol = %.2f %s", *config.precursor_tol)
     logger.debug("rt_tol = %s", config.rt_tol)
     logger.debug("fragment_tol = %.2f", config.fragment_tol)
-    logger.debug("eps = %.3f", config.eps)
-    logger.debug("mz_interval = %d", config.mz_interval)
-    logger.debug("low_dim = %d", config.low_dim)
-    logger.debug("n_neighbors = %d", config.n_neighbors)
-    logger.debug("batch_size = %d", config.batch_size)
-    logger.debug("n_probe = %d", config.n_probe)
+    logger.debug("linkage = %s", config.linkage)
+    logger.debug("distance_threshold = %.3f", config.distance_threshold)
+    logger.debug("min_matched_peaks = %d", config.min_matched_peaks)
     logger.debug("min_peaks = %d", config.min_peaks)
     logger.debug("min_mz_range = %.2f", config.min_mz_range)
     logger.debug("min_mz = %.2f", config.min_mz)
@@ -89,7 +82,6 @@ def main(args: Union[str, List[str]] = None) -> int:
         )
     os.makedirs(config.work_dir, exist_ok=True)
     os.makedirs(os.path.join(config.work_dir, "spectra"), exist_ok=True)
-    os.makedirs(os.path.join(config.work_dir, "nn"), exist_ok=True)
 
     # Clean all intermediate and final results if "overwrite" is specified,
     # otherwise abort if the output files already exist.
@@ -128,7 +120,7 @@ def main(args: Union[str, List[str]] = None) -> int:
         logging.shutdown()
         return 1
 
-    vec_len, min_mz, max_mz = spectrum.get_dim(
+    _, min_mz, max_mz = spectrum.get_dim(
         config.min_mz, config.max_mz, config.fragment_tol
     )
     process_spectrum = functools.partial(
@@ -143,33 +135,16 @@ def main(args: Union[str, List[str]] = None) -> int:
         scaling=None if config.scaling == "off" else config.scaling,
     )
 
-    transformation = (
-        SparseRandomProjection(config.low_dim, random_state=0)
-        .fit(np.zeros((1, vec_len)))
-        .components_.astype(np.float32)
-        .T
-    )
-    vectorize = functools.partial(
-        spectrum.to_vector,
-        transformation=transformation,
-        min_mz=min_mz,
-        bin_size=config.fragment_tol,
-        dim=vec_len,
-        norm=True,
-    )
-
     if config.overwrite:
         for filename in os.listdir(os.path.join(config.work_dir, "spectra")):
             os.remove(os.path.join(config.work_dir, "spectra", filename))
-        for filename in os.listdir(os.path.join(config.work_dir, "nn")):
-            os.remove(os.path.join(config.work_dir, "nn", filename))
 
     charge_path = os.path.join(config.work_dir, "spectra", "charges.joblib")
     if os.path.isfile(charge_path) and not config.overwrite:
         charges = joblib.load(charge_path)
     else:
         # Recalculate the charge buckets and recreate dataset.
-        charges, _ = _prepare_spectra(process_spectrum, vectorize)
+        charges, _ = _prepare_spectra(process_spectrum)
         joblib.dump(charges, charge_path)
 
     # Cluster the spectra per charge.
@@ -179,56 +154,38 @@ def main(args: Union[str, List[str]] = None) -> int:
             config.work_dir, "spectra", f"spectra_charge_{charge}.lance"
         )
         dataset = lance.dataset(dataset_path)
-        dist_filename = os.path.join(
-            config.work_dir, "nn", f"dist_{charge}.npz"
-        )
-        metadata_filename = os.path.join(
-            config.work_dir, "nn", f"metadata_{charge}.parquet"
-        )
-        if not os.path.isfile(dist_filename) or not os.path.isfile(
-            metadata_filename
-        ):
-            pairwise_dist_matrix, metadata = (
-                cluster.compute_pairwise_distances(
-                    dataset,
-                    charge,
-                    config.precursor_tol[0],
-                    config.precursor_tol[1],
-                    config.rt_tol,
-                    config.n_neighbors,
-                    config.batch_size,
-                    config.n_probe,
-                )
-            )
-            metadata.insert(2, "precursor_charge", charge)
-            logger.debug(
-                "Export pairwise distance matrix to file %s",
-                dist_filename,
-            )
-            ss.save_npz(dist_filename, pairwise_dist_matrix, False)
-            metadata.to_parquet(metadata_filename, index=False)
-        else:
-            logger.debug(
-                "Load previously computed pairwise distance matrix "
-                "from file %s",
-                dist_filename,
-            )
-            pairwise_dist_matrix = ss.load_npz(dist_filename)
-            metadata = pd.read_parquet(metadata_filename)
         # No valid spectra found with the current charge.
-        if len(metadata) == 0:
+        if dataset.count_rows() == 0:
             continue
+        metadata = (
+            dataset.to_table(
+                columns=[
+                    "filename",
+                    "identifier",
+                    "precursor_charge",
+                    "precursor_mz",
+                    "retention_time",
+                ]
+            )
+            .to_pandas()
+            .rename(
+                {"identifier": "spectrum_id"},
+                axis=1,
+            )
+        )
         # Cluster using the pairwise distance matrix.
-        clusters = cluster.generate_clusters(
-            pairwise_dist_matrix,
-            config.eps,
-            metadata["precursor_mz"].values,
-            metadata["retention_time"].values,
+        clusters, medoids = cluster.generate_clusters(
+            dataset,
+            config.linkage,
+            config.distance_threshold,
+            config.min_matched_peaks,
             config.precursor_tol[0],
             config.precursor_tol[1],
             config.rt_tol,
+            config.fragment_tol,
         )
         # Make sure that different charges have non-overlapping cluster labels.
+        # only change labels that are not -1 (noise)
         clusters += current_label
         # noinspection PyUnresolvedReferences
         current_label = np.amax(clusters) + 1
@@ -237,14 +194,8 @@ def main(args: Union[str, List[str]] = None) -> int:
         clusters_all.append(metadata)
         # Extract identifiers for cluster representatives (medoids).
         if config.export_representatives:
-            charge_representatives = cluster.get_cluster_representatives(
-                clusters,
-                pairwise_dist_matrix.indptr,
-                pairwise_dist_matrix.indices,
-                pairwise_dist_matrix.data,
-            )
             representatives.append(
-                dataset.take(charge_representatives)
+                dataset.take(medoids)
                 .to_pandas()
                 .apply(spectrum.df_row_to_spec, axis=1)
             )
@@ -291,9 +242,7 @@ def main(args: Union[str, List[str]] = None) -> int:
     return 0
 
 
-def _prepare_spectra(
-    process_spectrum: Callable, vectorize: Callable
-) -> Set[int]:
+def _prepare_spectra(process_spectrum: Callable) -> Set[int]:
     """
     Read the spectra from the input peak files and partition to intermediate
     files split and sorted by precursor m/z.
@@ -340,19 +289,12 @@ def _prepare_spectra(
             pa.field("intensity", pa.list_(pa.float32())),
             pa.field("retention_time", pa.float32()),
             pa.field("filename", pa.string()),
-            pa.field("vector", pa.list_(pa.float32())),
         ]
     )
     lance_writers = multiprocessing.pool.ThreadPool(
         max_file_workers,
         _write_spectra_lance,
-        (
-            spectra_queue,
-            lance_locks,
-            schema,
-            charges,
-            vectorize,
-        ),
+        (spectra_queue, lance_locks, schema, charges),
     )
     # Add sentinels to indicate stopping. This needs to happen after all files
     # have been read (by joining `peak_readers`).
@@ -454,7 +396,6 @@ def _write_spectra_lance(
     lance_locks: Dict[int, multiprocessing.synchronize.Lock],
     schema: pa.Schema,
     charges: Set,
-    vectorize: Callable,
 ) -> None:
     """
     Read spectra from a queue and write to a lance dataset.
@@ -469,8 +410,6 @@ def _write_spectra_lance(
         The schema of the dataset.
     charges : set
         The precursor charges of the spectra.
-    vectorize : Callable
-        The function to vectorize the spectra.
     """
     spec_to_write = collections.defaultdict(list)
     while True:
@@ -486,7 +425,6 @@ def _write_spectra_lance(
                     lance_locks[charge],
                     schema,
                     config.work_dir,
-                    vectorize,
                 )
                 spec_to_write[charge].clear()
             return
@@ -500,7 +438,6 @@ def _write_spectra_lance(
                 lance_locks[charge],
                 schema,
                 config.work_dir,
-                vectorize,
             )
             spec_to_write[charge].clear()
 
@@ -511,7 +448,6 @@ def _write_to_dataset(
     lock: multiprocessing.synchronize.Lock,
     schema: pa.Schema,
     work_dir: str,
-    vectorize: Callable,
 ) -> int:
     """
     Write a list of spectra to a lance dataset.
@@ -528,18 +464,11 @@ def _write_to_dataset(
         The schema of the dataset.
     work_dir : str
         The directory in which the dataset is stored.
-    vectorize : Callable
-        The function to vectorize the spectra.
-
     Returns
     -------
     int
         The number of spectra written to the dataset.
     """
-    # Vectorize the spectra and add them to the dictionary.
-    vectors = vectorize(spec_to_write)
-    for i, vector in enumerate(vectors):
-        spec_to_write[i]["vector"] = vector
     # Write the spectra to the dataset.
     new_rows = pa.Table.from_pylist(spec_to_write, schema)
     path = os.path.join(work_dir, "spectra", f"spectra_charge_{charge}.lance")
@@ -573,12 +502,11 @@ def _write_cluster_info(clusters: pd.DataFrame) -> None:
         )
         f_out.write(f"# rt_tol = {config.rt_tol}\n")
         f_out.write(f"# fragment_tol = {config.fragment_tol:.2f}\n")
-        f_out.write(f"# eps = {config.eps:.3f}\n")
-        f_out.write(f"# mz_interval = {config.mz_interval}\n")
-        f_out.write(f"# low_dim = {config.low_dim}\n")
-        f_out.write(f"# n_neighbors = {config.n_neighbors}\n")
-        f_out.write(f"# batch_size = {config.batch_size}\n")
-        f_out.write(f"# n_probe = {config.n_probe}\n")
+        f_out.write(f"# linkage = {config.linkage}\n")
+        f_out.write(
+            f"# distance_threshold = {config.distance_threshold:.3f}\n"
+        )
+        f_out.write(f"# min_matched_peaks = {config.min_matched_peaks}\n")
         f_out.write(f"# min_peaks = {config.min_peaks}\n")
         f_out.write(f"# min_mz_range = {config.min_mz_range:.2f}\n")
         f_out.write(f"# min_mz = {config.min_mz:.2f}\n")

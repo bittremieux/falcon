@@ -20,7 +20,6 @@ MsmsSpectrumNb = collections.namedtuple(
         "retention_time",
         "mz",
         "intensity",
-        "vector",
     ],
 )
 
@@ -319,6 +318,5 @@ def df_row_to_spec(row: pd.Series) -> MsmsSpectrumNb:
         row["retention_time"],
         row["mz"],
         row["intensity"],
-        row["vector"],
     )
     return spectrum
