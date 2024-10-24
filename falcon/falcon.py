@@ -62,7 +62,8 @@ def main(args: Union[str, List[str]] = None) -> int:
     logger.debug("distance_threshold = %.3f", config.distance_threshold)
     logger.debug("min_matched_peaks = %d", config.min_matched_peaks)
     logger.debug("consensus_method = %s", config.consensus_method)
-    logger.debug("n_std = %.2f", config.n_std)
+    logger.debug("n_min = %.2f", config.n_min)
+    logger.debug("n_max = %.2f", config.n_max)
     logger.debug("bin_size = %.2f", config.bin_size)
     logger.debug("min_peaks = %d", config.min_peaks)
     logger.debug("min_mz_range = %.2f", config.min_mz_range)
@@ -190,7 +191,8 @@ def main(args: Union[str, List[str]] = None) -> int:
             config.min_mz,
             config.max_mz,
             config.bin_size,
-            config.n_std,
+            config.n_min,
+            config.n_max,
         )
         # Make sure that different charges have non-overlapping cluster labels.
         # only change labels that are not -1 (noise)
@@ -509,7 +511,8 @@ def _write_cluster_info(clusters: pd.DataFrame) -> None:
         )
         f_out.write(f"# min_matched_peaks = {config.min_matched_peaks}\n")
         f_out.write(f"# consensus_method = {config.consensus_method}\n")
-        f_out.write(f"# n_std = {config.n_std:.2f}\n")
+        f_out.write(f"# n_min = {config.n_min:.2f}\n")
+        f_out.write(f"# n_max = {config.n_max:.2f}\n")
         f_out.write(f"# bin_size = {config.bin_size:.2f}\n")
         f_out.write(f"# min_peaks = {config.min_peaks}\n")
         f_out.write(f"# min_mz_range = {config.min_mz_range:.2f}\n")

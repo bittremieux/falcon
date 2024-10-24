@@ -34,7 +34,8 @@ def generate_clusters(
     min_mz: float,
     max_mz: float,
     bin_size: float,
-    n_std: float,
+    n_min: float,
+    n_max: float,
 ) -> np.ndarray:
     """
     Hierarchical clustering of the given pairwise distance matrix.
@@ -66,8 +67,10 @@ def generate_clusters(
         The maximum m/z value to consider for binning.
     bin_size : float
         The width of each bin in m/z units.
-    n_std : float
-        The number of standard deviations to consider for outlier rejection.
+    n_min : float
+        The number of standard deviations for the lower bound for outlier rejection.
+    n_max : float
+        The number of standard deviations for the upper bound for outlier rejection.
 
     Returns
     -------
@@ -147,7 +150,8 @@ def generate_clusters(
                 min_mz,
                 max_mz,
                 bin_size,
-                n_std,
+                n_min,
+                n_max,
                 pbar,
             )
             for i in range(len(splits) - 1)
@@ -243,7 +247,8 @@ def _cluster_interval(
     min_mz: float,
     max_mz: float,
     bin_size: float,
-    n_std: float,
+    n_min: float,
+    n_max: float,
     pbar: tqdm,
 ) -> np.ndarray:
     """
@@ -290,7 +295,9 @@ def _cluster_interval(
     bin_size : float
         The width of each bin in m/z units.
     n_std : float
-        The number of standard deviations to consider for outlier rejection.
+        The number of standard deviations for the lower bound for outlier rejection.
+    n_max : float
+        The number of standard deviations for the upper bound for outlier rejection.
     pbar : tqdm.tqdm
         Tqdm progress bar.
 
@@ -355,7 +362,8 @@ def _cluster_interval(
                 min_mz,
                 max_mz,
                 bin_size,
-                n_std,
+                n_min,
+                n_max,
             )
         else:
             rep_spectra = spectra[interval_start:interval_stop]
@@ -556,7 +564,8 @@ def _get_representative_spectra(
     min_mz: float,
     max_mz: float,
     bin_size: float,
-    n_std: float,
+    n_min: float,
+    n_max: float,
 ) -> List[similarity.SpectrumTuple]:
     """
     Get the representative spectra for each cluster.
@@ -579,8 +588,10 @@ def _get_representative_spectra(
         The maximum m/z value to consider for binning.
     bin_size : float
         The width of each bin in m/z units.
-    n_std : float
-        The number of standard deviations to consider for outlier rejection.
+    n_min : float
+        The number of standard deviations for the lower bound for outlier rejection.
+    n_max : float
+        The number of standard deviations for the upper bound for outlier rejection.
 
     Returns
     -------
@@ -591,7 +602,7 @@ def _get_representative_spectra(
         return _get_cluster_medoids(spectra, labels, pdist, order_map)
     elif consensus_method == "average":
         return _get_cluster_average(
-            spectra, labels, order_map, min_mz, max_mz, bin_size, n_std
+            spectra, labels, order_map, min_mz, max_mz, bin_size, n_min, n_max
         )
     else:
         raise ValueError(
@@ -650,7 +661,8 @@ def _get_cluster_average(
     min_mz: float,
     max_mz: float,
     bin_size: float,
-    n_std: float,
+    n_min: float,
+    n_max: float,
 ) -> List[similarity.SpectrumTuple]:
     """
     Get the average spectra for each cluster.
@@ -669,8 +681,10 @@ def _get_cluster_average(
         The maximum m/z value to consider for binning.
     bin_size : float
         The width of each bin in m/z units.
-    n_std : float
-        The number of standard deviations to consider for outlier rejection.
+    n_min : float
+        The number of standard deviations for the lower bound for outlier rejection.
+    n_max : float
+        The number of standard deviations for the upper bound for outlier rejection.
 
     Returns
     -------
@@ -695,7 +709,7 @@ def _get_cluster_average(
             )
             del spectra_to_average
             # Outlier rejection
-            bins_peaks = _outlier_rejection(bins_idx, bins_peaks, n_std)
+            bins_peaks = _outlier_rejection(bins_idx, bins_peaks, n_min, n_max)
             # Average peaks
             bins_peaks = _average_peaks(bins_idx, bins_peaks)
             # Construct average spectrum
@@ -765,7 +779,10 @@ def _spectrum_binning(
 
 @nb.njit(cache=True)
 def _outlier_rejection(
-    bins_indices: List[int], bins_peaks: nb.typed.List, n: float
+    bins_indices: List[int],
+    bins_peaks: nb.typed.List,
+    n_min: float,
+    n_max: float,
 ) -> Tuple[nb.typed.List]:
     """
     Remove outliers from binned spectra using the sigma clipping algorithm
@@ -777,8 +794,10 @@ def _outlier_rejection(
         The indices of the non-empty bins.
     bins_peaks : nb.typed.List
         The intensities for each bin.
-    n : float
-        The number of standard deviations to consider.
+    n_min : float
+        The number of standard deviations for the lower bound.
+    n_max : float
+        The number of standard deviations for the upper bound.
 
     Returns
     -------
@@ -792,7 +811,7 @@ def _outlier_rejection(
     for i in range(len(bins_indices)):
         intensities = bins_peaks[i]
         if len(intensities) > 1:
-            cleaned_bins_peaks[i] = _sigma_clipping(intensities, n)
+            cleaned_bins_peaks[i] = _sigma_clipping(intensities, n_min, n_max)
         else:
             cleaned_bins_peaks[i] = intensities
 
@@ -800,7 +819,9 @@ def _outlier_rejection(
 
 
 @nb.njit(cache=True)
-def _sigma_clipping(intensities: np.ndarray, n: float) -> np.ndarray:
+def _sigma_clipping(
+    intensities: np.ndarray, n_min: float, n_max: float
+) -> np.ndarray:
     """
     Apply sigma clipping to remove outliers from the array.
 
@@ -808,8 +829,10 @@ def _sigma_clipping(intensities: np.ndarray, n: float) -> np.ndarray:
     ----------
     intensities : np.ndarray
         The array of intensities.
-    n : float
-        The number of standard deviations to consider.
+    n_min : float
+        The number of standard deviations for the lower bound.
+    n_max : float
+        The number of standard deviations for the upper bound.
 
     Returns
     -------
@@ -824,7 +847,7 @@ def _sigma_clipping(intensities: np.ndarray, n: float) -> np.ndarray:
         # Mask outliers
         mask = np.ones(len(intensities), dtype=np.bool_)
         for i in range(len(intensities)):
-            if _sigma_clip(intensities[i], med, std, n, n):
+            if _sigma_clip(intensities[i], med, std, n_min, n_max):
                 mask[i] = False
         # Break if no outliers were found
         if np.sum(mask) == len(intensities):
