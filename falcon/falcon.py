@@ -64,7 +64,6 @@ def main(args: Union[str, List[str]] = None) -> int:
     logger.debug("consensus_method = %s", config.consensus_method)
     logger.debug("n_min = %.2f", config.n_min)
     logger.debug("n_max = %.2f", config.n_max)
-    logger.debug("bin_size = %.2f", config.bin_size)
     logger.debug("min_peaks = %d", config.min_peaks)
     logger.debug("min_mz_range = %.2f", config.min_mz_range)
     logger.debug("min_mz = %.2f", config.min_mz)
@@ -190,7 +189,7 @@ def main(args: Union[str, List[str]] = None) -> int:
             config.consensus_method,
             config.min_mz,
             config.max_mz,
-            config.bin_size,
+            2 * config.fragment_tol,
             config.n_min,
             config.n_max,
         )
@@ -513,7 +512,6 @@ def _write_cluster_info(clusters: pd.DataFrame) -> None:
         f_out.write(f"# consensus_method = {config.consensus_method}\n")
         f_out.write(f"# n_min = {config.n_min:.2f}\n")
         f_out.write(f"# n_max = {config.n_max:.2f}\n")
-        f_out.write(f"# bin_size = {config.bin_size:.2f}\n")
         f_out.write(f"# min_peaks = {config.min_peaks}\n")
         f_out.write(f"# min_mz_range = {config.min_mz_range:.2f}\n")
         f_out.write(f"# min_mz = {config.min_mz:.2f}\n")

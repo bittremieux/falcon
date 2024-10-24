@@ -137,13 +137,6 @@ class Config:
             help="Number of standard deviations above the median for outlier rejection "
             "(default: %(default)s). Only used when consensus_method='average'.",
         )
-        self._parser.add_argument(
-            "--bin_size",
-            type=float,
-            default=0.01,
-            help="Width of each bin in m/z units used for spectral averaging "
-            "(default: %(default)s m/z).",
-        )
 
         # PREPROCESSING
         self._parser.add_argument(
