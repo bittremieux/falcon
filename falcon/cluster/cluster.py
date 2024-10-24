@@ -700,7 +700,7 @@ def _get_cluster_average(
             bins_peaks = _average_peaks(bins_idx, bins_peaks)
             # Construct average spectrum
             avg_spectrum = _construct_average_spectrum(
-                bins_idx, bins_peaks, avg_mz, charge, 0, 0.1
+                bins_idx, bins_peaks, avg_mz, charge, min_mz, bin_size
             )
             average_spectra.append(avg_spectrum)
         else:
@@ -816,7 +816,7 @@ def _sigma_clipping(intensities: np.ndarray, n: float) -> np.ndarray:
     np.ndarray
         The array of intensities with outliers removed.
     """
-    while len(intensities) > 1:
+    while len(intensities) > 2:
         med = np.median(intensities)
         std = np.std(intensities)
         if std == 0:
@@ -824,12 +824,12 @@ def _sigma_clipping(intensities: np.ndarray, n: float) -> np.ndarray:
         # Mask outliers
         mask = np.ones(len(intensities), dtype=np.bool_)
         for i in range(len(intensities)):
-            if _sigma_clip(intensities[i], med, std, -n, n):
+            if _sigma_clip(intensities[i], med, std, n, n):
                 mask[i] = False
-        intensities = intensities[mask]
         # Break if no outliers were found
-        if np.sum(mask) == 0:
+        if np.sum(mask) == len(intensities):
             break
+        intensities = intensities[mask]
 
     return intensities
 
@@ -859,7 +859,7 @@ def _sigma_clip(
     bool
         True if the value is an outlier, False otherwise
     """
-    return ((median - value) / std > n_min) or ((value - median) / std > n_max)
+    return (value < median - n_min * std) or (value > median + n_max * std)
 
 
 @nb.njit(cache=True)
