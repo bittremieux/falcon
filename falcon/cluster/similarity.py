@@ -98,5 +98,5 @@ def df_row_to_spectrum_tuple(row: pd.Series) -> SpectrumTuple:
         row["precursor_mz"],
         row["precursor_charge"],
         row["mz"],
-        np.copy(row["intensity"]) / np.linalg.norm(row["intensity"]),
+        row["intensity"],
     )
