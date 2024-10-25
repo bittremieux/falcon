@@ -2,482 +2,48 @@ import gc
 import logging
 import math
 import tempfile
-from multiprocessing.pool import ThreadPool
-from typing import Iterator, List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor
+from typing import Iterator, List, Tuple
 
-import faiss
+import fastcluster
 import joblib
 import lance
 import numba as nb
 import numpy as np
-import pandas as pd
-import scipy.sparse as ss
+import pyarrow as pa
+import scipy.cluster.hierarchy as sch
+import spectrum_utils.utils as suu
 from scipy.cluster.hierarchy import fcluster
 from tqdm import tqdm
-# fmt: off
-# noinspection PyProtectedMember
-from sklearn.cluster._dbscan_inner import dbscan_inner
-# fmt: on
 
-from . import spectrum
-
+from . import similarity
 
 logger = logging.getLogger("falcon")
 
 
-def compute_pairwise_distances(
+def generate_clusters(
     dataset: lance.LanceDataset,
-    charge: int,
+    linkage: str,
+    distance_threshold: float,
+    min_matches: int,
     precursor_tol_mass: float,
     precursor_tol_mode: str,
     rt_tol: float,
-    n_neighbors: int,
-    batch_size: int,
-    n_probe: int,
-) -> Tuple[ss.csr_matrix, pd.DataFrame]:
+    fragment_tol: float,
+) -> np.ndarray:
     """
-    Compute a pairwise distance matrix for the persisted spectra with the given
-    precursor charge.
-
-    Parameters
-    ----------
-    dataset: lance.LanceDataset
-        The dataset containing the spectra to be indexed.
-    charge : int
-        The precursor charge for which to compute the pairwise distances.
-    precursor_tol_mass : float
-        The precursor tolerance mass for vectors to be considered as neighbors.
-    precursor_tol_mode : str
-        The unit of the precursor m/z tolerance ('Da' or 'ppm').
-    rt_tol : float
-        The retention time tolerance for vectors to be considered as neighbors.
-        If `None`, do not filter neighbors on retention time.
-    n_neighbors : int
-        The final (maximum) number of neighbors to retrieve for each vector.
-    batch_size : int
-        The number of vectors to be simultaneously processed.
-    n_probe : int
-        The number of cells to visit during ANN querying.
-
-    Returns
-    -------
-    Tuple[ss.csr_matrix, pd.DataFrame]
-        A tuple with the sparse pairwise distance matrix containing the cosine
-        distances between similar neighbors for the given vectors, and the
-        corresponding spectrum metadata (identifier, precursor charge,
-        precursor m/z).
-    """
-    n_spectra = dataset.count_rows()
-    logger.debug(
-        "Compute nearest neighbor pairwise distances (%d spectra, %d"
-        " neighbors) for charge %s",
-        n_spectra,
-        n_neighbors,
-        str(charge),  # charge is int or None
-    )
-    max_num_embeddings = n_spectra * n_neighbors
-    dtype = (
-        np.int32 if max_num_embeddings < np.iinfo(np.int32).max else np.int64
-    )
-    distances = np.zeros(max_num_embeddings, np.float32)
-    indices = np.zeros(max_num_embeddings, dtype)
-    indptr = np.zeros(n_spectra + 1, dtype)
-    # Create the ANN indexes (if this hasn't been done yet) and calculate
-    # pairwise distances.
-    metadata = _build_query_ann_index(
-        dataset,
-        n_spectra,
-        n_probe,
-        batch_size,
-        n_neighbors,
-        precursor_tol_mass,
-        precursor_tol_mode,
-        rt_tol,
-        distances,
-        indices,
-        indptr,
-    )
-    distances, indices = distances[: indptr[-1]], indices[: indptr[-1]]
-    # Convert to a sparse pairwise distance matrix. This matrix might not be
-    # entirely symmetrical, but that shouldn't matter too much.
-    logger.debug(
-        "Construct %d-by-%d sparse pairwise distance matrix with %d "
-        "non-zero values",
-        n_spectra,
-        n_spectra,
-        len(distances),
-    )
-    pairwise_dist_matrix = ss.csr_matrix(
-        (distances, indices, indptr), (n_spectra, n_spectra), np.float32, False
-    )
-    return pairwise_dist_matrix, metadata
-
-
-def _build_query_ann_index(
-    dataset: lance.LanceDataset,
-    n_spectra: int,
-    n_probe: int,
-    batch_size: int,
-    n_neighbors: int,
-    precursor_tol_mass: float,
-    precursor_tol_mode: str,
-    rt_tol: float,
-    distances: np.ndarray,
-    indices: np.ndarray,
-    indptr: np.ndarray,
-) -> pd.DataFrame:
-    """
-    Create ANN index(es) for spectra with the given charge per precursor m/z
-    split.
+    Hierarchical clustering of the given pairwise distance matrix.
 
     Parameters
     ----------
     dataset : lance.LanceDataset
-        The dataset containing the spectra to be indexed.
-    n_spectra : int
-        The number of spectra to be indexed.
-    n_probe : int
-        The number of cells to consider during NN index querying.
-    batch_size : int
-        The number of vectors to be simultaneously added to the index.
-    n_neighbors : int
-        The final (maximum) number of neighbors to retrieve for each vector.
-    precursor_tol_mass : float
-        The precursor tolerance mass for vectors to be considered as neighbors.
-    precursor_tol_mode : str
-        The unit of the precursor m/z tolerance ('Da' or 'ppm').
-    rt_tol : float
-        The retention time tolerance for vectors to be considered as neighbors.
-        If `None`, do not filter neighbors on retention time.
-    distances : np.ndarray
-        The nearest neighbor distances. See `scipy.sparse.csr_matrix` (`data`).
-    indices : np.ndarray
-        The column indices for the nearest neighbor distances. See
-        `scipy.sparse.csr_matrix`.
-    indptr : np.ndarray
-        The index pointers for the nearest neighbor distances. See
-        `scipy.sparse.csr_matrix`.
-
-    Returns
-    -------
-    pd.DataFrame
-        Metadata (filename, identifier, precursor charge, precursor m/z,
-        retention time) of the spectra for which indexes were built.
-    """
-    # Read the spectra for the m/z bucket.
-    vectors, precursor_mzs, rts = [], [], []
-    indptr_i = 0
-
-    # Figure out a decent value for the n_list hyperparameter based on
-    # the number of vectors.
-    # Rules of thumb from the Faiss wiki:
-    # https://github.com/facebookresearch/faiss/wiki/Guidelines-to-choose-an-index#how-big-is-the-dataset
-    if n_spectra < 10**2:
-        # Use a brute-force index instead of an ANN index when there
-        # are only a few items.
-        n_list = -1
-    elif n_spectra < 10**6:
-        n_list = 2 ** math.floor(math.log2(n_spectra / 39))
-    elif n_spectra < 10**7:
-        n_list = 2**16
-    elif n_spectra < 10**8:
-        n_list = 2**18
-    else:
-        n_list = 2**20
-        if n_spectra > 10**9:
-            logger.warning(
-                "More than 1B vectors to be indexed, consider "
-                "decreasing the ANN size"
-            )
-    if n_list > 0:
-        # Train on random subset of data
-        # https://github.com/facebookresearch/faiss/issues/2047
-        sample_size = min(50 * n_list, n_spectra)
-    else:
-        sample_size = n_spectra
-    # This code can introduce non-determinism because spectra are not added
-    # to the Lance dataset in a consistent order. This affects training
-    # samples for the index and the order of added vectors, causing
-    # variations in the index structure. Consequently, ANN search results
-    # may differ across runs. Solution is to sort the Lance dataset before
-    # constructing the index, but this is less efficient for large datasets.
-    # In practice, this doesn't seem to have a significant impact on performance.
-    train_spectra = dataset.sample(sample_size)
-    train_vectors = np.stack(train_spectra["vector"].to_numpy())
-    dim = train_vectors.shape[1]
-    # Create an ANN index using the inner product (proxy for cosine
-    # distance) for fast NN queries.
-    if n_list <= 0:
-        index = faiss.IndexIDMap(faiss.IndexFlatIP(dim))
-    else:
-        index = faiss.IndexIVFFlat(
-            faiss.IndexFlatIP(dim), dim, n_list, faiss.METRIC_INNER_PRODUCT
-        )
-        index.nprobe = min(math.ceil(index.nlist / 8), n_probe)
-    # Compute cluster centroids.
-    # noinspection PyArgumentList
-    index.train(train_vectors)
-
-    # Add the vectors to the index in batches.
-    batch_start = 0
-    for batch in tqdm(
-        dataset.to_batches(max_chunksize=batch_size),
-        desc="Batches added to index",
-        unit="batch",
-    ):
-        batch_spectra = batch.to_pandas().apply(
-            spectrum.df_row_to_spec, axis=1
-        )
-        batch_vectors = []
-        for spec in batch_spectra:
-            batch_vectors.append(spec.vector)
-            precursor_mzs.append(spec.precursor_mz)
-            rts.append(spec.retention_time)
-        batch_stop = batch_start + len(batch_vectors)
-        vectors.extend(batch_vectors)
-
-        batch_vectors = np.stack(batch_vectors)
-        index.add_with_ids(
-            batch_vectors,
-            np.arange(batch_start, batch_stop, dtype=np.int64),
-        )
-        batch_start = batch_stop
-    precursor_mzs = np.asarray(precursor_mzs)
-    rts = np.asarray(rts)
-    # Query the index to calculate NN distances.
-    _dist_mz_interval(
-        index,
-        vectors,
-        precursor_mzs,
-        rts,
-        batch_size,
-        n_neighbors,
-        precursor_tol_mass,
-        precursor_tol_mode,
-        rt_tol,
-        distances,
-        indices,
-        indptr,
-    )
-    index.reset()
-    indptr_i += n_spectra
-
-    metadata = (
-        dataset.to_table(
-            columns=[
-                "filename",
-                "identifier",
-                "precursor_mz",
-                "retention_time",
-            ],
-            scan_in_order=True,
-        )
-        .to_pandas()
-        .rename(columns={"identifier": "spectrum_id"})
-    )
-    return metadata
-
-
-def _dist_mz_interval(
-    index: faiss.Index,
-    vectors: List[np.ndarray],
-    precursor_mzs: np.ndarray,
-    rts: np.ndarray,
-    batch_size: int,
-    n_neighbors: int,
-    precursor_tol_mass: float,
-    precursor_tol_mode: str,
-    rt_tol: float,
-    distances: np.ndarray,
-    indices: np.ndarray,
-    indptr: np.ndarray,
-) -> None:
-    """
-    Compute distances to the nearest neighbors for the given precursor m/z
-    interval.
-
-    Parameters
-    ----------
-    index : faiss.Index
-        The NN index used to efficiently find distances to similar spectra.
-    vectors : List[np.ndarray]
-        The vectors for which to find the nearest neighbors.
-    precursor_mzs : np.ndarray
-        Precorsor m/z's of the spectra corresponding to the given vectors.
-    rts : np.ndarray
-        Retention times corresponding to the vectors.
-    batch_size : int
-        The number of vectors to be simultaneously queried.
-    n_neighbors : int
-        The final (maximum) number of neighbors to retrieve for each vector.
-    precursor_tol_mass : float
-        The precursor tolerance mass for vectors to be considered as neighbors.
-    precursor_tol_mode : str
-        The unit of the precursor m/z tolerance ('Da' or 'ppm').
-    rt_tol : float
-        The retention time tolerance for vectors to be considered as neighbors.
-        If `None`, do not filter neighbors on retention time.
-    distances : np.ndarray
-        The nearest neighbor distances. See `scipy.sparse.csr_matrix` (`data`).
-    indices : np.ndarray
-        The column indices for the nearest neighbor distances. See
-        `scipy.sparse.csr_matrix`.
-    indptr : np.ndarray
-        The index pointers for the nearest neighbor distances. See
-        `scipy.sparse.csr_matrix`.
-    """
-    nn_mz = _get_neighbors(
-        precursor_mzs, precursor_tol_mass, precursor_tol_mode
-    )
-    if rt_tol is not None:
-        nn_rt = _get_neighbors(rts, rt_tol, "rt")
-        nn_mz = [np.intersect1d(mz, rt) for mz, rt in zip(nn_mz, nn_rt)]
-
-    for batch_start in range(0, len(vectors), batch_size):
-        batch = vectors[batch_start : batch_start + batch_size]
-        batch_vectors = np.stack(batch)
-
-        pool = ThreadPool()
-        results = pool.starmap(
-            search,
-            [
-                (vec, nn_mz[i], index, n_neighbors)
-                for i, vec in enumerate(batch_vectors, batch_start)
-            ],
-        )
-        pool.close()
-        pool.join()
-
-        for i, (d, idx) in enumerate(results, batch_start):
-            # filter out indices and distances < 0
-            mask = idx >= 0
-            d, idx = d[mask], idx[mask]
-            # Build csr matrix
-            indptr[i + 1] = indptr[i] + len(d)
-            # Convert cosine similarity to cosine distance.
-            distances[indptr[i] : indptr[i + 1]] = np.clip(1 - d, 0, 1)
-            indices[indptr[i] : indptr[i + 1]] = idx
-
-
-@nb.njit(cache=True)
-def _get_neighbors(
-    values: np.ndarray,
-    tol: float,
-    tol_mode: str,
-) -> List[np.ndarray]:
-    """
-    Get the neighbors for the given precursor m/z's or retention time.
-
-    Parameters
-    ----------
-    values : np.ndarray
-        The precursor m/z or retention time values of the spectra.
-    tol: float
-        The tolerance for vectors to be considered as neighbors.
-    tol_mode : str
-        The unit of the tolerance ('Da' or 'ppm' for precursor m/z,
-        'rt' for retention time).
-
-    Returns
-    -------
-    List[np.ndarray]
-        The indices of the NN candidates.
-    """
-    # Pre-allocate list of empty arrays
-    n = len(values)
-    nn = [np.empty(0, dtype=np.int64)] * n
-
-    if tol_mode in ("Da", "ppm"):
-        order = np.argsort(values)
-        sorted_values = values[order]
-        for i in range(n):
-            mz = values[i]
-            if tol_mode == "ppm":
-                mz_min = mz - mz * tol / 1e6
-                mz_max = mz + mz * tol / 1e6
-            elif tol_mode == "Da":
-                mz_min = mz - tol
-                mz_max = mz + tol
-            mz_min = max(0, mz_min)
-            mz_max = max(0, mz_max)
-            match_i = np.searchsorted(sorted_values, [mz_min, mz_max])
-            idx = np.arange(match_i[0], match_i[1])
-            nn[i] = order[idx]
-
-    elif tol_mode == "rt":
-        for i in range(n):
-            rt = values[i]
-            rt_min = max(0, rt - tol)
-            rt_max = max(0, rt + tol)
-            match_values_i = np.where((values >= rt_min) & (values <= rt_max))[
-                0
-            ]
-            nn[i] = match_values_i
-
-    else:
-        raise ValueError("Unknown tolerance filter")
-    return nn
-
-
-def search(
-    vector: np.ndarray,
-    nn_mz: np.ndarray,
-    index: faiss.Index,
-    n_neighbors: int,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Search for the nearest neighbors of the given vector.
-
-    Parameters
-    ----------
-    vector : np.ndarray
-        The vector for which to find the nearest neighbors.
-    nn_mz : np.ndarray
-        The nearest neighbors to search in.
-    index : faiss.Index
-        The ANN index to use for the search.
-    n_neighbors : int
-        The number of neighbors to retrieve.
-
-    Returns
-    -------
-    Tuple[np.ndarray, np.ndarray]
-        The distances and indices of the nearest neighbors.
-    """
-    sel = faiss.IDSelectorBatch(nn_mz)
-    # if index is IVF, use the same number of probes
-    if isinstance(index, faiss.IndexIVF):
-        params = faiss.SearchParametersIVF(sel=sel, nprobe=index.nprobe)
-    else:
-        params = faiss.SearchParameters(sel=sel)
-    # noinspection PyArgumentList
-    vector = vector.reshape(1, -1)
-    return index.search(vector, n_neighbors, params=params)
-
-
-def generate_clusters(
-    pairwise_dist_matrix: ss.csr_matrix,
-    eps: float,
-    precursor_mzs: np.ndarray,
-    rts: np.ndarray,
-    precursor_tol_mass: float,
-    precursor_tol_mode: str,
-    rt_tol: float,
-) -> np.ndarray:
-    """
-    DBSCAN clustering of the given pairwise distance matrix.
-
-    Parameters
-    ----------
-    pairwise_dist_matrix : ss.csr_matrix
-        A sparse pairwise distance matrix used for clustering.
-    eps : float
-        The maximum distance between two samples for one to be considered as in
-        the neighborhood of the other.
-    precursor_mzs : np.ndarray
-        Precursor m/z's matching the pairwise distance matrix.
-    rts : np.ndarray
-        Retention times matching the pairwise distance matrix.
+        The dataset containing the spectra to be clustered.
+    linkage: str
+        The linkage method to use for hierarchical clustering.
+    distance_threshold : float
+        The linkage distance threshold at or above which clusters will not be merged.
+    min_matches: int
+        The minimum number of matched peaks to consider the spectra similar.
     precursor_tol_mass : float
         Maximum precursor mass tolerance for points to be clustered together.
     precursor_tol_mode : str
@@ -485,139 +51,293 @@ def generate_clusters(
     rt_tol : float
         The retention time tolerance for points to be clustered together. If
         `None`, do not restrict the retention time.
+    fragment_tol: float
+        The fragment m/z tolerance.
 
     Returns
     -------
     np.ndarray
         Cluster labels. Noisy samples are given the label -1.
     """
-    # DBSCAN clustering using the precomputed pairwise distance matrix.
+    # Hierarchical clustering using the precomputed pairwise distance matrix.
     min_samples = 2
     logger.debug(
-        "DBSCAN clustering (eps=%.4f, min_samples=%d) of precomputed "
-        "pairwise distance matrix",
-        eps,
+        "Hierarchical clustering (distance_threshold=%.4f, min_samples=%d)",
+        distance_threshold,
         min_samples,
     )
-    with tempfile.NamedTemporaryFile() as mmap_file:
-        # Reimplement DBSCAN preprocessing to avoid unnecessary memory
-        # consumption.
-        dist_data = pairwise_dist_matrix.data
-        dist_indices = pairwise_dist_matrix.indices
-        dist_indptr = pairwise_dist_matrix.indptr
-        n_spectra = pairwise_dist_matrix.shape[0]
-        # Find the eps-neighborhoods for all points.
-        mask = dist_data <= eps
-        indptr = _cumsum(mask)[dist_indptr]
-        indices = dist_indices[mask].astype(np.intp, copy=False)
-        neighborhoods = np.split(indices, indptr[1:-1])
-        # Initially, all samples are noise.
-        # (Memmap for shared memory multiprocessing.)
-        clusters = np.memmap(mmap_file, np.intp, "w+", shape=(n_spectra,))
-        clusters.fill(-1)
-        # A list of all core samples found.
-        n_neighbors = np.fromiter(map(len, neighborhoods), np.uint32)
-        core_samples = n_neighbors >= min_samples
-        # Run Scikit-Learn DBSCAN.
-        # noinspection PyUnresolvedReferences
-        neighborhoods_arr = np.empty(len(neighborhoods), dtype=object)
-        neighborhoods_arr[:] = neighborhoods
-        dbscan_inner(core_samples, neighborhoods_arr, clusters)
-
-        # Free up memory by deleting DBSCAN-related data structures.
-        del pairwise_dist_matrix, mask, indptr, indices
-        del neighborhoods, n_neighbors, core_samples, neighborhoods_arr
-        gc.collect()
-
-        # Refine initial clusters to make sure spectra within a cluster don't
-        # have an excessive precursor m/z difference.
-        # noinspection PyUnresolvedReferences
-        order = np.argsort(clusters)
-        # noinspection PyUnresolvedReferences
-        reverse_order = np.argsort(order)
-        clusters[:] = clusters[order]
-        precursor_mzs, rts = precursor_mzs[order], rts[order]
-        logger.debug(
-            "Finetune %d initial unique non-singleton clusters to not"
-            " exceed %.2f %s precursor m/z tolerance%s",
-            clusters[-1] + 1,
-            precursor_tol_mass,
-            precursor_tol_mode,
-            (
-                f" and {rt_tol} retention time tolerance"
-                if rt_tol is not None
-                else ""
-            ),
+    # Sort the metadata by increasing precursor m/z for easy subsetting.
+    data = (
+        dataset.to_table(
+            columns=[
+                "precursor_mz",
+                "precursor_charge",
+                "retention_time",
+                "mz",
+                "intensity",
+            ]
         )
-        if clusters[-1] == -1:  # Only noise samples.
-            clusters.fill(-1)
-            noise_mask = np.ones_like(clusters, dtype=np.bool_)
-            n_clusters, n_noise = 0, len(noise_mask)
-        else:
-            group_idx = nb.typed.List(_get_cluster_group_idx(clusters))
-            n_clusters = nb.typed.List(
-                joblib.Parallel(n_jobs=-1, prefer="threads")(
-                    joblib.delayed(_postprocess_cluster)(
-                        clusters[start_i:stop_i],
-                        precursor_mzs[start_i:stop_i],
-                        rts[start_i:stop_i],
-                        precursor_tol_mass,
-                        precursor_tol_mode,
-                        rt_tol,
-                        min_samples,
-                    )
-                    for start_i, stop_i in group_idx
+        .to_pandas()
+        .sort_values("precursor_mz")
+    )
+    # Cluster per contiguous block of precursor m/z's (relative to the
+    # precursor m/z threshold).
+    logging.info(
+        "Cluster %d spectra using %s linkage and distance threshold %.3f",
+        len(data),
+        linkage,
+        distance_threshold,
+    )
+    with tempfile.NamedTemporaryFile(suffix=".npy") as cluster_file:
+        cluster_filename = cluster_file.name
+        cluster_labels = np.lib.format.open_memmap(
+            cluster_filename, mode="w+", dtype=np.int32, shape=(data.shape[0],)
+        )
+        cluster_labels.fill(-1)
+        max_label, medoids = 0, []
+        with tqdm(
+            total=len(data), desc="Clustering", unit="spectra", smoothing=0
+        ) as pbar:
+            idx = data.index.values
+            mz = data["precursor_mz"].values
+            rt = data["retention_time"].values
+            splits = _get_precursor_mz_splits(
+                mz, precursor_tol_mass, precursor_tol_mode, 2**15
+            )
+            spec_tuples = data.apply(
+                similarity.df_row_to_spectrum_tuple, axis=1
+            ).tolist()
+            del data
+            # Per-split cluster labels.
+            for interval_medoids in joblib.Parallel(
+                n_jobs=-1, backend="threading"
+            )(
+                joblib.delayed(_cluster_interval)(
+                    spec_tuples,
+                    idx,
+                    mz,
+                    rt,
+                    cluster_labels,
+                    splits[i],
+                    splits[i + 1],
+                    linkage,
+                    distance_threshold,
+                    min_matches,
+                    precursor_tol_mass,
+                    precursor_tol_mode,
+                    rt_tol,
+                    fragment_tol,
+                    pbar,
                 )
+                for i in range(len(splits) - 1)
+            ):
+                if interval_medoids is not None:
+                    medoids.append(interval_medoids)
+            max_label = _assign_global_cluster_labels(
+                cluster_labels, idx, splits, max_label
             )
-            _assign_unique_cluster_labels(
-                clusters, group_idx, n_clusters, min_samples
-            )
-            clusters[:] = clusters[reverse_order]
-            noise_mask = clusters == -1
-            # noinspection PyUnresolvedReferences
-            n_clusters, n_noise = np.amax(clusters) + 1, noise_mask.sum()
-        logger.debug(
-            "%d unique non-singleton clusters after precursor m/z "
-            "finetuning, %d total clusters",
+        cluster_labels.flush()
+        medoids = np.hstack(medoids)
+        noise_mask = cluster_labels == -1
+        n_clusters, n_noise = np.amax(cluster_labels) + 1, noise_mask.sum()
+        logger.info(
+            "%d spectra grouped in %d clusters, %d spectra remain as singletons",
+            (cluster_labels != -1).sum(),
             n_clusters,
-            n_clusters + n_noise,
+            n_noise,
         )
         # Reassign noise points to singleton clusters.
-        clusters[noise_mask] = np.arange(n_clusters, n_clusters + n_noise)
-        return np.asarray(clusters)
+        cluster_labels[noise_mask] = np.arange(
+            n_clusters, n_clusters + n_noise
+        )
+        return cluster_labels, medoids
 
 
 @nb.njit
-def _cumsum(a: np.ndarray) -> np.ndarray:
+def _get_precursor_mz_splits(
+    precursor_mzs: np.ndarray,
+    precursor_tol_mass: float,
+    precursor_tol_mode: str,
+    batch_size: int,
+) -> nb.typed.List:
     """
-    Cumulative sum of the elements.
-
-    Try to avoid inadvertent copies in `np.cumsum`.
+    Find contiguous blocks of precursor m/z's, relative to the precursor m/z
+    tolerance.
 
     Parameters
     ----------
-    a : np.ndarray
-        Input array
+    precursor_mzs : np.ndarray
+        The sorted precursor m/z's.
+    precursor_tol_mass : float
+        The value of the precursor m/z tolerance.
+    precursor_tol_mode : str
+        The unit of the precursor m/z tolerance ('Da' or 'ppm').
+    batch_size : int
+        Maximum interval size.
+
+    Returns
+    -------
+    nb.typed.List[int]
+        A list of start and end indices of blocks of precursor m/z's that do
+        not exceed the precursor m/z tolerance and are separated by at least
+        the precursor m/z tolerance.
+    """
+    splits, i = nb.typed.List([0]), 1
+    for i in range(1, len(precursor_mzs)):
+        if (
+            suu.mass_diff(
+                precursor_mzs[i],
+                precursor_mzs[i - 1],
+                precursor_tol_mode == "Da",
+            )
+            > precursor_tol_mass
+        ):
+            block_size = i - splits[-1]
+            if block_size < batch_size:
+                splits.append(i)
+            else:
+                n_chunks = math.ceil(block_size / batch_size)
+                chunk_size = block_size // n_chunks
+                for _ in range(block_size % n_chunks):
+                    splits.append(splits[-1] + chunk_size + 1)
+                for _ in range(n_chunks - (block_size % n_chunks)):
+                    splits.append(splits[-1] + chunk_size)
+    splits.append(len(precursor_mzs))
+    return splits
+
+
+def _cluster_interval(
+    spectra: List[similarity.SpectrumTuple],
+    idx: np.ndarray,
+    mzs: np.ndarray,
+    rts: np.ndarray,
+    cluster_labels: np.ndarray,
+    interval_start: int,
+    interval_stop: int,
+    linkage: str,
+    distance_threshold: float,
+    min_matches: int,
+    precursor_tol_mass: float,
+    precursor_tol_mode: str,
+    rt_tol: float,
+    fragment_mz_tol: float,
+    pbar: tqdm,
+) -> np.ndarray:
+    """
+    Cluster the vectors in the given interval.
+
+    Parameters
+    ----------
+    spectra : List[similarity.SpectrumTuple]
+        The spectra to cluster.
+    idx : np.ndarray
+        The indexes of the vectors in the current interval.
+    mzs : np.ndarray
+        The precursor m/z's corresponding to the current interval indexes.
+    rts : np.ndarray
+        The retention times corresponding to the current interval indexes.
+    cluster_labels : np.ndarray
+        Array in which to fill the cluster label assignments.
+    interval_start : int
+        The current interval start index.
+    interval_stop : int
+        The current interval stop index.
+    linkage : str
+        Linkage method to calculate the cluster distances. See
+        `scipy.cluster.hierarchy.linkage` for possible options.
+    distance_threshold : float
+        The maximum linkage distance threshold during clustering.
+    min_matches: int
+        The minimum number of matched peaks to consider the spectra similar.
+    precursor_tol_mass : float
+        The value of the precursor m/z tolerance.
+    precursor_tol_mode : str
+        The unit of the precursor m/z tolerance ('Da' or 'ppm').
+    rt_tol : float
+        The retention time tolerance for points to be clustered together. If
+        `None`, do not restrict the retention time.
+    fragment_mz_tol : float
+        The fragment m/z tolerance.
+    pbar : tqdm.tqdm
+        Tqdm progress bar.
 
     Returns
     -------
     np.ndarray
-        The cumulative sum in an array of size len(a) + 1 (first element is 0).
+        List with indexes of the medoids for each cluster.
     """
-    out = np.zeros(len(a) + 1, dtype=np.int64)
-    for i in range(len(out) - 1):
-        out[i + 1] = out[i] + a[i]
-    return out
+    n_vectors = interval_stop - interval_start
+    if n_vectors > 1:
+        idx_interval = idx[interval_start:interval_stop]
+        mzs_interval = mzs[interval_start:interval_stop]
+        rts_interval = rts[interval_start:interval_stop]
+        # Hierarchical clustering of the vectors.
+        # Subtract 1 because fcluster starts with cluster label 1 instead of 0
+        # (like Scikit-Learn does).
+        pdist = compute_condensed_distance_matrix(
+            spectra[interval_start:interval_stop], fragment_mz_tol, min_matches
+        )
+        labels = (
+            sch.fcluster(
+                fastcluster.linkage(pdist, linkage),
+                distance_threshold,
+                "distance",
+            )
+            - 1
+        )
+        # Refine initial clusters to make sure spectra within a cluster don't
+        # have an excessive precursor m/z difference.
+        order = np.argsort(labels)
+        idx_interval, mzs_interval, rts_interval = (
+            idx_interval[order],
+            mzs_interval[order],
+            rts_interval[order],
+        )
+        labels, current_label = labels[order], 0
+        for start_i, stop_i in _get_cluster_group_idx(labels):
+            n_clusters = _postprocess_cluster(
+                labels[start_i:stop_i],
+                mzs_interval[start_i:stop_i],
+                rts_interval[start_i:stop_i],
+                precursor_tol_mass,
+                precursor_tol_mode,
+                rt_tol,
+                2,
+                current_label,
+            )
+            current_label += n_clusters
+        # Assign cluster labels.
+        cluster_labels[idx_interval] = labels
+        if current_label > 0:
+            # Compute cluster medoids.
+            order_ = np.argsort(labels)
+            idx_interval, labels = idx_interval[order_], labels[order_]
+            order_map = order[order_]
+            medoids = _get_cluster_medoids(
+                idx_interval, labels, pdist, order_map
+            )
+        else:
+            medoids = range(interval_start, interval_stop)
+        # Force memory clearing.
+        del pdist
+        if n_vectors > 2**11:
+            gc.collect()
+    else:
+        medoids = [interval_start]
+    pbar.update(n_vectors)
+    return medoids
 
 
 @nb.njit
 def _get_cluster_group_idx(clusters: np.ndarray) -> Iterator[Tuple[int, int]]:
     """
     Get start and stop indexes for unique cluster labels.
+
     Parameters
     ----------
     clusters : np.ndarray
         The ordered cluster labels (noise points are -1).
+
     Returns
     -------
     Iterator[Tuple[int, int]]
@@ -626,6 +346,7 @@ def _get_cluster_group_idx(clusters: np.ndarray) -> Iterator[Tuple[int, int]]:
     """
     start_i = 0
     while clusters[start_i] == -1 and start_i < clusters.shape[0]:
+        yield start_i, start_i + 1
         start_i += 1
     stop_i = start_i
     while stop_i < clusters.shape[0]:
@@ -635,6 +356,7 @@ def _get_cluster_group_idx(clusters: np.ndarray) -> Iterator[Tuple[int, int]]:
         yield start_i, stop_i
 
 
+@nb.njit(boundscheck=False)
 def _postprocess_cluster(
     cluster_labels: np.ndarray,
     cluster_mzs: np.ndarray,
@@ -643,11 +365,12 @@ def _postprocess_cluster(
     precursor_tol_mode: str,
     rt_tol: float,
     min_samples: int,
+    start_label: int,
 ) -> int:
     """
-    Agglomerative clustering of the precursor m/z's within each initial
-    cluster to avoid that spectra within a cluster have an excessive precursor
-    m/z difference.
+    Partitioning based on the precursor m/z's within each initial cluster to
+    avoid that spectra within a cluster have an excessive precursor m/z
+    difference.
 
     Parameters
     ----------
@@ -655,75 +378,78 @@ def _postprocess_cluster(
         Array in which to write the cluster labels.
     cluster_mzs : np.ndarray
         Precursor m/z's of the samples in a single initial cluster.
-    cluster_rts : np.ndarray
-        Retention times of the samples in a single initial cluster.
+    cluster_rts: np.ndarray
+        Retention times of the samples in a single intial cluster.
     precursor_tol_mass : float
         Maximum precursor mass tolerance for points to be clustered together.
     precursor_tol_mode : str
         The unit of the precursor m/z tolerance ('Da' or 'ppm').
-    rt_tol : float
-        The retention time tolerance for points to be clustered together. If
-        `None`, do not restrict the retention time.
+    rt_tol: float
+        Maximum retention time tolerance for points to be clustered together.
     min_samples : int
         The minimum number of samples in a cluster.
+    start_label : int
+        The first cluster label.
 
     Returns
     -------
     int
         The number of clusters after splitting on precursor m/z.
     """
-    cluster_labels.fill(-1)
     # No splitting needed if there are too few items in cluster.
-    # This seems to happen sometimes despite that DBSCAN requires a higher
-    # `min_samples`.
     if cluster_labels.shape[0] < min_samples:
-        n_clusters = 0
+        cluster_labels.fill(-1)
+        return 0
     else:
         # Group items within the cluster based on their precursor m/z.
         # Precursor m/z's within a single group can't exceed the specified
         # precursor m/z tolerance (`distance_threshold`).
         # Subtract 1 because fcluster starts with cluster label 1 instead of 0
         # (like Scikit-Learn does).
-        cluster_assignments = (
-            fcluster(
-                _linkage(cluster_mzs, precursor_tol_mode),
-                precursor_tol_mass,
-                "distance",
+        linkage = _linkage(cluster_mzs, precursor_tol_mode)
+        with nb.objmode(cluster_assignments="int32[:]"):
+            cluster_assignments = (
+                sch.fcluster(linkage, precursor_tol_mass, "distance") - 1
             )
-            - 1
-        )
         # Optionally restrict clusters by their retention time as well.
         if rt_tol is not None:
-            cluster_assignments_rt = (
-                fcluster(_linkage(cluster_rts), rt_tol, "distance") - 1
-            )
-            # Merge cluster assignments based on precursor m/z and RT.
-            # First prime factorization is used to get unique combined cluster
-            # labels, after which consecutive labels are obtained.
-            cluster_assignments = np.unique(
-                cluster_assignments * 2 + cluster_assignments_rt * 3,
-                return_inverse=True,
-            )[1]
+            with nb.objmode(cluster_assignments="int32[:]"):
+                cluster_assignments_rt = (
+                    fcluster(_linkage(cluster_rts), rt_tol, "distance") - 1
+                )
+                # Merge cluster assignments based on precursor m/z and RT.
+                # First prime factorization is used to get unique combined cluster
+                # labels, after which consecutive labels are obtained.
+                cluster_assignments = np.unique(
+                    cluster_assignments * 2 + cluster_assignments_rt * 3,
+                    return_inverse=True,
+                )[1]
+
         n_clusters = cluster_assignments.max() + 1
         # Update cluster assignments.
         if n_clusters == 1:
             # Single homogeneous cluster.
-            cluster_labels.fill(0)
+            cluster_labels.fill(start_label)
         elif n_clusters == cluster_mzs.shape[0]:
             # Only singletons.
+            cluster_labels.fill(-1)
             n_clusters = 0
         else:
-            unique, inverse, counts = np.unique(
-                cluster_assignments, return_inverse=True, return_counts=True
+            labels = nb.typed.Dict.empty(
+                key_type=nb.int64, value_type=nb.int64
             )
-            non_noise_clusters = np.where(counts >= min_samples)[0]
-            labels = -np.ones_like(unique)
-            labels[non_noise_clusters] = np.unique(
-                unique[non_noise_clusters], return_inverse=True
-            )[1]
-            cluster_labels[:] = labels[inverse]
-            n_clusters = len(non_noise_clusters)
-    return n_clusters
+            for i, label in enumerate(cluster_assignments):
+                labels[label] = labels.get(label, 0) + 1
+            n_clusters = 0
+            for label, count in labels.items():
+                if count < min_samples:
+                    labels[label] = -1
+                else:
+                    labels[label] = start_label + n_clusters
+                    n_clusters += 1
+            for i, label in enumerate(cluster_assignments):
+                cluster_labels[i] = labels[label]
+        return n_clusters
 
 
 @nb.njit(cache=True, fastmath=True)
@@ -780,143 +506,157 @@ def _linkage(values: np.ndarray, tol_mode: str = None) -> np.ndarray:
     return linkage
 
 
-@nb.njit(cache=True)
-def _assign_unique_cluster_labels(
-    cluster_labels: np.ndarray,
-    group_idx: nb.typed.List,
-    n_clusters: nb.typed.List,
-    min_samples: int,
-) -> None:
+@nb.njit(fastmath=True, boundscheck=False)
+def _get_cluster_medoids(
+    idx_interval: np.ndarray,
+    labels: np.ndarray,
+    pdist: np.ndarray,
+    order_map: np.ndarray,
+) -> np.ndarray:
     """
-    Make sure all cluster labels are unique after potential splitting of
-    clusters to avoid excessive precursor m/z differences.
+    Get the indexes of the cluster medoids.
+
+    Parameters
+    ----------
+    idx_interval : np.ndarray
+        vector indexes.
+    labels : np.ndarray
+        Cluster labels.
+    pdist : np.ndarray
+        Condensed pairwise distance matrix.
+    order_map : np.ndarray
+        Map to convert label indexes to pairwise distance matrix indexes.
+
+    Returns
+    -------
+    np.ndarray
+        Array with indexes of the medoids for each cluster.
+    """
+    medoids, m = [], len(idx_interval)
+    for start_i, stop_i in _get_cluster_group_idx(labels):
+        if stop_i - start_i > 1:
+            row_sum = np.zeros(stop_i - start_i, np.float32)
+            for row in range(stop_i - start_i):
+                for col in range(row + 1, stop_i - start_i):
+                    i, j = order_map[start_i + row], order_map[start_i + col]
+                    if i > j:
+                        i, j = j, i
+                    pdist_ij = pdist[m * i + j - ((i + 2) * (i + 1)) // 2]
+                    row_sum[row] += pdist_ij
+                    row_sum[col] += pdist_ij
+            medoids.append(idx_interval[start_i + np.argmin(row_sum)])
+        else:
+            medoids.append(idx_interval[start_i])
+    return np.asarray(medoids, dtype=np.int32)
+
+
+@nb.njit(boundscheck=False)
+def _assign_global_cluster_labels(
+    cluster_labels: np.ndarray,
+    idx: np.ndarray,
+    splits: nb.typed.List,
+    current_label: int,
+) -> int:
+    """
+    Convert cluster labels per split to globally unique labels.
 
     Parameters
     ----------
     cluster_labels : np.ndarray
-        Cluster labels per cluster grouping.
-    group_idx : nb.typed.List[Tuple[int, int]]
-        Tuples with the start index (inclusive) and end index (exclusive) of
-        the cluster groupings.
-    n_clusters: nb.typed.List[int]
-        The number of clusters per cluster grouping.
-    min_samples : int
-        The minimum number of samples in a cluster.
-    """
-    current_label = 0
-    for (start_i, stop_i), n_cluster in zip(group_idx, n_clusters):
-        if n_cluster > 0 and stop_i - start_i >= min_samples:
-            current_labels = cluster_labels[start_i:stop_i]
-            current_labels[current_labels != -1] += current_label
-            current_label += n_cluster
-        else:
-            cluster_labels[start_i:stop_i].fill(-1)
-
-
-@nb.njit(cache=True, parallel=True)
-def get_cluster_representatives(
-    clusters: np.ndarray,
-    pairwise_indptr: np.ndarray,
-    pairwise_indices: np.ndarray,
-    pairwise_data: np.ndarray,
-) -> Optional[np.ndarray]:
-    """
-    Get indexes of the cluster representative spectra (medoids).
-
-    Parameters
-    ----------
-    clusters : np.ndarray
-        Cluster label assignments.
-    pairwise_indptr : np.ndarray
-        The index pointers for the nearest neighbor distances. See
-        `scipy.sparse.csr_matrix`.
-    pairwise_indices : np.ndarray
-        The column indices for the nearest neighbor distances. See
-        `scipy.sparse.csr_matrix`.
-    pairwise_data : np.ndarray
-        The nearest neighbor distances. See `scipy.sparse.csr_matrix` (`data`).
-
-    Returns
-    -------
-    Optional[np.ndarray]
-        The indexes of the medoid elements for all clusters.
-    """
-    # Find the indexes of the representatives for each unique cluster.
-    # noinspection PyUnresolvedReferences
-    order, min_i = np.argsort(clusters), 0
-    cluster_idx, max_i = [], min_i
-    while max_i < order.shape[0]:
-        while (
-            max_i < order.shape[0]
-            and clusters[order[min_i]] == clusters[order[max_i]]
-        ):
-            max_i += 1
-        cluster_idx.append((min_i, max_i))
-        min_i = max_i
-    representatives = np.empty(len(cluster_idx), np.uint)
-    for i in nb.prange(len(cluster_idx)):
-        representatives[i] = _get_cluster_medoid_index(
-            order[cluster_idx[i][0] : cluster_idx[i][1]],
-            pairwise_indptr,
-            pairwise_indices,
-            pairwise_data,
-        )
-    return representatives
-
-
-@nb.njit(cache=True, fastmath=True)
-def _get_cluster_medoid_index(
-    cluster_mask: np.ndarray,
-    pairwise_indptr: np.ndarray,
-    pairwise_indices: np.ndarray,
-    pairwise_data: np.ndarray,
-) -> int:
-    """
-    Get the index of the cluster medoid element.
-
-    Parameters
-    ----------
-    cluster_mask : np.ndarray
-        Indexes of the items belonging to the current cluster.
-    pairwise_indptr : np.ndarray
-        The index pointers for the nearest neighbor distances. See
-        `scipy.sparse.csr_matrix`.
-    pairwise_indices : np.ndarray
-        The column indices for the nearest neighbor distances. See
-        `scipy.sparse.csr_matrix`.
-    pairwise_data : np.ndarray
-        The nearest neighbor distances. See `scipy.sparse.csr_matrix` (`data`).
+        The cluster labels.
+    idx : np.ndarray
+        The label indexes.
+    splits : nb.typed.List
+        A list of start and end indices of cluster chunks.
+    current_label : int
+        First cluster label.
 
     Returns
     -------
     int
-        The index of the cluster's medoid element.
+        Last cluster label.
     """
-    if len(cluster_mask) <= 2:
-        # Pairwise distances will be identical.
-        return cluster_mask[0]
-    min_i, min_avg = 0, np.inf
-    for row_i in range(cluster_mask.shape[0]):
-        indices = pairwise_indices[
-            pairwise_indptr[cluster_mask[row_i]] : pairwise_indptr[
-                cluster_mask[row_i] + 1
-            ]
-        ]
-        data = pairwise_data[
-            pairwise_indptr[cluster_mask[row_i]] : pairwise_indptr[
-                cluster_mask[row_i] + 1
-            ]
-        ]
-        col_i = np.asarray(
-            [
-                i
-                for cm in cluster_mask
-                for i, ind in enumerate(indices)
-                if cm == ind
-            ]
+    max_label = current_label
+    for i in range(len(splits) - 1):
+        for j in idx[splits[i] : splits[i + 1]]:
+            if cluster_labels[j] != -1:
+                cluster_labels[j] += current_label
+                if cluster_labels[j] > max_label:
+                    max_label = cluster_labels[j]
+        current_label = max_label + 1
+    return max_label
+
+
+def compute_condensed_distance_matrix(
+    spec_tuples: List[similarity.SpectrumTuple],
+    fragment_mz_tol: float,
+    min_matches: int,
+) -> np.ndarray:
+    """
+    Compute the condensed pairwise distance matrix for the given spectra.
+
+    Parameters
+    ----------
+    spec_tuples : List[similarity.SpectrumTuple]
+        The spectra to compute the pairwise distance matrix for.
+    fragment_mz_tolerance : float
+        The fragment m/z tolerance.
+    min_matches : int
+        The minimum number of matched peaks to consider the spectra similar.
+
+    Returns
+    -------
+    np.ndarray
+        The condensed pairwise distance matrix.
+    """
+    n = len(spec_tuples)
+    condensed_dist_matrix = np.zeros(n * (n - 1) // 2)
+
+    def worker(i, j):
+        spec_tup1 = spec_tuples[i]
+        spec_tup2 = spec_tuples[j]
+        sim, n_match = similarity.cosine_fast(
+            spec_tup1, spec_tup2, fragment_mz_tol
         )
-        # noinspection PyUnresolvedReferences
-        row_avg = np.mean(data[col_i]) if len(col_i) > 0 else np.inf
-        if row_avg < min_avg:
-            min_i, min_avg = row_i, row_avg
-    return cluster_mask[min_i]
+        if n_match < min_matches:
+            sim = 0.0
+        distance = 1.0 - sim
+        idx = condensed_index(i, j, n)
+        condensed_dist_matrix[idx] = distance
+
+    with ThreadPoolExecutor() as executor:
+        futures = [
+            executor.submit(worker, i, j)
+            for i in range(n - 1)
+            for j in range(i + 1, n)
+        ]
+        for future in futures:
+            future.result()
+
+    return condensed_dist_matrix
+
+
+@nb.njit
+def condensed_index(i: int, j: int, n: int) -> int:
+    """
+    Get the index of the condensed distance matrix.
+
+    Parameters
+    ----------
+    i : int
+        The row index.
+    j : int
+        The column index.
+    n : int
+        The number of spectra.
+
+    Returns
+    -------
+    int
+        The index of the condensed distance matrix.
+    """
+    if i == j:
+        raise ValueError("No diagonal elements in condensed matrix")
+    if i > j:
+        i, j = j, i
+    return int(n * i + j - ((i + 2) * (i + 1)) // 2)
