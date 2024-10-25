@@ -1,10 +1,11 @@
 import math
-from typing import Dict, IO, Iterable, Union
+from typing import Dict, IO, Iterable, List, Union
 
+import numba as nb
 import pyteomics.mgf
 import spectrum_utils.spectrum as sus
 
-from ..config import config
+from ..cluster import similarity
 
 
 def get_spectra(source: Union[IO, str]) -> Iterable[sus.MsmsSpectrum]:
@@ -67,7 +68,9 @@ def _parse_spectrum(spectrum_dict: Dict) -> sus.MsmsSpectrum:
     )
 
 
-def write_spectra(filename: str, spectra: Iterable[sus.MsmsSpectrum]) -> None:
+def write_spectra(
+    filename: str, spectra: List[similarity.SpectrumTuple]
+) -> None:
     """
     Write the given spectra to an MGF file.
 
@@ -75,20 +78,26 @@ def write_spectra(filename: str, spectra: Iterable[sus.MsmsSpectrum]) -> None:
     ----------
     filename : str
         The MGF file name where the spectra will be written.
-    spectra : Iterable[MsmsSpectrum]
+    spectra : List[similarity.SpectrumTuple]
         The spectra to be written to the MGF file.
     """
     with open(filename, "w") as f_out:
-        pyteomics.mgf.write(_spectra_to_dicts(spectra), f_out, use_numpy=True)
+        pyteomics.mgf.write(
+            _spectra_to_dicts(spectra),
+            f_out,
+            use_numpy=True,
+        )
 
 
-def _spectra_to_dicts(spectra: Iterable[sus.MsmsSpectrum]) -> Iterable[Dict]:
+def _spectra_to_dicts(
+    spectra: List[similarity.SpectrumTuple],
+) -> Iterable[Dict]:
     """
     Convert MsmsSpectrum objects to Pyteomics MGF cluster dictionaries.
 
     Parameters
     ----------
-    spectra : Iterable[MsmsSpectrum]
+    spectra : List[similarity.SpectrumTuple]
         The spectra to be converted to Pyteomics MGF dictionaries.
 
     Returns
@@ -113,5 +122,25 @@ def _spectra_to_dicts(spectra: Iterable[sus.MsmsSpectrum]) -> Iterable[Dict]:
         yield {
             "params": params,
             "m/z array": spectrum.mz,
-            "intensity array": spectrum.intensity,
+            "intensity array": _scale_intensities(spectrum.intensity),
         }
+
+
+@nb.njit(cache=True, fastmath=True)
+def _scale_intensities(intensity: List[float]) -> List[float]:
+    """
+    Scale the intensities to the range [0, 1000].
+
+    Parameters
+    ----------
+    intensity : List[float]
+        The intensity array to be scaled.
+
+    Returns
+    -------
+    List[float]
+        The scaled intensities.
+    """
+    return (
+        1000 * (intensity - min(intensity)) / (max(intensity) - min(intensity))
+    )
