@@ -78,7 +78,6 @@ def generate_clusters(
             ]
         )
         .to_pandas()
-        .reset_index()
         .sort_values("precursor_mz")
     )
     # Cluster per contiguous block of precursor m/z's (relative to the
@@ -99,7 +98,7 @@ def generate_clusters(
         with tqdm(
             total=len(data), desc="Clustering", unit="spectra", smoothing=0
         ) as pbar:
-            idx = data["index"].values
+            idx = data.index.values
             mz = data["precursor_mz"].values
             rt = data["retention_time"].values
             splits = _get_precursor_mz_splits(
