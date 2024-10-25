@@ -95,9 +95,8 @@ def generate_clusters(
                 "intensity",
             ]
         )
-        .add_column(0, "index", pa.array(range(dataset.count_rows())))
-        .sort_by("precursor_mz")
         .to_pandas()
+        .sort_values("precursor_mz")
     )
     # Cluster per contiguous block of precursor m/z's (relative to the
     # precursor m/z threshold).
@@ -109,70 +108,72 @@ def generate_clusters(
     )
     with tempfile.NamedTemporaryFile(suffix=".npy") as cluster_file:
         cluster_filename = cluster_file.name
-    cluster_labels = np.lib.format.open_memmap(
-        cluster_filename, mode="w+", dtype=np.int32, shape=(data.shape[0],)
-    )
-    cluster_labels.fill(-1)
-    max_label, rep_spectra = 0, []
-    with tqdm(
-        total=len(data), desc="Clustering", unit="spectra", smoothing=0
-    ) as pbar:
-        idx = data["index"].values
-        mz = data["precursor_mz"].values
-        rt = data["retention_time"].values
-        splits = _get_precursor_mz_splits(
-            mz, precursor_tol_mass, precursor_tol_mode, 2**15
+        cluster_labels = np.lib.format.open_memmap(
+            cluster_filename, mode="w+", dtype=np.int32, shape=(data.shape[0],)
         )
-        spec_tuples = data.apply(
-            similarity.df_row_to_spectrum_tuple, axis=1
-        ).tolist()
-        del data
-        # Per-split cluster labels.
-        for interval_rep_spectra in joblib.Parallel(
-            n_jobs=-1, backend="threading"
-        )(
-            joblib.delayed(_cluster_interval)(
-                spec_tuples,
-                idx,
-                mz,
-                rt,
-                cluster_labels,
-                splits[i],
-                splits[i + 1],
-                linkage,
-                distance_threshold,
-                min_matches,
-                precursor_tol_mass,
-                precursor_tol_mode,
-                rt_tol,
-                fragment_tol,
-                consensus_method,
-                min_mz,
-                max_mz,
-                bin_size,
-                n_min,
-                n_max,
-                pbar,
+        cluster_labels.fill(-1)
+        max_label, rep_spectra = 0, []
+        with tqdm(
+            total=len(data), desc="Clustering", unit="spectra", smoothing=0
+        ) as pbar:
+            idx = data.index.values
+            mz = data["precursor_mz"].values
+            rt = data["retention_time"].values
+            splits = _get_precursor_mz_splits(
+                mz, precursor_tol_mass, precursor_tol_mode, 2**15
             )
-            for i in range(len(splits) - 1)
-        ):
-            if interval_rep_spectra is not None:
-                rep_spectra.extend(interval_rep_spectra)
-        max_label = _assign_global_cluster_labels(
-            cluster_labels, idx, splits, max_label
+            spec_tuples = data.apply(
+                similarity.df_row_to_spectrum_tuple, axis=1
+            ).tolist()
+            del data
+            # Per-split cluster labels.
+            for interval_rep_spectra in joblib.Parallel(
+                n_jobs=-1, backend="threading"
+            )(
+                joblib.delayed(_cluster_interval)(
+                    spec_tuples,
+                    idx,
+                    mz,
+                    rt,
+                    cluster_labels,
+                    splits[i],
+                    splits[i + 1],
+                    linkage,
+                    distance_threshold,
+                    min_matches,
+                    precursor_tol_mass,
+                    precursor_tol_mode,
+                    rt_tol,
+                    fragment_tol,
+                    consensus_method,
+                    min_mz,
+                    max_mz,
+                    bin_size,
+                    n_min,
+                    n_max,
+                    pbar,
+                )
+                for i in range(len(splits) - 1)
+            ):
+                if interval_rep_spectra is not None:
+                    rep_spectra.extend(interval_rep_spectra)
+            max_label = _assign_global_cluster_labels(
+                cluster_labels, idx, splits, max_label
+            )
+        cluster_labels.flush()
+        noise_mask = cluster_labels == -1
+        n_clusters, n_noise = np.amax(cluster_labels) + 1, noise_mask.sum()
+        logger.info(
+            "%d spectra grouped in %d clusters, %d spectra remain as singletons",
+            (cluster_labels != -1).sum(),
+            n_clusters,
+            n_noise,
         )
-    cluster_labels.flush()
-    noise_mask = cluster_labels == -1
-    n_clusters, n_noise = np.amax(cluster_labels) + 1, noise_mask.sum()
-    logger.info(
-        "%d spectra grouped in %d clusters, %d spectra remain as singletons",
-        (cluster_labels != -1).sum(),
-        n_clusters,
-        n_noise,
-    )
-    # Reassign noise points to singleton clusters.
-    cluster_labels[noise_mask] = np.arange(n_clusters, n_clusters + n_noise)
-    return cluster_labels, rep_spectra
+        # Reassign noise points to singleton clusters.
+        cluster_labels[noise_mask] = np.arange(
+            n_clusters, n_clusters + n_noise
+        )
+        return cluster_labels, rep_spectra
 
 
 @nb.njit

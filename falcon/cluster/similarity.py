@@ -75,6 +75,7 @@ def cosine_fast(
         if pair_score > 0.0:
             score += pair_score
             row_mask[i] = True
+    score = max(0.0, min(score, 1.0))
 
     return score, row_mask.sum()
 
@@ -97,5 +98,5 @@ def df_row_to_spectrum_tuple(row: pd.Series) -> SpectrumTuple:
         row["precursor_mz"],
         row["precursor_charge"],
         row["mz"],
-        np.copy(row["intensity"]) / np.linalg.norm(row["intensity"]),
+        row["intensity"],
     )
