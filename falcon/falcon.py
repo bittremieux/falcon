@@ -267,17 +267,7 @@ def _prepare_spectra(process_spectrum: Callable) -> Set[int]:
     # excessive memory requirements.
     max_spectra_in_memory = 1_000_000
     spectra_queue = queue.Queue(maxsize=max_spectra_in_memory)
-    # Read the peak files and put their spectra in the queue for consumption.
-    low_quality_counter = 0
-    for file_spectra, lqc in joblib.Parallel(n_jobs=max_file_workers)(
-        joblib.delayed(_read_spectra)(file, process_spectrum)
-        for file in input_filenames
-    ):
-        low_quality_counter += lqc
-        for spec in file_spectra:
-            spectra_queue.put(spec)
-
-    # Write the spectra to a lance file.
+    # Start the lance writers.
     lance_locks = collections.defaultdict(multiprocessing.Lock)
     charges = set()
     schema = pa.schema(
@@ -296,8 +286,17 @@ def _prepare_spectra(process_spectrum: Callable) -> Set[int]:
         _write_spectra_lance,
         (spectra_queue, lance_locks, schema, charges),
     )
-    # Add sentinels to indicate stopping. This needs to happen after all files
-    # have been read (by joining `peak_readers`).
+    # Read the peak files and put their spectra in the queue for consumption
+    # by the lance writers.
+    low_quality_counter = 0
+    for file_spectra, lqc in joblib.Parallel(n_jobs=max_file_workers)(
+        joblib.delayed(_read_spectra)(file, process_spectrum)
+        for file in input_filenames
+    ):
+        low_quality_counter += lqc
+        for spec in file_spectra:
+            spectra_queue.put(spec)
+    # Add sentinels to indicate stopping.
     for _ in range(max_file_workers):
         spectra_queue.put(None)
     lance_writers.close()
