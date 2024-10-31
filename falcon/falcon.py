@@ -123,6 +123,18 @@ def main(args: Union[str, List[str]] = None) -> int:
         logging.shutdown()
         return 1
 
+    # Check if the spectral averaging configuration is valid.
+    if (
+        config.consensus_method == "average"
+        and config.n_min < 1
+        and config.n_max < 1
+    ):
+        logger.warning(
+            "Setting both n_min and n_max to values less than 1 "
+            "can lead have unexpected results. It is advised to set "
+            "either n_min or n_max to a value >= 1."
+        )
+
     _, min_mz, max_mz = spectrum.get_dim(
         config.min_mz, config.max_mz, config.fragment_tol
     )

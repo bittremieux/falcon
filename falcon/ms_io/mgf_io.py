@@ -2,6 +2,7 @@ import math
 from typing import Dict, IO, Iterable, List, Union
 
 import numba as nb
+import numpy as np
 import pyteomics.mgf
 import spectrum_utils.spectrum as sus
 
@@ -141,6 +142,4 @@ def _scale_intensities(intensity: List[float]) -> List[float]:
     List[float]
         The scaled intensities.
     """
-    return (
-        1000 * (intensity - min(intensity)) / (max(intensity) - min(intensity))
-    )
+    return intensity * 1000 / np.max(intensity)

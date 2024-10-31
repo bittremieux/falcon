@@ -710,7 +710,9 @@ def _get_cluster_average(
             )
             del spectra_to_average
             # Outlier rejection
-            bins_peaks = _outlier_rejection(bins_idx, bins_peaks, n_min, n_max)
+            bins_idx, bins_peaks = _outlier_rejection(
+                bins_idx, bins_peaks, n_min, n_max
+            )
             # Average peaks
             bins_peaks = _average_peaks(bins_idx, bins_peaks)
             # Construct average spectrum
@@ -809,14 +811,26 @@ def _outlier_rejection(
     for _ in range(len(bins_indices)):
         cleaned_bins_peaks.append(np.empty(0, np.float32))
 
+    zero_peaks = np.zeros(len(bins_indices), dtype=np.bool_)
     for i in range(len(bins_indices)):
         intensities = bins_peaks[i]
-        if len(intensities) > 1:
-            cleaned_bins_peaks[i] = _sigma_clipping(intensities, n_min, n_max)
+        if len(intensities) > 2:
+            clipped = _sigma_clipping(intensities, n_min, n_max)
+            if len(clipped) < 1:
+                zero_peaks[i] = True
+            else:
+                cleaned_bins_peaks[i] = clipped
         else:
             cleaned_bins_peaks[i] = intensities
 
-    return cleaned_bins_peaks
+    # Remove empty bins
+    bins_indices = bins_indices[~zero_peaks]
+    new_cleaned_bins_peaks = []
+    for i in range(len(cleaned_bins_peaks)):
+        if not zero_peaks[i]:
+            new_cleaned_bins_peaks.append(cleaned_bins_peaks[i])
+
+    return bins_indices, new_cleaned_bins_peaks
 
 
 @nb.njit(cache=True)
