@@ -61,6 +61,7 @@ def main(args: Union[str, List[str]] = None) -> int:
     logger.debug("linkage = %s", config.linkage)
     logger.debug("distance_threshold = %.3f", config.distance_threshold)
     logger.debug("min_matched_peaks = %d", config.min_matched_peaks)
+    logger.debug("batch_size = %d", config.batch_size)
     logger.debug("min_peaks = %d", config.min_peaks)
     logger.debug("min_mz_range = %.2f", config.min_mz_range)
     logger.debug("min_mz = %.2f", config.min_mz)
@@ -183,6 +184,7 @@ def main(args: Union[str, List[str]] = None) -> int:
             config.precursor_tol[1],
             config.rt_tol,
             config.fragment_tol,
+            config.batch_size,
         )
         # Make sure that different charges have non-overlapping cluster labels.
         # only change labels that are not -1 (noise)
@@ -506,6 +508,7 @@ def _write_cluster_info(clusters: pd.DataFrame) -> None:
             f"# distance_threshold = {config.distance_threshold:.3f}\n"
         )
         f_out.write(f"# min_matched_peaks = {config.min_matched_peaks}\n")
+        f_out.write(f"# batch_size = {config.batch_size}\n")
         f_out.write(f"# min_peaks = {config.min_peaks}\n")
         f_out.write(f"# min_mz_range = {config.min_mz_range:.2f}\n")
         f_out.write(f"# min_mz = {config.min_mz:.2f}\n")

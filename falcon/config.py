@@ -116,6 +116,12 @@ class Config:
             help="Minimum number of matched peaks to consider the spectra similar "
             "(default: %(default)s). Typically 6 for metabolomics data.",
         )
+        self._parser.add_argument(
+            "--batch_size",
+            type=int,
+            default=2**15,
+            help="Batch size for clustering (default: %(default)s).",
+        )
 
         # PREPROCESSING
         self._parser.add_argument(
