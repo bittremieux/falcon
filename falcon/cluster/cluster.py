@@ -1,3 +1,4 @@
+import collections
 import gc
 import logging
 import math
@@ -19,6 +20,19 @@ from tqdm import tqdm
 from . import similarity
 
 logger = logging.getLogger("falcon")
+
+ConsensusTuple = collections.namedtuple(
+    "ConsensusTuple",
+    [
+        "precursor_mz",
+        "precursor_charge",
+        "mz",
+        "intensity",
+        "retention_time",
+        "cluster",
+        "cluster_size",
+    ],
+)
 
 
 def generate_clusters(
@@ -352,12 +366,17 @@ def _cluster_interval(
         if current_label > 0:
             # Compute cluster medoids.
             order_ = np.argsort(labels)
-            idx_interval, labels = idx_interval[order_], labels[order_]
+            idx_interval, labels, rts_interval = (
+                idx_interval[order_],
+                labels[order_],
+                rts_interval[order_],
+            )
             order_map = order[order_]
             rep_spectra = _get_representative_spectra(
                 spectra[interval_start:interval_stop],
                 pdist,
                 labels,
+                rts_interval,
                 consensus_method,
                 order_map,
                 min_mz,
@@ -368,12 +387,28 @@ def _cluster_interval(
             )
         else:
             rep_spectra = spectra[interval_start:interval_stop]
+            rep_spectra = [
+                ConsensusTuple(
+                    *spec,
+                    retention_time=rts_interval[i],
+                    cluster=-1,
+                    cluster_size=1,
+                )
+                for i, spec in enumerate(rep_spectra)
+            ]
         # Force memory clearing.
         del pdist
         if n_spectra > 2**11:
             gc.collect()
     else:
-        rep_spectra = [spectra[interval_start]]
+        rep_spectra = [
+            ConsensusTuple(
+                *spectra[interval_start],
+                retention_time=rts[0],
+                cluster=-1,
+                cluster_size=1,
+            )
+        ]
     pbar.update(n_spectra)
     return rep_spectra
 
@@ -560,6 +595,7 @@ def _get_representative_spectra(
     spectra: List[similarity.SpectrumTuple],
     pdist: np.ndarray,
     labels: np.ndarray,
+    rts: np.ndarray,
     consensus_method: str,
     order_map: np.ndarray,
     min_mz: float,
@@ -567,7 +603,7 @@ def _get_representative_spectra(
     bin_size: float,
     n_min: float,
     n_max: float,
-) -> List[similarity.SpectrumTuple]:
+) -> List[ConsensusTuple]:
     """
     Get the representative spectra for each cluster.
 
@@ -579,6 +615,8 @@ def _get_representative_spectra(
         The condensed pairwise distance matrix.
     labels : np.ndarray
         Cluster labels.
+    rts : np.ndarray
+        The retention times corresponding to the current interval indexes.
     consensus_method : str
         The method to use for consensus spectrum computation.
     order_map : np.ndarray
@@ -596,14 +634,22 @@ def _get_representative_spectra(
 
     Returns
     -------
-    List[similarity.SpectrumTuple]
+    List[ConsensusTuple]
         The representative spectra for each cluster.
     """
     if consensus_method == "medoid":
         return _get_cluster_medoids(spectra, labels, pdist, order_map)
     elif consensus_method == "average":
         return _get_cluster_average(
-            spectra, labels, order_map, min_mz, max_mz, bin_size, n_min, n_max
+            spectra,
+            labels,
+            rts,
+            order_map,
+            min_mz,
+            max_mz,
+            bin_size,
+            n_min,
+            n_max,
         )
     else:
         raise ValueError(
@@ -615,9 +661,10 @@ def _get_representative_spectra(
 def _get_cluster_medoids(
     spectra: List[similarity.SpectrumTuple],
     labels: np.ndarray,
+    rts: np.ndarray,
     pdist: np.ndarray,
     order_map: np.ndarray,
-) -> List[similarity.SpectrumTuple]:
+) -> List[ConsensusTuple]:
     """
     Get the indexes of the cluster medoids.
 
@@ -627,6 +674,8 @@ def _get_cluster_medoids(
         vector indexes.
     labels : np.ndarray
         Cluster labels.
+    rts: np.ndarray
+        The retention times corresponding to the current interval indexes.
     pdist : np.ndarray
         Condensed pairwise distance matrix.
     order_map : np.ndarray
@@ -634,7 +683,7 @@ def _get_cluster_medoids(
 
     Returns
     -------
-    List[similarity.SpectrumTuple]
+    List[ConsensusTuple]
         The medoids for each cluster.
     """
     medoids, m = [], len(spectra)
@@ -649,22 +698,39 @@ def _get_cluster_medoids(
                     pdist_ij = pdist[m * i + j - ((i + 2) * (i + 1)) // 2]
                     row_sum[row] += pdist_ij
                     row_sum[col] += pdist_ij
-            medoids.append(spectra[start_i + np.argmin(row_sum)])
+            medoid_spec = spectra[start_i + np.argmin(row_sum)]
+            medoids.append(
+                ConsensusTuple(
+                    *medoid_spec,
+                    retention_time=rts[start_i + np.argmin(row_sum)],
+                    cluster=labels[start_i + np.argmin(row_sum)],
+                    cluster_size=stop_i - start_i,
+                )
+            )
         else:
-            medoids.append(spectra[start_i])
+            medoid_spec = spectra[start_i]
+            medoids.append(
+                ConsensusTuple(
+                    *medoid_spec,
+                    retention_time=rts[start_i],
+                    cluster=labels[start_i],
+                    cluster_size=1,
+                )
+            )
     return medoids
 
 
 def _get_cluster_average(
     spectra: List[similarity.SpectrumTuple],
     labels: np.ndarray,
+    rts: np.ndarray,
     order_map: np.ndarray,
     min_mz: float,
     max_mz: float,
     bin_size: float,
     n_min: float,
     n_max: float,
-) -> List[similarity.SpectrumTuple]:
+) -> List[ConsensusTuple]:
     """
     Get the average spectra for each cluster.
 
@@ -674,6 +740,8 @@ def _get_cluster_average(
         The spectra.
     labels : np.ndarray
         Cluster labels.
+    rts : np.ndarray
+        The retention times corresponding to the current interval indexes.
     order_map : np.ndarray
         Map to convert label indexes to pairwise distance matrix indexes.
     min_mz : float
@@ -689,7 +757,7 @@ def _get_cluster_average(
 
     Returns
     -------
-    List[similarity.SpectrumTuple]
+    List[ConsensusTuple]
         The average spectra for each cluster.
     """
     average_spectra = []
@@ -703,6 +771,7 @@ def _get_cluster_average(
                 [spec.precursor_mz for spec in spectra_to_average], axis=0
             )
             charge = spectra_to_average[0].precursor_charge
+            avg_rt = np.mean(rts[start_i:stop_i])
 
             # Bin the spectra
             bins_idx, bins_peaks = _spectrum_binning(
@@ -717,12 +786,28 @@ def _get_cluster_average(
             bins_peaks = _average_peaks(bins_idx, bins_peaks)
             # Construct average spectrum
             avg_spectrum = _construct_average_spectrum(
-                bins_idx, bins_peaks, avg_mz, charge, min_mz, bin_size
+                bins_idx,
+                bins_peaks,
+                avg_mz,
+                charge,
+                min_mz,
+                bin_size,
+                avg_rt,
+                labels[start_i],
+                stop_i - start_i,
             )
             average_spectra.append(avg_spectrum)
         else:
             # Single spectrum cluster
-            average_spectra.append(spectra[order_map[start_i]])
+            avg_spectrum = spectra[order_map[start_i]]
+            average_spectra.append(
+                ConsensusTuple(
+                    *avg_spectrum,
+                    retention_time=rts[start_i],
+                    cluster=labels[start_i],
+                    cluster_size=1,
+                )
+            )
     return average_spectra
 
 
@@ -941,6 +1026,9 @@ def _construct_average_spectrum(
     charge: int,
     min_mz: float,
     bin_size: float,
+    avg_rt: float,
+    cluster: int,
+    cluster_size: int,
 ) -> similarity.SpectrumTuple:
     """
     Construct the average spectrum from the binned spectra.
@@ -959,6 +1047,12 @@ def _construct_average_spectrum(
         The minimum m/z to include in the vectors.
     bin_size : float
         The bin size in m/z used to divide the m/z range.
+    avg_rt : float
+        The average retention time.
+    cluster : int
+        The cluster label.
+    cluster_size : int
+        The number of spectra in the cluster.
 
     Returns
     -------
@@ -975,7 +1069,15 @@ def _construct_average_spectrum(
         intensity[idx] = avg_intensity
         idx += 1
 
-    return similarity.SpectrumTuple(avg_precursor_mz, charge, mz, intensity)
+    return ConsensusTuple(
+        precursor_mz=avg_precursor_mz,
+        precursor_charge=charge,
+        mz=mz,
+        intensity=intensity,
+        retention_time=avg_rt,
+        cluster=cluster,
+        cluster_size=cluster_size,
+    )
 
 
 @nb.njit(boundscheck=False)

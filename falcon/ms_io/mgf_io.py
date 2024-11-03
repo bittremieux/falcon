@@ -120,6 +120,8 @@ def _spectra_to_dicts(
             params["scan"] = spectrum.scan
         if hasattr(spectrum, "cluster"):
             params["cluster"] = spectrum.cluster
+        if hasattr(spectrum, "cluster_size"):
+            params["cluster_size"] = spectrum.cluster_size
         yield {
             "params": params,
             "m/z array": spectrum.mz,
