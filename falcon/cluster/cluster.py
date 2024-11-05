@@ -641,7 +641,7 @@ def _get_representative_spectra(
         The representative spectra for each cluster.
     """
     if consensus_method == "medoid":
-        return _get_cluster_medoids(spectra, labels, pdist, order_map)
+        return _get_cluster_medoids(spectra, labels, rts, pdist, order_map)
     elif consensus_method == "average":
         return _get_cluster_average(
             spectra,
@@ -704,7 +704,10 @@ def _get_cluster_medoids(
             medoid_spec = spectra[start_i + np.argmin(row_sum)]
             medoids.append(
                 ConsensusTuple(
-                    *medoid_spec,
+                    precursor_mz=medoid_spec.precursor_mz,
+                    precursor_charge=medoid_spec.precursor_charge,
+                    mz=medoid_spec.mz,
+                    intensity=medoid_spec.intensity,
                     retention_time=rts[start_i + np.argmin(row_sum)],
                     cluster=labels[start_i + np.argmin(row_sum)],
                     cluster_size=stop_i - start_i,
@@ -714,7 +717,10 @@ def _get_cluster_medoids(
             medoid_spec = spectra[start_i]
             medoids.append(
                 ConsensusTuple(
-                    *medoid_spec,
+                    precursor_mz=medoid_spec.precursor_mz,
+                    precursor_charge=medoid_spec.precursor_charge,
+                    mz=medoid_spec.mz,
+                    intensity=medoid_spec.intensity,
                     retention_time=rts[start_i],
                     cluster=labels[start_i],
                     cluster_size=1,

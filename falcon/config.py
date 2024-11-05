@@ -136,6 +136,8 @@ class Config:
             default=1.5,
             help="Number of standard deviations above the median for outlier rejection "
             "(default: %(default)s). Only used when consensus_method='average'.",
+        )
+        self._parser.add_argument(
             "--batch_size",
             type=int,
             default=2**15,
