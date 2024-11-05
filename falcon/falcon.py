@@ -64,6 +64,7 @@ def main(args: Union[str, List[str]] = None) -> int:
     logger.debug("consensus_method = %s", config.consensus_method)
     logger.debug("n_min = %.2f", config.n_min)
     logger.debug("n_max = %.2f", config.n_max)
+    logger.debug("batch_size = %d", config.batch_size)
     logger.debug("min_peaks = %d", config.min_peaks)
     logger.debug("min_mz_range = %.2f", config.min_mz_range)
     logger.debug("min_mz = %.2f", config.min_mz)
@@ -204,6 +205,7 @@ def main(args: Union[str, List[str]] = None) -> int:
             2 * config.fragment_tol,
             config.n_min,
             config.n_max,
+            config.batch_size,
         )
         # Make sure that different charges have non-overlapping cluster labels.
         # only change labels that are not -1 (noise)
@@ -281,17 +283,7 @@ def _prepare_spectra(process_spectrum: Callable) -> Set[int]:
     # excessive memory requirements.
     max_spectra_in_memory = 1_000_000
     spectra_queue = queue.Queue(maxsize=max_spectra_in_memory)
-    # Read the peak files and put their spectra in the queue for consumption.
-    low_quality_counter = 0
-    for file_spectra, lqc in joblib.Parallel(n_jobs=max_file_workers)(
-        joblib.delayed(_read_spectra)(file, process_spectrum)
-        for file in input_filenames
-    ):
-        low_quality_counter += lqc
-        for spec in file_spectra:
-            spectra_queue.put(spec)
-
-    # Write the spectra to a lance file.
+    # Start the lance writers.
     lance_locks = collections.defaultdict(multiprocessing.Lock)
     charges = set()
     schema = pa.schema(
@@ -310,8 +302,17 @@ def _prepare_spectra(process_spectrum: Callable) -> Set[int]:
         _write_spectra_lance,
         (spectra_queue, lance_locks, schema, charges),
     )
-    # Add sentinels to indicate stopping. This needs to happen after all files
-    # have been read (by joining `peak_readers`).
+    # Read the peak files and put their spectra in the queue for consumption
+    # by the lance writers.
+    low_quality_counter = 0
+    for file_spectra, lqc in joblib.Parallel(n_jobs=max_file_workers)(
+        joblib.delayed(_read_spectra)(file, process_spectrum)
+        for file in input_filenames
+    ):
+        low_quality_counter += lqc
+        for spec in file_spectra:
+            spectra_queue.put(spec)
+    # Add sentinels to indicate stopping.
     for _ in range(max_file_workers):
         spectra_queue.put(None)
     lance_writers.close()
@@ -524,6 +525,7 @@ def _write_cluster_info(clusters: pd.DataFrame) -> None:
         f_out.write(f"# consensus_method = {config.consensus_method}\n")
         f_out.write(f"# n_min = {config.n_min:.2f}\n")
         f_out.write(f"# n_max = {config.n_max:.2f}\n")
+        f_out.write(f"# batch_size = {config.batch_size}\n")
         f_out.write(f"# min_peaks = {config.min_peaks}\n")
         f_out.write(f"# min_mz_range = {config.min_mz_range:.2f}\n")
         f_out.write(f"# min_mz = {config.min_mz:.2f}\n")

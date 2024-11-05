@@ -50,6 +50,7 @@ def generate_clusters(
     bin_size: float,
     n_min: float,
     n_max: float,
+    batch_size: int,
 ) -> np.ndarray:
     """
     Hierarchical clustering of the given pairwise distance matrix.
@@ -85,6 +86,8 @@ def generate_clusters(
         The number of standard deviations for the lower bound for outlier rejection.
     n_max : float
         The number of standard deviations for the upper bound for outlier rejection.
+    batch_size : int
+        Maximum interval size.
 
     Returns
     -------
@@ -134,7 +137,7 @@ def generate_clusters(
             mz = data["precursor_mz"].values
             rt = data["retention_time"].values
             splits = _get_precursor_mz_splits(
-                mz, precursor_tol_mass, precursor_tol_mode, 2**15
+                mz, precursor_tol_mass, precursor_tol_mode, batch_size
             )
             spec_tuples = data.apply(
                 similarity.df_row_to_spectrum_tuple, axis=1

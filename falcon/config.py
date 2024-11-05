@@ -136,6 +136,10 @@ class Config:
             default=1.5,
             help="Number of standard deviations above the median for outlier rejection "
             "(default: %(default)s). Only used when consensus_method='average'.",
+            "--batch_size",
+            type=int,
+            default=2**15,
+            help="Batch size for clustering (default: %(default)s).",
         )
 
         # PREPROCESSING
