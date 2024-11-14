@@ -4,9 +4,6 @@ from typing import Tuple
 import numba as nb
 import numpy as np
 import pandas as pd
-import scipy.optimize
-import scipy.sparse
-import spectrum_utils.spectrum as sus
 
 
 SpectrumTuple = collections.namedtuple(
@@ -41,7 +38,7 @@ def cosine_fast(
     """
     # Find the matching peaks between both spectra.
     other_peak_index = 0
-    cost_matrix = np.zeros((len(spec.mz), len(spec_other.mz)), np.float32)
+    peak_matches = []
     for peak_index, (peak_mz, peak_intensity) in enumerate(
         zip(spec.mz, spec.intensity)
     ):
@@ -57,27 +54,32 @@ def cosine_fast(
             and abs(peak_mz - (spec_other.mz[other_peak_i]))
             <= fragment_mz_tolerance
         ):
-            cost_matrix[peak_index, other_peak_i] = (
-                peak_intensity * spec_other.intensity[other_peak_i]
+            peak_matches.append(
+                (
+                    peak_index,
+                    other_peak_i,
+                    peak_intensity * spec_other.intensity[other_peak_i],
+                )
             )
             other_peak_i += 1
 
-    with nb.objmode(row_ind="int64[:]", col_ind="int64[:]"):
-        row_ind, col_ind = scipy.optimize.linear_sum_assignment(
-            cost_matrix, maximize=True
-        )
-
     score = 0.0
 
-    row_mask = np.zeros_like(row_ind, np.bool_)
-    for (i, row), col in zip(enumerate(row_ind), col_ind):
-        pair_score = cost_matrix[row, col]
-        if pair_score > 0.0:
+    peak_matches.sort(key=lambda x: x[2], reverse=True)
+    spec_peaks_used = np.zeros(len(spec.mz), np.bool_)
+    other_spec_peaks_used = np.zeros(len(spec_other.mz), np.bool_)
+    for peak_index, other_peak_index, pair_score in peak_matches:
+        if (
+            not spec_peaks_used[peak_index]
+            and not other_spec_peaks_used[other_peak_index]
+        ):
             score += pair_score
-            row_mask[i] = True
+            spec_peaks_used[peak_index] = True
+            other_spec_peaks_used[other_peak_index] = True
+
     score = max(0.0, min(score, 1.0))
 
-    return score, row_mask.sum()
+    return score, spec_peaks_used.sum()
 
 
 def df_row_to_spectrum_tuple(row: pd.Series) -> SpectrumTuple:
