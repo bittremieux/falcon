@@ -145,8 +145,9 @@ def generate_clusters(
             del data
             # Per-split clustering.
             with multiprocessing.Pool() as pool:
-                results = pool.starmap(
-                    _cluster_interval,
+                spectra_clustered = 0
+                for interval_rep_spectra, labels in pool.imap(
+                    _cluster_interval_imap,
                     [
                         (
                             spec_tuples,
@@ -172,10 +173,17 @@ def generate_clusters(
                         )
                         for i in range(len(splits) - 1)
                     ],
-                )
-                for interval_rep_spectra in results:
+                    chunksize=max(
+                        len(splits) // multiprocessing.cpu_count(), 1
+                    ),
+                ):
+                    pbar.update(len(labels))
                     if interval_rep_spectra is not None:
                         rep_spectra.extend(interval_rep_spectra)
+                        cluster_labels[
+                            spectra_clustered : spectra_clustered + len(labels)
+                        ] = labels
+                        spectra_clustered += len(labels)
             max_label = _assign_global_cluster_labels(
                 cluster_labels, idx, splits, max_label
             )
@@ -246,6 +254,10 @@ def _get_precursor_mz_splits(
                     splits.append(splits[-1] + chunk_size)
     splits.append(len(precursor_mzs))
     return splits
+
+
+def _cluster_interval_imap(args):
+    return _cluster_interval(*args)
 
 
 def _cluster_interval(
@@ -324,7 +336,7 @@ def _cluster_interval(
         List with indexes of the medoids for each cluster.
     """
     n_spectra = interval_stop - interval_start
-    cluster_labels = np.lib.format.open_memmap(cluster_filename, mode="r+")
+    cluster_labels = np.empty(n_spectra, np.int32)
     if n_spectra > 1:
         idx_interval = idx[interval_start:interval_stop]
         mzs_interval = mzs[interval_start:interval_stop]
@@ -365,7 +377,8 @@ def _cluster_interval(
             )
             current_label += n_clusters
         # Assign cluster labels.
-        cluster_labels[idx_interval] = labels
+        # cluster_labels[idx_interval] = labels
+        cluster_labels = labels
         if current_label > 0:
             # Compute cluster medoids.
             order_ = np.argsort(labels)
@@ -412,7 +425,7 @@ def _cluster_interval(
                 cluster_size=1,
             )
         ]
-    return rep_spectra
+    return rep_spectra, cluster_labels
 
 
 @nb.njit
