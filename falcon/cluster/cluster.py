@@ -2,16 +2,16 @@ import collections
 import gc
 import logging
 import math
+import multiprocessing
+import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from typing import Iterator, List, Tuple
 
 import fastcluster
-import joblib
 import lance
 import numba as nb
 import numpy as np
-import pyarrow as pa
 import scipy.cluster.hierarchy as sch
 import spectrum_utils.utils as suu
 from scipy.cluster.hierarchy import fcluster
@@ -143,37 +143,39 @@ def generate_clusters(
                 similarity.df_row_to_spectrum_tuple, axis=1
             ).tolist()
             del data
-            # Per-split cluster labels.
-            for interval_rep_spectra in joblib.Parallel(
-                n_jobs=-1, backend="threading"
-            )(
-                joblib.delayed(_cluster_interval)(
-                    spec_tuples,
-                    idx,
-                    mz,
-                    rt,
-                    cluster_labels,
-                    splits[i],
-                    splits[i + 1],
-                    linkage,
-                    distance_threshold,
-                    min_matches,
-                    precursor_tol_mass,
-                    precursor_tol_mode,
-                    rt_tol,
-                    fragment_tol,
-                    consensus_method,
-                    min_mz,
-                    max_mz,
-                    bin_size,
-                    n_min,
-                    n_max,
-                    pbar,
+            # Per-split clustering.
+            with multiprocessing.Pool() as pool:
+                results = pool.starmap(
+                    _cluster_interval,
+                    [
+                        (
+                            spec_tuples,
+                            idx,
+                            mz,
+                            rt,
+                            cluster_filename,
+                            splits[i],
+                            splits[i + 1],
+                            linkage,
+                            distance_threshold,
+                            min_matches,
+                            precursor_tol_mass,
+                            precursor_tol_mode,
+                            rt_tol,
+                            fragment_tol,
+                            consensus_method,
+                            min_mz,
+                            max_mz,
+                            bin_size,
+                            n_min,
+                            n_max,
+                        )
+                        for i in range(len(splits) - 1)
+                    ],
                 )
-                for i in range(len(splits) - 1)
-            ):
-                if interval_rep_spectra is not None:
-                    rep_spectra.extend(interval_rep_spectra)
+                for interval_rep_spectra in results:
+                    if interval_rep_spectra is not None:
+                        rep_spectra.extend(interval_rep_spectra)
             max_label = _assign_global_cluster_labels(
                 cluster_labels, idx, splits, max_label
             )
@@ -251,7 +253,7 @@ def _cluster_interval(
     idx: np.ndarray,
     mzs: np.ndarray,
     rts: np.ndarray,
-    cluster_labels: np.ndarray,
+    cluster_filename: str,
     interval_start: int,
     interval_stop: int,
     linkage: str,
@@ -267,7 +269,6 @@ def _cluster_interval(
     bin_size: float,
     n_min: float,
     n_max: float,
-    pbar: tqdm,
 ) -> np.ndarray:
     """
     Cluster the vectors in the given interval.
@@ -282,8 +283,8 @@ def _cluster_interval(
         The precursor m/z's corresponding to the current interval indexes.
     rts : np.ndarray
         The retention times corresponding to the current interval indexes.
-    cluster_labels : np.ndarray
-        Array in which to fill the cluster label assignments.
+    cluster_filename : str
+        The filename of the memory-mapped array to fill with cluster labels.
     interval_start : int
         The current interval start index.
     interval_stop : int
@@ -316,8 +317,6 @@ def _cluster_interval(
         The number of standard deviations for the lower bound for outlier rejection.
     n_max : float
         The number of standard deviations for the upper bound for outlier rejection.
-    pbar : tqdm.tqdm
-        Tqdm progress bar.
 
     Returns
     -------
@@ -325,6 +324,7 @@ def _cluster_interval(
         List with indexes of the medoids for each cluster.
     """
     n_spectra = interval_stop - interval_start
+    cluster_labels = np.lib.format.open_memmap(cluster_filename, mode="r+")
     if n_spectra > 1:
         idx_interval = idx[interval_start:interval_stop]
         mzs_interval = mzs[interval_start:interval_stop]
@@ -412,7 +412,6 @@ def _cluster_interval(
                 cluster_size=1,
             )
         ]
-    pbar.update(n_spectra)
     return rep_spectra
 
 
