@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 
-from . import __version__, seed
+from . import __version__, utils
 from .cluster import cluster, spectrum
 from .config import config
 from .ms_io import ms_io
@@ -27,27 +27,12 @@ from .ms_io import ms_io
 
 logger = logging.getLogger("falcon")
 
-seed.set_seeds()
+utils.set_seeds()
 
 
 def main(args: Union[str, List[str]] = None) -> int:
     # Configure logging.
-    logging.captureWarnings(True)
-    root = logging.getLogger()
-    root.setLevel(logging.DEBUG)
-    handler = logging.StreamHandler(sys.stderr)
-    handler.setLevel(logging.DEBUG)
-    handler.setFormatter(
-        logging.Formatter(
-            "{asctime} {levelname} [{name}/{processName}] {module}.{funcName} : "
-            "{message}",
-            style="{",
-        )
-    )
-    root.addHandler(handler)
-    # Disable dependency non-critical log messages.
-    logging.getLogger("numba").setLevel(logging.WARNING)
-    logging.getLogger("numexpr").setLevel(logging.WARNING)
+    logger = utils.configure_logger()
 
     # Load the configuration.
     config.parse(args)

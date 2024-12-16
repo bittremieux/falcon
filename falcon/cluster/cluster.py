@@ -3,9 +3,9 @@ import gc
 import logging
 import math
 import multiprocessing
-import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from typing import Iterator, List, Tuple
 
 import fastcluster
@@ -18,6 +18,7 @@ from scipy.cluster.hierarchy import fcluster
 from tqdm import tqdm
 
 from . import similarity
+from .. import utils
 
 logger = logging.getLogger("falcon")
 
@@ -118,10 +119,9 @@ def generate_clusters(
     # Cluster per contiguous block of precursor m/z's (relative to the
     # precursor m/z threshold).
     logging.info(
-        "Cluster %d spectra using %s linkage and distance threshold %.3f",
+        "Cluster %d spectra with charge %s",
         len(data),
-        linkage,
-        distance_threshold,
+        dataset.uri.split("_")[-1].split(".")[0],
     )
     with tempfile.NamedTemporaryFile(suffix=".npy") as cluster_file:
         cluster_filename = cluster_file.name
@@ -144,46 +144,40 @@ def generate_clusters(
             ).tolist()
             del data
             # Per-split clustering.
-            with multiprocessing.Pool() as pool:
-                spectra_clustered = 0
-                for interval_rep_spectra, labels in pool.imap(
-                    _cluster_interval_imap,
-                    [
-                        (
-                            spec_tuples,
-                            idx,
-                            mz,
-                            rt,
-                            cluster_filename,
-                            splits[i],
-                            splits[i + 1],
-                            linkage,
-                            distance_threshold,
-                            min_matches,
-                            precursor_tol_mass,
-                            precursor_tol_mode,
-                            rt_tol,
-                            fragment_tol,
-                            consensus_method,
-                            min_mz,
-                            max_mz,
-                            bin_size,
-                            n_min,
-                            n_max,
-                        )
-                        for i in range(len(splits) - 1)
-                    ],
-                    chunksize=max(
-                        len(splits) // multiprocessing.cpu_count(), 1
-                    ),
-                ):
-                    pbar.update(len(labels))
-                    if interval_rep_spectra is not None:
-                        rep_spectra.extend(interval_rep_spectra)
-                        cluster_labels[
-                            spectra_clustered : spectra_clustered + len(labels)
-                        ] = labels
-                        spectra_clustered += len(labels)
+            chunks = cost_based_chunking(
+                splits, multiprocessing.cpu_count() - 1
+            )
+            process_chunk = partial(
+                cluster_chunk,
+                spectra=spec_tuples,
+                idx=idx,
+                mzs=mz,
+                rts=rt,
+                cluster_filename=cluster_filename,
+                linkage=linkage,
+                distance_threshold=distance_threshold,
+                min_matches=min_matches,
+                precursor_tol_mass=precursor_tol_mass,
+                precursor_tol_mode=precursor_tol_mode,
+                rt_tol=rt_tol,
+                fragment_tol=fragment_tol,
+                consensus_method=consensus_method,
+                min_mz=min_mz,
+                max_mz=max_mz,
+                bin_size=bin_size,
+                n_min=n_min,
+                n_max=n_max,
+            )
+            with multiprocessing.Pool(multiprocessing.cpu_count() - 1) as pool:
+                results = pool.map(process_chunk, chunks)
+            flattened_results = [
+                result for chunk in results for result in chunk
+            ]
+            flattened_results.sort(key=lambda x: x[0])
+            for i, (interval_rep_spectra, labels) in flattened_results:
+                if interval_rep_spectra is not None:
+                    rep_spectra.extend(interval_rep_spectra)
+                    cluster_labels[i : i + len(labels)] = labels
             max_label = _assign_global_cluster_labels(
                 cluster_labels, idx, splits, max_label
             )
@@ -256,8 +250,84 @@ def _get_precursor_mz_splits(
     return splits
 
 
-def _cluster_interval_imap(args):
-    return _cluster_interval(*args)
+def cost_based_chunking(tasks, num_chunks):
+    """
+    Groups tasks into chunks based on estimated computational costs.
+
+    Args:
+        tasks (list): List of tasks.
+        num_chunks (int): Number of chunks (e.g., number of workers).
+        cost_function (function): Function to estimate task cost.
+
+    Returns:
+        list: List of task chunks, where each chunk is a list of tasks.
+    """
+    split_tuples = [(tasks[i], tasks[i + 1]) for i in range(len(tasks) - 1)]
+    indexed_tasks = list(enumerate(split_tuples))
+    indexed_tasks.sort(key=lambda x: (x[1][1] - x[1][0]) ** 2, reverse=True)
+
+    # Initialize chunks and their cumulative costs
+    chunks = [[] for _ in range(num_chunks)]
+    costs = [0] * num_chunks
+
+    # Assign tasks to the chunk with the least cumulative cost
+    for index, task in indexed_tasks:
+        idx = costs.index(min(costs))  # Find the chunk with the least cost
+        chunks[idx].append((index, task))
+        costs[idx] += (task[1] - task[0]) ** 2
+
+    return chunks
+
+
+def cluster_chunk(
+    chunk,
+    spectra,
+    idx,
+    mzs,
+    rts,
+    cluster_filename,
+    linkage,
+    distance_threshold,
+    min_matches,
+    precursor_tol_mass,
+    precursor_tol_mode,
+    rt_tol,
+    fragment_tol,
+    consensus_method,
+    min_mz,
+    max_mz,
+    bin_size,
+    n_min,
+    n_max,
+):
+    return [
+        (
+            i,
+            _cluster_interval(
+                spectra,
+                idx,
+                mzs,
+                rts,
+                cluster_filename,
+                split[0],
+                split[1],
+                linkage,
+                distance_threshold,
+                min_matches,
+                precursor_tol_mass,
+                precursor_tol_mode,
+                rt_tol,
+                fragment_tol,
+                consensus_method,
+                min_mz,
+                max_mz,
+                bin_size,
+                n_min,
+                n_max,
+            ),
+        )
+        for i, split in chunk
+    ]
 
 
 def _cluster_interval(
@@ -425,6 +495,12 @@ def _cluster_interval(
                 cluster_size=1,
             )
         ]
+    # Log clustering progress.
+    if n_spectra > 2**8:
+        logger = utils.configure_logger()
+        logger.debug(
+            "Clustered %d spectra in %d clusters.", n_spectra, len(rep_spectra)
+        )
     return rep_spectra, cluster_labels
 
 
