@@ -61,6 +61,9 @@ def main(args: Union[str, List[str]] = None) -> int:
     logger.debug("linkage = %s", config.linkage)
     logger.debug("distance_threshold = %.3f", config.distance_threshold)
     logger.debug("min_matched_peaks = %d", config.min_matched_peaks)
+    logger.debug("consensus_method = %s", config.consensus_method)
+    logger.debug("n_min = %.2f", config.n_min)
+    logger.debug("n_max = %.2f", config.n_max)
     logger.debug("batch_size = %d", config.batch_size)
     logger.debug("min_peaks = %d", config.min_peaks)
     logger.debug("min_mz_range = %.2f", config.min_mz_range)
@@ -121,6 +124,18 @@ def main(args: Union[str, List[str]] = None) -> int:
         logging.shutdown()
         return 1
 
+    # Check if the spectral averaging configuration is valid.
+    if (
+        config.consensus_method == "average"
+        and config.n_min < 1
+        and config.n_max < 1
+    ):
+        logger.warning(
+            "Setting both n_min and n_max to values less than 1 "
+            "can lead have unexpected results. It is advised to set "
+            "either n_min or n_max to a value >= 1."
+        )
+
     _, min_mz, max_mz = spectrum.get_dim(
         config.min_mz, config.max_mz, config.fragment_tol
     )
@@ -175,7 +190,7 @@ def main(args: Union[str, List[str]] = None) -> int:
             )
         )
         # Cluster using the pairwise distance matrix.
-        clusters, medoids = cluster.generate_clusters(
+        clusters, rep_spectra = cluster.generate_clusters(
             dataset,
             config.linkage,
             config.distance_threshold,
@@ -184,6 +199,12 @@ def main(args: Union[str, List[str]] = None) -> int:
             config.precursor_tol[1],
             config.rt_tol,
             config.fragment_tol,
+            config.consensus_method,
+            config.min_mz,
+            config.max_mz,
+            2 * config.fragment_tol,
+            config.n_min,
+            config.n_max,
             config.batch_size,
         )
         # Make sure that different charges have non-overlapping cluster labels.
@@ -196,11 +217,7 @@ def main(args: Union[str, List[str]] = None) -> int:
         clusters_all.append(metadata)
         # Extract identifiers for cluster representatives (medoids).
         if config.export_representatives:
-            representatives.append(
-                dataset.take(medoids)
-                .to_pandas()
-                .apply(spectrum.df_row_to_spec, axis=1)
-            )
+            representatives.extend(rep_spectra)
 
     # Export cluster memberships and representative spectra.
     clusters_all = pd.concat(clusters_all, ignore_index=True).sort_values(
@@ -219,9 +236,6 @@ def main(args: Union[str, List[str]] = None) -> int:
     )
     write_csv_worker.start()
     if config.export_representatives:
-        representatives = pd.concat(
-            representatives, ignore_index=True
-        ).tolist()
         logger.info(
             "Export %d cluster representative spectra to output file %s",
             len(representatives),
@@ -508,6 +522,9 @@ def _write_cluster_info(clusters: pd.DataFrame) -> None:
             f"# distance_threshold = {config.distance_threshold:.3f}\n"
         )
         f_out.write(f"# min_matched_peaks = {config.min_matched_peaks}\n")
+        f_out.write(f"# consensus_method = {config.consensus_method}\n")
+        f_out.write(f"# n_min = {config.n_min:.2f}\n")
+        f_out.write(f"# n_max = {config.n_max:.2f}\n")
         f_out.write(f"# batch_size = {config.batch_size}\n")
         f_out.write(f"# min_peaks = {config.min_peaks}\n")
         f_out.write(f"# min_mz_range = {config.min_mz_range:.2f}\n")
