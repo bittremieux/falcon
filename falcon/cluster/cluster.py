@@ -852,6 +852,8 @@ def _spectrum_binning(
     end_dim = max_mz + bin_size - (max_mz % bin_size)
     n_bins = math.ceil((end_dim - start_dim) / bin_size)
 
+    n_spectra = len(spectra)
+
     bins_indices = -np.ones(n_bins, dtype=np.int32)
     bins_peaks = nb.typed.List.empty_list(nb.types.float32[:])
     for i in range(n_bins):
@@ -864,6 +866,11 @@ def _spectrum_binning(
                 if bins_indices[bin_idx] == -1:
                     bins_indices[bin_idx] = bin_idx
                 bins_peaks[bin_idx] = np.append(bins_peaks[bin_idx], intensity)
+    # Mark peaks that appear in less than 70% of the spectra as empty for removal
+    for i in range(n_bins):
+        if bins_indices[i] != -1:
+            if len(bins_peaks[i]) < 0.7 * n_spectra:
+                bins_indices[i] = -1
     # Remove empty bins
     mask = bins_indices != -1
     bins_indices = bins_indices[mask]
