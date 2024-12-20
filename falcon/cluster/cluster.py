@@ -43,13 +43,9 @@ def generate_clusters(
     precursor_tol_mode: str,
     rt_tol: float,
     fragment_tol: float,
-    consensus_method: str,
-    min_mz: float,
-    max_mz: float,
-    bin_size: float,
-    outlier_cutoff_lower: float,
-    outlier_cutoff_upper: float,
     batch_size: int,
+    consensus_method: str,
+    consensus_params: dict,
 ) -> np.ndarray:
     """
     Hierarchical clustering of the given pairwise distance matrix.
@@ -73,21 +69,13 @@ def generate_clusters(
         `None`, do not restrict the retention time.
     fragment_tol: float
         The fragment m/z tolerance.
+    batch_size : int
+        Maximum interval size.
     consensus_method : str
         The method to use for consensus spectrum computation. Should be either
         'medoid' or 'average'.
-    min_mz : float
-        The minimum m/z value to consider for binning.
-    max_mz : float
-        The maximum m/z value to consider for binning.
-    bin_size : float
-        The width of each bin in m/z units.
-    outlier_cutoff_lower : float
-        The number of standard deviations for the lower bound for outlier rejection.
-    outlier_cutoff_upper : float
-        The number of standard deviations for the upper bound for outlier rejection.
-    batch_size : int
-        Maximum interval size.
+    consensus_params : dict
+        Additional parameters for the consensus spectrum computation.
 
     Returns
     -------
@@ -163,11 +151,7 @@ def generate_clusters(
                     rt_tol,
                     fragment_tol,
                     consensus_method,
-                    min_mz,
-                    max_mz,
-                    bin_size,
-                    outlier_cutoff_lower,
-                    outlier_cutoff_upper,
+                    consensus_params,
                     pbar,
                 )
                 for i in range(len(splits) - 1)
@@ -262,11 +246,7 @@ def _cluster_interval(
     rt_tol: float,
     fragment_mz_tol: float,
     consensus_method: str,
-    min_mz: float,
-    max_mz: float,
-    bin_size: float,
-    outlier_cutoff_lower: float,
-    outlier_cutoff_upper: float,
+    consensus_params: dict,
     pbar: tqdm,
 ) -> np.ndarray:
     """
@@ -307,16 +287,8 @@ def _cluster_interval(
     consensus_method : str
         The method to use for consensus spectrum computation. Should be either
         'medoid' or 'average'.
-    min_mz : float
-        The minimum m/z value to consider for binning.
-    max_mz : float
-        The maximum m/z value to consider for binning.
-    bin_size : float
-        The width of each bin in m/z units.
-    outlier_cutoff_upper : float
-        The number of standard deviations for the lower bound for outlier rejection.
-    outlier_cutoff_upper : float
-        The number of standard deviations for the upper bound for outlier rejection.
+    consensus_params : dict
+        Additional parameters for the consensus spectrum computation.
     pbar : tqdm.tqdm
         Tqdm progress bar.
 
@@ -374,18 +346,15 @@ def _cluster_interval(
             labels = labels[order_]
             rts_interval = rts_interval[order_]
             order_map = order[order_]
+            if consensus_method == "medoid":
+                consensus_params["pdist"] = pdist
             rep_spectra = _get_representative_spectra(
                 spectra[interval_start:interval_stop],
-                pdist,
                 labels,
                 rts_interval,
-                consensus_method,
                 order_map,
-                min_mz,
-                max_mz,
-                bin_size,
-                outlier_cutoff_lower,
-                outlier_cutoff_upper,
+                consensus_method,
+                consensus_params,
             )
         else:
             rep_spectra = spectra[interval_start:interval_stop]
@@ -593,16 +562,11 @@ def _linkage(values: np.ndarray, tol_mode: str = None) -> np.ndarray:
 
 def _get_representative_spectra(
     spectra: List[similarity.SpectrumTuple],
-    pdist: np.ndarray,
     labels: np.ndarray,
     rts: np.ndarray,
-    consensus_method: str,
     order_map: np.ndarray,
-    min_mz: float,
-    max_mz: float,
-    bin_size: float,
-    outlier_cutoff_lower: float,
-    outlier_cutoff_upper: float,
+    consensus_method: str,
+    consensus_params: dict,
 ) -> List[ConsensusTuple]:
     """
     Get the representative spectra for each cluster.
@@ -611,26 +575,16 @@ def _get_representative_spectra(
     ----------
     spectra : List[similarity.SpectrumTuple]
         The spectra.
-    pdist : np.ndarray
-        The condensed pairwise distance matrix.
     labels : np.ndarray
         Cluster labels.
     rts : np.ndarray
         The retention times corresponding to the current interval indexes.
+        order_map : np.ndarray
+        Map to convert label indexes to pairwise distance matrix indexes.
     consensus_method : str
         The method to use for consensus spectrum computation.
-    order_map : np.ndarray
-        Map to convert label indexes to pairwise distance matrix indexes.
-    min_mz : float
-        The minimum m/z value to consider for binning.
-    max_mz : float
-        The maximum m/z value to consider for binning.
-    bin_size : float
-        The width of each bin in m/z units.
-    outlier_cutoff_lower : float
-        The number of standard deviations for the lower bound for outlier rejection.
-    outlier_cutoff_upper : float
-        The number of standard deviations for the upper bound for outlier rejection.
+    consensus_params : dict
+        Additional parameters for the consensus spectrum computation.
 
     Returns
     -------
@@ -638,18 +592,16 @@ def _get_representative_spectra(
         The representative spectra for each cluster.
     """
     if consensus_method == "medoid":
-        return _get_cluster_medoids(spectra, labels, rts, pdist, order_map)
+        return _get_cluster_medoids(
+            spectra, labels, rts, order_map, **consensus_params
+        )
     elif consensus_method == "average":
         return _get_cluster_average(
             spectra,
             labels,
             rts,
             order_map,
-            min_mz,
-            max_mz,
-            bin_size,
-            outlier_cutoff_lower,
-            outlier_cutoff_upper,
+            **consensus_params,
         )
     else:
         raise ValueError(
@@ -662,8 +614,8 @@ def _get_cluster_medoids(
     spectra: List[similarity.SpectrumTuple],
     labels: np.ndarray,
     rts: np.ndarray,
-    pdist: np.ndarray,
     order_map: np.ndarray,
+    pdist: np.ndarray,
 ) -> List[ConsensusTuple]:
     """
     Get the indexes of the cluster medoids.
@@ -783,7 +735,7 @@ def _get_cluster_average(
 
             # Bin the spectra
             bins_idx, bins_peaks = _spectrum_binning(
-                spectra_to_average, min_mz, max_mz, bin_size
+                spectra_to_average, outlier_cutoff_lower, max_mz, bin_size
             )
             del spectra_to_average
             # Outlier rejection
@@ -801,7 +753,7 @@ def _get_cluster_average(
                 bins_peaks,
                 avg_mz,
                 charge,
-                min_mz,
+                outlier_cutoff_lower,
                 bin_size,
                 avg_rt,
                 labels[start_i],

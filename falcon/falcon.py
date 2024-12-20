@@ -190,7 +190,18 @@ def main(args: Union[str, List[str]] = None) -> int:
                 axis=1,
             )
         )
-        # Cluster using the pairwise distance matrix.
+        # Cluster spectra and get representative spectra.
+        consensus_params = {}
+        if config.consensus_method == "average":
+            consensus_params["min_mz"] = config.min_mz
+            consensus_params["max_mz"] = config.max_mz
+            consensus_params["bin_size"] = 2 * config.fragment_tol
+            consensus_params["outlier_cutoff_lower"] = (
+                config.outlier_cutoff_lower
+            )
+            consensus_params["outlier_cutoff_upper"] = (
+                config.outlier_cutoff_upper
+            )
         clusters, rep_spectra = cluster.generate_clusters(
             dataset,
             config.linkage,
@@ -200,13 +211,9 @@ def main(args: Union[str, List[str]] = None) -> int:
             config.precursor_tol[1],
             config.rt_tol,
             config.fragment_tol,
-            config.consensus_method,
-            config.min_mz,
-            config.max_mz,
-            2 * config.fragment_tol,
-            config.outlier_cutoff_lower,
-            config.outlier_cutoff_upper,
             config.batch_size,
+            config.consensus_method,
+            consensus_params,
         )
         # Make sure that different charges have non-overlapping cluster labels.
         # only change labels that are not -1 (noise)
