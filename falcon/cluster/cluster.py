@@ -29,8 +29,7 @@ ConsensusTuple = collections.namedtuple(
         "mz",
         "intensity",
         "retention_time",
-        "cluster",
-        "cluster_size",
+        "cluster_id",
     ],
 )
 
@@ -48,8 +47,8 @@ def generate_clusters(
     min_mz: float,
     max_mz: float,
     bin_size: float,
-    n_min: float,
-    n_max: float,
+    outlier_cutoff_lower: float,
+    outlier_cutoff_upper: float,
     batch_size: int,
 ) -> np.ndarray:
     """
@@ -75,16 +74,17 @@ def generate_clusters(
     fragment_tol: float
         The fragment m/z tolerance.
     consensus_method : str
-        The method to use for consensus spectrum computation.
+        The method to use for consensus spectrum computation. Should be either
+        'medoid' or 'average'.
     min_mz : float
         The minimum m/z value to consider for binning.
     max_mz : float
         The maximum m/z value to consider for binning.
     bin_size : float
         The width of each bin in m/z units.
-    n_min : float
+    outlier_cutoff_lower : float
         The number of standard deviations for the lower bound for outlier rejection.
-    n_max : float
+    outlier_cutoff_upper : float
         The number of standard deviations for the upper bound for outlier rejection.
     batch_size : int
         Maximum interval size.
@@ -166,8 +166,8 @@ def generate_clusters(
                     min_mz,
                     max_mz,
                     bin_size,
-                    n_min,
-                    n_max,
+                    outlier_cutoff_lower,
+                    outlier_cutoff_upper,
                     pbar,
                 )
                 for i in range(len(splits) - 1)
@@ -265,8 +265,8 @@ def _cluster_interval(
     min_mz: float,
     max_mz: float,
     bin_size: float,
-    n_min: float,
-    n_max: float,
+    outlier_cutoff_lower: float,
+    outlier_cutoff_upper: float,
     pbar: tqdm,
 ) -> np.ndarray:
     """
@@ -305,16 +305,17 @@ def _cluster_interval(
     fragment_mz_tol : float
         The fragment m/z tolerance.
     consensus_method : str
-        The method to use for consensus spectrum computation.
+        The method to use for consensus spectrum computation. Should be either
+        'medoid' or 'average'.
     min_mz : float
         The minimum m/z value to consider for binning.
     max_mz : float
         The maximum m/z value to consider for binning.
     bin_size : float
         The width of each bin in m/z units.
-    n_std : float
+    outlier_cutoff_upper : float
         The number of standard deviations for the lower bound for outlier rejection.
-    n_max : float
+    outlier_cutoff_upper : float
         The number of standard deviations for the upper bound for outlier rejection.
     pbar : tqdm.tqdm
         Tqdm progress bar.
@@ -369,11 +370,9 @@ def _cluster_interval(
         if current_label > 0:
             # Compute cluster medoids.
             order_ = np.argsort(labels)
-            idx_interval, labels, rts_interval = (
-                idx_interval[order_],
-                labels[order_],
-                rts_interval[order_],
-            )
+            idx_interval = idx_interval[order_]
+            labels = labels[order_]
+            rts_interval = rts_interval[order_]
             order_map = order[order_]
             rep_spectra = _get_representative_spectra(
                 spectra[interval_start:interval_stop],
@@ -385,8 +384,8 @@ def _cluster_interval(
                 min_mz,
                 max_mz,
                 bin_size,
-                n_min,
-                n_max,
+                outlier_cutoff_lower,
+                outlier_cutoff_upper,
             )
         else:
             rep_spectra = spectra[interval_start:interval_stop]
@@ -394,8 +393,7 @@ def _cluster_interval(
                 ConsensusTuple(
                     *spec,
                     retention_time=rts_interval[i],
-                    cluster=-1,
-                    cluster_size=1,
+                    cluster_id=-1,
                 )
                 for i, spec in enumerate(rep_spectra)
             ]
@@ -408,8 +406,7 @@ def _cluster_interval(
             ConsensusTuple(
                 *spectra[interval_start],
                 retention_time=rts[0],
-                cluster=-1,
-                cluster_size=1,
+                cluster_id=-1,
             )
         ]
     pbar.update(n_spectra)
@@ -604,8 +601,8 @@ def _get_representative_spectra(
     min_mz: float,
     max_mz: float,
     bin_size: float,
-    n_min: float,
-    n_max: float,
+    outlier_cutoff_lower: float,
+    outlier_cutoff_upper: float,
 ) -> List[ConsensusTuple]:
     """
     Get the representative spectra for each cluster.
@@ -630,9 +627,9 @@ def _get_representative_spectra(
         The maximum m/z value to consider for binning.
     bin_size : float
         The width of each bin in m/z units.
-    n_min : float
+    outlier_cutoff_lower : float
         The number of standard deviations for the lower bound for outlier rejection.
-    n_max : float
+    outlier_cutoff_upper : float
         The number of standard deviations for the upper bound for outlier rejection.
 
     Returns
@@ -651,8 +648,8 @@ def _get_representative_spectra(
             min_mz,
             max_mz,
             bin_size,
-            n_min,
-            n_max,
+            outlier_cutoff_lower,
+            outlier_cutoff_upper,
         )
     else:
         raise ValueError(
@@ -701,16 +698,16 @@ def _get_cluster_medoids(
                     pdist_ij = pdist[m * i + j - ((i + 2) * (i + 1)) // 2]
                     row_sum[row] += pdist_ij
                     row_sum[col] += pdist_ij
-            medoid_spec = spectra[start_i + np.argmin(row_sum)]
+            medoid_idx = start_i + np.argmin(row_sum)
+            medoid_spec = spectra[medoid_idx]
             medoids.append(
                 ConsensusTuple(
                     precursor_mz=medoid_spec.precursor_mz,
                     precursor_charge=medoid_spec.precursor_charge,
                     mz=medoid_spec.mz,
                     intensity=medoid_spec.intensity,
-                    retention_time=rts[start_i + np.argmin(row_sum)],
-                    cluster=labels[start_i + np.argmin(row_sum)],
-                    cluster_size=stop_i - start_i,
+                    retention_time=rts[medoid_idx],
+                    cluster_id=labels[medoid_idx],
                 )
             )
         else:
@@ -722,8 +719,7 @@ def _get_cluster_medoids(
                     mz=medoid_spec.mz,
                     intensity=medoid_spec.intensity,
                     retention_time=rts[start_i],
-                    cluster=labels[start_i],
-                    cluster_size=1,
+                    cluster_id=labels[start_i],
                 )
             )
     return medoids
@@ -737,11 +733,14 @@ def _get_cluster_average(
     min_mz: float,
     max_mz: float,
     bin_size: float,
-    n_min: float,
-    n_max: float,
+    outlier_cutoff_lower: float,
+    outlier_cutoff_upper: float,
 ) -> List[ConsensusTuple]:
     """
-    Get the average spectra for each cluster.
+    Get the average spectra for each cluster. The average spectrum is computed
+    by binning the spectra, removing (intensity) outliers in each bin, and averaging the remaining peaks.
+    Adapted from Carr, A. V. et al. Proteomics (2024).
+    https://analyticalsciencejournals.onlinelibrary.wiley.com/doi/10.1002/pmic.202300234.
 
     Parameters
     ----------
@@ -759,9 +758,9 @@ def _get_cluster_average(
         The maximum m/z value to consider for binning.
     bin_size : float
         The width of each bin in m/z units.
-    n_min : float
+    outlier_cutoff_lower : float
         The number of standard deviations for the lower bound for outlier rejection.
-    n_max : float
+    outlier_cutoff_upper : float
         The number of standard deviations for the upper bound for outlier rejection.
 
     Returns
@@ -789,7 +788,10 @@ def _get_cluster_average(
             del spectra_to_average
             # Outlier rejection
             bins_idx, bins_peaks = _outlier_rejection(
-                bins_idx, bins_peaks, n_min, n_max
+                bins_idx,
+                bins_peaks,
+                outlier_cutoff_lower,
+                outlier_cutoff_upper,
             )
             # Average peaks
             bins_peaks = _average_peaks(bins_idx, bins_peaks)
@@ -803,7 +805,6 @@ def _get_cluster_average(
                 bin_size,
                 avg_rt,
                 labels[start_i],
-                stop_i - start_i,
             )
             average_spectra.append(avg_spectrum)
         else:
@@ -813,8 +814,7 @@ def _get_cluster_average(
                 ConsensusTuple(
                     *avg_spectrum,
                     retention_time=rts[start_i],
-                    cluster=labels[start_i],
-                    cluster_size=1,
+                    cluster_id=labels[start_i],
                 )
             )
     return average_spectra
@@ -885,8 +885,8 @@ def _spectrum_binning(
 def _outlier_rejection(
     bins_indices: List[int],
     bins_peaks: nb.typed.List,
-    n_min: float,
-    n_max: float,
+    outlier_cutoff_lower: float,
+    outlier_cutoff_upper: float,
 ) -> Tuple[nb.typed.List]:
     """
     Remove outliers from binned spectra using the sigma clipping algorithm
@@ -898,9 +898,9 @@ def _outlier_rejection(
         The indices of the non-empty bins.
     bins_peaks : nb.typed.List
         The intensities for each bin.
-    n_min : float
+    outlier_cutoff_lower : float
         The number of standard deviations for the lower bound.
-    n_max : float
+    outlier_cutoff_upper : float
         The number of standard deviations for the upper bound.
 
     Returns
@@ -916,7 +916,11 @@ def _outlier_rejection(
     for i in range(len(bins_indices)):
         intensities = bins_peaks[i]
         if len(intensities) > 2:
-            clipped = _sigma_clipping(intensities, n_min, n_max)
+            clipped = _sigma_clipping(
+                intensities,
+                outlier_cutoff_lower,
+                outlier_cutoff_upper,
+            )
             if len(clipped) < 1:
                 zero_peaks[i] = True
             else:
@@ -936,7 +940,9 @@ def _outlier_rejection(
 
 @nb.njit(cache=True)
 def _sigma_clipping(
-    intensities: np.ndarray, n_min: float, n_max: float
+    intensities: np.ndarray,
+    outlier_cutoff_lower: float,
+    outlier_cutoff_upper: float,
 ) -> np.ndarray:
     """
     Apply sigma clipping to remove outliers from the array.
@@ -945,9 +951,9 @@ def _sigma_clipping(
     ----------
     intensities : np.ndarray
         The array of intensities.
-    n_min : float
+    outlier_cutoff_lower : float
         The number of standard deviations for the lower bound.
-    n_max : float
+    outlier_cutoff_upper : float
         The number of standard deviations for the upper bound.
 
     Returns
@@ -958,12 +964,18 @@ def _sigma_clipping(
     while len(intensities) > 2:
         med = np.median(intensities)
         std = np.std(intensities)
-        if std == 0:
+        if std == 0.0:
             break
         # Mask outliers
         mask = np.ones(len(intensities), dtype=np.bool_)
         for i in range(len(intensities)):
-            if _sigma_clip(intensities[i], med, std, n_min, n_max):
+            if _sigma_clip(
+                intensities[i],
+                med,
+                std,
+                outlier_cutoff_lower,
+                outlier_cutoff_upper,
+            ):
                 mask[i] = False
         # Break if no outliers were found
         if np.sum(mask) == len(intensities):
@@ -975,7 +987,11 @@ def _sigma_clipping(
 
 @nb.njit(cache=True)
 def _sigma_clip(
-    value: float, median: float, std: float, n_min: float, n_max: float
+    value: float,
+    median: float,
+    std: float,
+    outlier_cutoff_lower: float,
+    outlier_cutoff_upper: float,
 ) -> bool:
     """
     Check if a value is an outlier.
@@ -988,9 +1004,9 @@ def _sigma_clip(
         The median of the values.
     std : float
         The standard deviation of the values.
-    n_min : float
+    outlier_cutoff_lower : float
         The number of standard deviations below the median.
-    n_max : float
+    outlier_cutoff_upper : float
         The number of standard deviations above the median.
 
     Returns
@@ -998,7 +1014,9 @@ def _sigma_clip(
     bool
         True if the value is an outlier, False otherwise
     """
-    return (value < median - n_min * std) or (value > median + n_max * std)
+    return (value < median - outlier_cutoff_lower * std) or (
+        value > median + outlier_cutoff_upper * std
+    )
 
 
 @nb.njit(cache=True)
@@ -1044,7 +1062,6 @@ def _construct_average_spectrum(
     bin_size: float,
     avg_rt: float,
     cluster: int,
-    cluster_size: int,
 ) -> similarity.SpectrumTuple:
     """
     Construct the average spectrum from the binned spectra.
@@ -1067,8 +1084,6 @@ def _construct_average_spectrum(
         The average retention time.
     cluster : int
         The cluster label.
-    cluster_size : int
-        The number of spectra in the cluster.
 
     Returns
     -------
@@ -1091,8 +1106,7 @@ def _construct_average_spectrum(
         mz=mz,
         intensity=intensity,
         retention_time=avg_rt,
-        cluster=cluster,
-        cluster_size=cluster_size,
+        cluster_id=cluster,
     )
 
 

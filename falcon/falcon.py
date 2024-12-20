@@ -62,8 +62,8 @@ def main(args: Union[str, List[str]] = None) -> int:
     logger.debug("distance_threshold = %.3f", config.distance_threshold)
     logger.debug("min_matched_peaks = %d", config.min_matched_peaks)
     logger.debug("consensus_method = %s", config.consensus_method)
-    logger.debug("n_min = %.2f", config.n_min)
-    logger.debug("n_max = %.2f", config.n_max)
+    logger.debug("outlier_cutoff_lower = %.2f", config.outlier_cutoff_lower)
+    logger.debug("outlier_cutoff_upper = %.2f", config.outlier_cutoff_upper)
     logger.debug("batch_size = %d", config.batch_size)
     logger.debug("min_peaks = %d", config.min_peaks)
     logger.debug("min_mz_range = %.2f", config.min_mz_range)
@@ -127,13 +127,14 @@ def main(args: Union[str, List[str]] = None) -> int:
     # Check if the spectral averaging configuration is valid.
     if (
         config.consensus_method == "average"
-        and config.n_min < 1
-        and config.n_max < 1
+        and config.outlier_cutoff_lower < 1
+        and config.outlier_cutoff_upper < 1
     ):
         logger.warning(
-            "Setting both n_min and n_max to values less than 1 "
-            "can lead have unexpected results. It is advised to set "
-            "either n_min or n_max to a value >= 1."
+            "Setting both outlier_cutoff_lower and outlier_cutoff_upper "
+            "to values less than 1 can lead have unexpected results. It "
+            "is advised to set either outlier_cutoff_lower or "
+            "outlier_cutoff_upper to a value >= 1."
         )
 
     _, min_mz, max_mz = spectrum.get_dim(
@@ -203,8 +204,8 @@ def main(args: Union[str, List[str]] = None) -> int:
             config.min_mz,
             config.max_mz,
             2 * config.fragment_tol,
-            config.n_min,
-            config.n_max,
+            config.outlier_cutoff_lower,
+            config.outlier_cutoff_upper,
             config.batch_size,
         )
         # Make sure that different charges have non-overlapping cluster labels.
@@ -523,8 +524,12 @@ def _write_cluster_info(clusters: pd.DataFrame) -> None:
         )
         f_out.write(f"# min_matched_peaks = {config.min_matched_peaks}\n")
         f_out.write(f"# consensus_method = {config.consensus_method}\n")
-        f_out.write(f"# n_min = {config.n_min:.2f}\n")
-        f_out.write(f"# n_max = {config.n_max:.2f}\n")
+        f_out.write(
+            f"# outlier_cutoff_lower = {config.outlier_cutoff_lower:.2f}\n"
+        )
+        f_out.write(
+            f"# outlier_cutoff_upper = {config.outlier_cutoff_upper:.2f}\n"
+        )
         f_out.write(f"# batch_size = {config.batch_size}\n")
         f_out.write(f"# min_peaks = {config.min_peaks}\n")
         f_out.write(f"# min_mz_range = {config.min_mz_range:.2f}\n")
