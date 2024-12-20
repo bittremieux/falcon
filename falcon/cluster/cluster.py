@@ -745,8 +745,6 @@ def _get_cluster_average(
                 outlier_cutoff_lower,
                 outlier_cutoff_upper,
             )
-            # Average peaks
-            bins_peaks = _average_peaks(bins_idx, bins_peaks)
             # Construct average spectrum
             avg_spectrum = _construct_average_spectrum(
                 bins_idx,
@@ -842,8 +840,8 @@ def _outlier_rejection(
     outlier_cutoff_upper: float,
 ) -> Tuple[nb.typed.List]:
     """
-    Remove outliers from binned spectra using the sigma clipping algorithm
-    from https://analyticalsciencejournals.onlinelibrary.wiley.com/doi/10.1002/pmic.202300234.
+    Remove outliers from binned spectra using the sigma clipping algorithm and
+    return the averaged intensities.
 
     Parameters
     ----------
@@ -859,11 +857,10 @@ def _outlier_rejection(
     Returns
     -------
     nb.typed.List
-        The cleaned intensities for each bin.
+        The cleaned and averaged intensities for each bin.
     """
-    cleaned_bins_peaks = nb.typed.List.empty_list(nb.types.float32[:])
-    for _ in range(len(bins_indices)):
-        cleaned_bins_peaks.append(np.empty(0, np.float32))
+    n_peaks = len(bins_indices)
+    cleaned_bins_peaks = np.zeros(n_peaks, dtype=np.float32)
 
     zero_peaks = np.zeros(len(bins_indices), dtype=np.bool_)
     for i in range(len(bins_indices)):
@@ -877,18 +874,15 @@ def _outlier_rejection(
             if len(clipped) < 1:
                 zero_peaks[i] = True
             else:
-                cleaned_bins_peaks[i] = clipped
+                cleaned_bins_peaks[i] = np.mean(clipped)
         else:
-            cleaned_bins_peaks[i] = intensities
+            cleaned_bins_peaks[i] = np.mean(intensities)
 
-    # Remove empty bins
-    bins_indices = bins_indices[~zero_peaks]
-    new_cleaned_bins_peaks = []
-    for i in range(len(cleaned_bins_peaks)):
-        if not zero_peaks[i]:
-            new_cleaned_bins_peaks.append(cleaned_bins_peaks[i])
-
-    return bins_indices, new_cleaned_bins_peaks
+    # Return non-empty bins
+    return (
+        bins_indices[~zero_peaks],
+        cleaned_bins_peaks[~zero_peaks],
+    )
 
 
 @nb.njit(cache=True)
@@ -970,39 +964,6 @@ def _sigma_clip(
     return (value < median - outlier_cutoff_lower * std) or (
         value > median + outlier_cutoff_upper * std
     )
-
-
-@nb.njit(cache=True)
-def _average_peaks(
-    bins_indices: List[int], bins_peaks: nb.typed.List
-) -> nb.typed.List:
-    """
-    Average the peaks in each bin.
-
-    Parameters
-    ----------
-    bins_indices : List[int]
-        The indices of the non-empty bins.
-    bins_peaks : nb.typed.List
-        The intensities for each bin.
-
-    Returns
-    -------
-    nb.typed.List
-        The average intensities for each non-empty bin.
-    """
-    avged_bins_peaks = np.empty(len(bins_indices), np.float32)
-
-    for i in range(len(bins_indices)):
-        intensities = bins_peaks[i]
-        if len(intensities) < 1:
-            continue
-        elif len(intensities) == 1:
-            avged_bins_peaks[i] = intensities[0]
-        else:
-            avged_bins_peaks[i] = np.mean(intensities)
-
-    return avged_bins_peaks
 
 
 @nb.njit(cache=True)
