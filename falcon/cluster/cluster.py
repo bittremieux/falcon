@@ -807,9 +807,10 @@ def _spectrum_binning(
     n_spectra = len(spectra)
 
     bins_indices = -np.ones(n_bins, dtype=np.int32)
-    bins_peaks = nb.typed.List.empty_list(nb.types.float32[:])
-    for i in range(n_bins):
-        bins_peaks.append(np.empty(0, np.float32))
+    bins_peaks = nb.typed.List()
+    for _ in range(n_bins):
+        nested_list = nb.typed.List.empty_list(nb.types.float32)
+        bins_peaks.append(nested_list)
 
     for spec in spectra:
         for mz, intensity in zip(spec.mz, spec.intensity):
@@ -817,7 +818,7 @@ def _spectrum_binning(
             if 0 <= bin_idx < n_bins:
                 if bins_indices[bin_idx] == -1:
                     bins_indices[bin_idx] = bin_idx
-                bins_peaks[bin_idx] = np.append(bins_peaks[bin_idx], intensity)
+                bins_peaks[bin_idx].append(intensity)
     # Mark peaks that appear in less than 70% of the spectra as empty for removal
     for i in range(n_bins):
         if bins_indices[i] != -1:
@@ -828,7 +829,7 @@ def _spectrum_binning(
     bins_indices = bins_indices[mask]
     bins_peaks_nb = nb.typed.List()
     for i in bins_indices:
-        bins_peaks_nb.append(bins_peaks[i])
+        bins_peaks_nb.append(typed_list_to_numpy(bins_peaks[i]))
 
     return bins_indices, bins_peaks_nb
 
@@ -1060,6 +1061,28 @@ def _construct_average_spectrum(
         retention_time=avg_rt,
         cluster_id=cluster,
     )
+
+
+@nb.njit(cache=True)
+def typed_list_to_numpy(lst: nb.typed.List) -> np.ndarray:
+    """
+    Convert a Numba typed list of floats to a Numpy array.
+
+    Parameters
+    ----------
+    lst : nb.typed.List
+        The list of floats to convert.
+
+    Returns
+    -------
+    np.ndarray
+        The converted array.
+    """
+    n = len(lst)
+    arr = np.empty(n, dtype=np.float32)
+    for i in range(n):
+        arr[i] = lst[i]
+    return arr
 
 
 @nb.njit(boundscheck=False)
