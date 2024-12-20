@@ -9,6 +9,7 @@ from functools import partial
 from typing import Iterator, List, Tuple
 
 import fastcluster
+import joblib
 import lance
 import numba as nb
 import numpy as np
@@ -143,10 +144,45 @@ def generate_clusters(
                 similarity.df_row_to_spectrum_tuple, axis=1
             ).tolist()
             del data
-            # Per-split clustering.
-            chunks = cost_based_chunking(
-                splits, multiprocessing.cpu_count() - 1
+            # Per m/z split clustering.
+            chunks, single_spectra_tasks, two_spectra_tasks = (
+                cost_based_chunking(splits, multiprocessing.cpu_count() - 1)
             )
+            # Process single-spectrum m/z splits
+            for rep_spectrum in joblib.Parallel(
+                n_jobs=multiprocessing.cpu_count(), backend="threading"
+            )(
+                joblib.delayed(cluster_1_spectrum)(
+                    spec_tuples[spec_idx], rt[spec_idx]
+                )
+                for _, spec_idx in single_spectra_tasks
+            ):
+                rep_spectra.append(rep_spectrum)
+                pbar.update(1)
+            # Process two-spectrum m/z splits
+            for rep_spectra_chunk in joblib.Parallel(
+                n_jobs=multiprocessing.cpu_count(), backend="threading"
+            )(
+                joblib.delayed(cluster_2_spectra)(
+                    spec_tuples[spec_idx],
+                    spec_tuples[spec_idx + 1],
+                    rt[spec_idx],
+                    rt[spec_idx + 1],
+                    fragment_tol,
+                    distance_threshold,
+                    min_matches,
+                    consensus_method,
+                    min_mz,
+                    max_mz,
+                    bin_size,
+                    n_min,
+                    n_max,
+                )
+                for _, spec_idx in two_spectra_tasks
+            ):
+                rep_spectra.extend(rep_spectra_chunk)
+                pbar.update(2)
+            # Process chunks
             process_chunk = partial(
                 cluster_chunk,
                 spectra=spec_tuples,
@@ -171,15 +207,21 @@ def generate_clusters(
             with multiprocessing.Pool(multiprocessing.cpu_count() - 1) as pool:
                 results = pool.map(process_chunk, chunks)
             flattened_results = [
-                result for chunk in results for result in chunk
+                split_result
+                for chunk_results in results
+                for split_result in chunk_results
             ]
             flattened_results.sort(key=lambda x: x[0])
-            for i, (interval_rep_spectra, labels) in flattened_results:
+            labels_assigned = 0
+            for _, (interval_rep_spectra, labels) in flattened_results:
                 if interval_rep_spectra is not None:
                     rep_spectra.extend(interval_rep_spectra)
-                    cluster_labels[i : i + len(labels)] = labels
+                    cluster_labels[
+                        labels_assigned : labels_assigned + len(labels)
+                    ] = labels
+                    labels_assigned += len(labels)
             max_label = _assign_global_cluster_labels(
-                cluster_labels, idx, splits, max_label
+                cluster_labels, splits, max_label
             )
         cluster_labels.flush()
         noise_mask = cluster_labels == -1
@@ -250,17 +292,31 @@ def _get_precursor_mz_splits(
     return splits
 
 
-def cost_based_chunking(tasks, num_chunks):
+def cost_based_chunking(tasks: List[int], num_chunks: int) -> Tuple[
+    List[List[Tuple[int, Tuple[int, int]]]],
+    List[Tuple[int, int]],
+    List[Tuple[int, int]],
+]:
     """
     Groups tasks into chunks based on estimated computational costs.
 
-    Args:
-        tasks (list): List of tasks.
-        num_chunks (int): Number of chunks (e.g., number of workers).
-        cost_function (function): Function to estimate task cost.
+    Parameters
+    ----------
+    tasks: List[int]
+        List of tasks.
+    num_chunks: int
+        Number of chunks (e.g., number of workers).
 
-    Returns:
-        list: List of task chunks, where each chunk is a list of tasks.
+    Returns
+    -------
+    Tuple[List[List[Tuple[int, Tuple[int, int]]], List[Tuple[int, int]], List[Tuple[int, int]]]
+        A tuple containing the chunks, single-spectra tasks, and two-spectra tasks:
+            Each chunk is a list of tuples containing the index of the task and the
+            m/z split bounds.
+            Each single-spectra task is a tuple containing the index of the task and the
+            spectrum index.
+            Each two-spectra task is a tuple containing the index of the task and the
+            lower m/z split bound.
     """
     split_tuples = [(tasks[i], tasks[i + 1]) for i in range(len(tasks) - 1)]
     indexed_tasks = list(enumerate(split_tuples))
@@ -269,41 +325,101 @@ def cost_based_chunking(tasks, num_chunks):
     # Initialize chunks and their cumulative costs
     chunks = [[] for _ in range(num_chunks)]
     costs = [0] * num_chunks
+    single_spectra_tasks = []
+    two_spectra_tasks = []
 
     # Assign tasks to the chunk with the least cumulative cost
     for index, task in indexed_tasks:
-        idx = costs.index(min(costs))  # Find the chunk with the least cost
-        chunks[idx].append((index, task))
-        costs[idx] += (task[1] - task[0]) ** 2
+        if task[1] - task[0] == 1:
+            single_spectra_tasks.append((index, task[0]))
+        elif task[1] - task[0] == 2:
+            two_spectra_tasks.append((index, task[0]))
+        else:
+            idx = costs.index(min(costs))  # Find the chunk with the least cost
+            chunks[idx].append((index, task))
+            costs[idx] += (task[1] - task[0]) ** 2
 
-    return chunks
+    return chunks, single_spectra_tasks, two_spectra_tasks
 
 
 def cluster_chunk(
-    chunk,
-    spectra,
-    idx,
-    mzs,
-    rts,
-    cluster_filename,
-    linkage,
-    distance_threshold,
-    min_matches,
-    precursor_tol_mass,
-    precursor_tol_mode,
-    rt_tol,
-    fragment_tol,
-    consensus_method,
-    min_mz,
-    max_mz,
-    bin_size,
-    n_min,
-    n_max,
+    chunk: List[Tuple[int, Tuple[int, int]]],
+    spectra: List[similarity.SpectrumTuple],
+    idx: np.ndarray,
+    mzs: np.ndarray,
+    rts: np.ndarray,
+    cluster_filename: str,
+    linkage: str,
+    distance_threshold: float,
+    min_matches: int,
+    precursor_tol_mass: float,
+    precursor_tol_mode: str,
+    rt_tol: float,
+    fragment_tol: float,
+    consensus_method: str,
+    min_mz: float,
+    max_mz: float,
+    bin_size: float,
+    n_min: float,
+    n_max: float,
 ):
+    """
+    Cluster the vectors in the given interval.
+
+    Parameters
+    ----------
+    chunk : List[Tuple[int, Tuple[int, int]]]
+        The cluster tasks as a list of tuples containing the index of the task and the
+        m/z split bounds.
+    spectra : List[similarity.SpectrumTuple]
+        The spectra to cluster.
+    idx : np.ndarray
+        The indexes of the spectra in the current interval.
+    mzs : np.ndarray
+        The precursor m/z's corresponding to the current interval indexes.
+    rts : np.ndarray
+        The retention times corresponding to the current interval indexes.
+    cluster_filename : str
+        The filename of the memory-mapped array to fill with cluster labels.
+    linkage : str
+        Linkage method to calculate the cluster distances.
+    distance_threshold : float
+        The maximum linkage distance threshold during clustering. Either
+        'complete', 'average' or 'single'.
+    min_matches: int
+        The minimum number of matched peaks to consider the spectra similar.
+    precursor_tol_mass : float
+        The value of the precursor m/z tolerance.
+    precursor_tol_mode : str
+        The unit of the precursor m/z tolerance ('Da' or 'ppm').
+    rt_tol : float
+        The retention time tolerance for points to be clustered together. If
+        `None`, do not restrict the retention time.
+    fragment_tol: float
+        The fragment m/z tolerance.
+    consensus_method : str
+        The method to use for consensus spectrum computation.
+    min_mz : float
+        The minimum peak m/z value.
+    max_mz : float
+        The maximum peak m/z value.
+    bin_size : float
+        The width of each bin in m/z units.
+    n_min : float
+        The number of standard deviations for the lower bound for outlier rejection.
+    n_max : float
+        The number of standard deviations for the upper bound for outlier rejection.
+
+    Returns
+    -------
+    List[Tuple[int, List[ConsensusTuple]]]
+        The task index and representative spectra for each cluster.
+    """
+
     return [
         (
             i,
-            _cluster_interval(
+            _cluster_mz_interval(
                 spectra,
                 idx,
                 mzs,
@@ -330,7 +446,7 @@ def cluster_chunk(
     ]
 
 
-def _cluster_interval(
+def _cluster_mz_interval(
     spectra: List[similarity.SpectrumTuple],
     idx: np.ndarray,
     mzs: np.ndarray,
@@ -390,9 +506,9 @@ def _cluster_interval(
     consensus_method : str
         The method to use for consensus spectrum computation.
     min_mz : float
-        The minimum m/z value to consider for binning.
+        The minimum peak m/z value.
     max_mz : float
-        The maximum m/z value to consider for binning.
+        The maximum peak m/z value.
     bin_size : float
         The width of each bin in m/z units.
     n_std : float
@@ -403,7 +519,7 @@ def _cluster_interval(
     Returns
     -------
     np.ndarray
-        List with indexes of the medoids for each cluster.
+        List of representative spectra for each cluster.
     """
     n_spectra = interval_stop - interval_start
     cluster_labels = np.empty(n_spectra, np.int32)
@@ -502,6 +618,113 @@ def _cluster_interval(
             "Clustered %d spectra in %d clusters.", n_spectra, len(rep_spectra)
         )
     return rep_spectra, cluster_labels
+
+
+def cluster_1_spectrum(
+    spectrum: similarity.SpectrumTuple,
+    rt: float,
+) -> ConsensusTuple:
+    """
+    "Cluster" a single spectrum.
+
+    Parameters
+    ----------
+    spectra : similarity.SpectrumTuple
+        The spectrum.
+    rt : float
+        The retention time.
+
+    Returns
+    -------
+    ConsensusTuple
+        The representative spectrum.
+    """
+    return ConsensusTuple(
+        *spectrum,
+        retention_time=rt,
+        cluster=-1,
+        cluster_size=1,
+    )
+
+
+def cluster_2_spectra(
+    spec1: similarity.SpectrumTuple,
+    spec2: similarity.SpectrumTuple,
+    rt1: float,
+    rt2: float,
+    fragment_mz_tol: float,
+    distance_threshold: float,
+    min_matches: int,
+    consensus_method: str,
+    min_mz: float,
+    max_mz: float,
+    bin_size: float,
+    n_min: float,
+    n_max: float,
+):
+    """
+    Cluster two spectra.
+
+    Parameters
+    ----------
+    spec1 : similarity.SpectrumTuple
+        The first spectrum.
+    spec2 : similarity.SpectrumTuple
+        The second spectrum.
+    rt1 : float
+        The retention time of the first spectrum.
+    rt2 : float
+        The retention time of the second spectrum.
+    fragment_mz_tol : float
+        The fragment m/z tolerance.
+    distance_threshold : float
+        The maximum linkage distance threshold during clustering.
+    min_matches: int
+        The minimum number of matched peaks to consider the spectra similar.
+    consensus_method : str
+        The method to use for consensus spectrum computation.
+    min_mz : float
+        The minimum m/z value to consider for binning.
+    max_mz : float
+        The maximum m/z value to consider for binning.
+    bin_size : float
+        The width of each bin in m/z units.
+    n_min : float
+        The number of standard deviations for the lower bound for outlier rejection.
+    n_max : float
+        The number of standard deviations for the upper bound for outlier rejection.
+
+    Returns
+    -------
+    List[ConsensusTuple]
+        The representative spectra for each cluster.
+    """
+    sim, n_match = similarity.cosine_fast(spec1, spec2, fragment_mz_tol)
+    if (1 - sim) <= distance_threshold and n_match >= min_matches:
+        # consensus spectrum
+        return _get_representative_spectra(
+            spectra=[spec1, spec2],
+            pdist=[sim],
+            labels=np.array([0, 0]),
+            rts=np.array([rt1, rt2]),
+            consensus_method=consensus_method,
+            order_map=np.array([0, 1]),
+            min_mz=min_mz,
+            max_mz=max_mz,
+            bin_size=bin_size,
+            n_min=n_min,
+            n_max=n_max,
+        )
+
+    else:
+        return [
+            ConsensusTuple(
+                *spec1, retention_time=rt1, cluster=-1, cluster_size=1
+            ),
+            ConsensusTuple(
+                *spec2, retention_time=rt2, cluster=-1, cluster_size=1
+            ),
+        ]
 
 
 @nb.njit
@@ -761,8 +984,8 @@ def _get_cluster_medoids(
 
     Parameters
     ----------
-    idx_interval : np.ndarray
-        vector indexes.
+    spectra : List[similarity.SpectrumTuple]
+        The spectra.
     labels : np.ndarray
         Cluster labels.
     rts: np.ndarray
@@ -779,7 +1002,7 @@ def _get_cluster_medoids(
     """
     medoids, m = [], len(spectra)
     for start_i, stop_i in _get_cluster_group_idx(labels):
-        if stop_i - start_i > 1:
+        if stop_i - start_i > 2:
             row_sum = np.zeros(stop_i - start_i, np.float32)
             for row in range(stop_i - start_i):
                 for col in range(row + 1, stop_i - start_i):
@@ -789,7 +1012,7 @@ def _get_cluster_medoids(
                     pdist_ij = pdist[m * i + j - ((i + 2) * (i + 1)) // 2]
                     row_sum[row] += pdist_ij
                     row_sum[col] += pdist_ij
-            medoid_spec = spectra[start_i + np.argmin(row_sum)]
+            medoid_spec = spectra[order_map[start_i + np.argmin(row_sum)]]
             medoids.append(
                 ConsensusTuple(
                     precursor_mz=medoid_spec.precursor_mz,
@@ -1180,7 +1403,6 @@ def _construct_average_spectrum(
 @nb.njit(boundscheck=False)
 def _assign_global_cluster_labels(
     cluster_labels: np.ndarray,
-    idx: np.ndarray,
     splits: nb.typed.List,
     current_label: int,
 ) -> int:
@@ -1191,8 +1413,6 @@ def _assign_global_cluster_labels(
     ----------
     cluster_labels : np.ndarray
         The cluster labels.
-    idx : np.ndarray
-        The label indexes.
     splits : nb.typed.List
         A list of start and end indices of cluster chunks.
     current_label : int
@@ -1205,7 +1425,7 @@ def _assign_global_cluster_labels(
     """
     max_label = current_label
     for i in range(len(splits) - 1):
-        for j in idx[splits[i] : splits[i + 1]]:
+        for j in range(splits[i], splits[i + 1]):
             if cluster_labels[j] != -1:
                 cluster_labels[j] += current_label
                 if cluster_labels[j] > max_label:
