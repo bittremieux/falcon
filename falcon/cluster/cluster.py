@@ -8,6 +8,7 @@ from functools import partial
 from typing import Iterator, List, Optional, Tuple
 
 import fastcluster
+import joblib
 import lance
 import numba as nb
 import numpy as np
@@ -131,9 +132,8 @@ def generate_clusters(
                 mzs, precursor_tol_mass, precursor_tol_mode, batch_size
             )
             # Per m/z split clustering.
-            chunks = cost_based_chunking(
-                splits, multiprocessing.cpu_count() - 1
-            )
+            # TODO: check if still needed with joblib
+            chunks = cost_based_chunking(splits, multiprocessing.cpu_count())
             # Cluster m/z splits
             if len(chunks) > 0:
                 # Process chunks
@@ -147,7 +147,7 @@ def generate_clusters(
                     precursor_tol_mass=precursor_tol_mass,
                     precursor_tol_mode=precursor_tol_mode,
                     rt_tol=rt_tol,
-                    fragment_tol=fragment_tol,
+                    fragment_mz_tol=fragment_tol,
                     consensus_method=consensus_method,
                     consensus_params=consensus_params,
                 )
@@ -162,17 +162,19 @@ def generate_clusters(
                         data_chunk.append(
                             (
                                 task_id,
-                                row_ids,
+                                row_ids.tolist(),
                                 idx_interval,
                                 mz_interval,
                             )
                         )
                     data_chunks.append(data_chunk)
 
-                with multiprocessing.Pool(
-                    multiprocessing.cpu_count() - 1
-                ) as pool:
-                    results = pool.map(process_chunk, data_chunks)
+                results = joblib.Parallel(
+                    n_jobs=-1, backend="loky", verbose=5
+                )(
+                    joblib.delayed(process_chunk)(data_chunk)
+                    for data_chunk in data_chunks
+                )
                 flattened_results = [
                     split_result
                     for chunk_results in results
@@ -311,7 +313,7 @@ def cluster_chunk(
     precursor_tol_mass: float,
     precursor_tol_mode: str,
     rt_tol: float,
-    fragment_tol: float,
+    fragment_mz_tol: float,
     consensus_method: str,
     consensus_params: dict,
 ):
@@ -341,7 +343,7 @@ def cluster_chunk(
     rt_tol : float
         The retention time tolerance for points to be clustered together. If
         `None`, do not restrict the retention time.
-    fragment_tol: float
+    fragment_mz_tol: float
         The fragment m/z tolerance.
     consensus_method : str
         The method to use for consensus spectrum computation.
@@ -377,7 +379,7 @@ def cluster_chunk(
                 precursor_tol_mass,
                 precursor_tol_mode,
                 rt_tol,
-                fragment_tol,
+                fragment_mz_tol,
                 consensus_method,
                 consensus_params,
             ),
@@ -457,6 +459,7 @@ def _cluster_mz_interval(
         ).to_pandas()
     else:
         spectra = data.loc[row_ids]
+    spectra = spectra.sort_values("precursor_mz")
     rts = spectra["retention_time"].values
     spectra = spectra.apply(
         similarity.df_row_to_spectrum_tuple, axis=1

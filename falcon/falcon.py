@@ -159,22 +159,6 @@ def main(args: Union[str, List[str]] = None) -> int:
         # No valid spectra found with the current charge.
         if dataset.count_rows() == 0:
             continue
-        metadata = (
-            dataset.to_table(
-                columns=[
-                    "filename",
-                    "identifier",
-                    "precursor_charge",
-                    "precursor_mz",
-                    "retention_time",
-                ]
-            )
-            .to_pandas()
-            .rename(
-                {"identifier": "spectrum_id"},
-                axis=1,
-            )
-        )
         # Cluster spectra and get representative spectra.
         consensus_params = {}
         if config.consensus_method == "average":
@@ -207,6 +191,23 @@ def main(args: Union[str, List[str]] = None) -> int:
         # noinspection PyUnresolvedReferences
         current_label = np.amax(clusters) + 1
         # Save cluster assignments.
+        metadata = (
+            dataset.to_table(
+                columns=[
+                    "filename",
+                    "identifier",
+                    "precursor_charge",
+                    "precursor_mz",
+                    "retention_time",
+                ]
+            )
+            .to_pandas()
+            .rename(
+                {"identifier": "spectrum_id"},
+                axis=1,
+            )
+            .sort_values("precursor_mz")
+        )
         metadata["cluster"] = clusters
         clusters_all.append(metadata)
         # Extract identifiers for cluster representatives (medoids).
