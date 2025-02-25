@@ -465,7 +465,7 @@ def _cluster_mz_interval(
         similarity.df_row_to_spectrum_tuple, axis=1
     ).tolist()
     n_spectra = len(spectra)
-    cluster_labels = np.empty(n_spectra, np.int32)
+    cluster_labels = -np.ones(n_spectra, np.int32)
     if n_spectra > 1:
         # Hierarchical clustering of the vectors.
         # Subtract 1 because fcluster starts with cluster label 1 instead of 0
