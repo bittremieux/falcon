@@ -16,6 +16,8 @@ import pandas as pd
 import scipy.cluster.hierarchy as sch
 import spectrum_utils.utils as suu
 from scipy.cluster.hierarchy import fcluster
+from scipy.spatial.distance import squareform
+from sklearn.cluster import DBSCAN
 from tqdm import tqdm
 
 from . import similarity
@@ -475,14 +477,19 @@ def _cluster_mz_interval(
             fragment_mz_tol,
             min_matches,
         )
-        labels = (
-            sch.fcluster(
-                fastcluster.linkage(pdist, linkage),
-                distance_threshold,
-                "distance",
-            )
-            - 1
-        )
+        # labels = (
+        #     sch.fcluster(
+        #         fastcluster.linkage(pdist, linkage),
+        #         distance_threshold,
+        #         "distance",
+        #     )
+        #     - 1
+        # )
+        # make pdist a square matrix
+        pdist_square = squareform(pdist)
+        labels = DBSCAN(
+            eps=distance_threshold, min_samples=2, metric="precomputed"
+        ).fit_predict(pdist_square)
         # Refine initial clusters to make sure spectra within a cluster don't
         # have an excessive precursor m/z difference.
         order = np.argsort(labels)
