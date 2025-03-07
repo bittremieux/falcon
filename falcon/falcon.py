@@ -183,7 +183,7 @@ def main(args: Union[str, List[str]] = None) -> int:
             config.batch_size,
             config.consensus_method,
             consensus_params,
-            config.lazy_loading_off,
+            config.lazy_loading,
         )
         # Make sure that different charges have non-overlapping cluster labels.
         # only change labels that are not -1 (noise)
@@ -194,7 +194,6 @@ def main(args: Union[str, List[str]] = None) -> int:
         metadata = (
             dataset.to_table(
                 columns=[
-                    "filename",
                     "identifier",
                     "precursor_charge",
                     "precursor_mz",
@@ -202,11 +201,7 @@ def main(args: Union[str, List[str]] = None) -> int:
                 ]
             )
             .to_pandas()
-            .rename(
-                {"identifier": "spectrum_id"},
-                axis=1,
-            )
-            .sort_values("precursor_mz")
+            .sort_values(["precursor_mz", "identifier"])
         )
         metadata["cluster"] = clusters
         clusters_all.append(metadata)
@@ -216,7 +211,7 @@ def main(args: Union[str, List[str]] = None) -> int:
 
     # Export cluster memberships and representative spectra.
     clusters_all = pd.concat(clusters_all, ignore_index=True).sort_values(
-        ["filename", "spectrum_id"], key=natsort.natsort_keygen()
+        ["identifier"], key=natsort.natsort_keygen()
     )
     logger.info(
         "Export cluster assignments of %d spectra to %d unique "
@@ -289,7 +284,6 @@ def _prepare_spectra(process_spectrum: Callable) -> Set[int]:
             pa.field("mz", pa.list_(pa.float32())),
             pa.field("intensity", pa.list_(pa.float32())),
             pa.field("retention_time", pa.float32()),
-            pa.field("filename", pa.string()),
         ]
     )
     lance_writers = multiprocessing.pool.ThreadPool(
@@ -392,7 +386,6 @@ def _read_spectra(
     spectra = []
     filename = os.path.abspath(filename)
     for spec in ms_io.get_spectra(filename):
-        spec.filename = filename
         spec = process_spectrum(spec)
         if spec is None:
             low_quality_counter += 1

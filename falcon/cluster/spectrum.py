@@ -13,7 +13,6 @@ import spectrum_utils.spectrum as sus
 MsmsSpectrumNb = collections.namedtuple(
     "MsmsSpectrumNb",
     [
-        "filename",
         "identifier",
         "precursor_mz",
         "precursor_charge",
@@ -165,7 +164,6 @@ def process_spectrum(
         "mz": spectrum.mz,
         "intensity": intensity,
         "retention_time": spectrum.retention_time,
-        "filename": spectrum.filename,
     }
 
 
@@ -311,7 +309,6 @@ def df_row_to_spec(row: pd.Series) -> MsmsSpectrumNb:
         The spectrum object.
     """
     spectrum = MsmsSpectrumNb(
-        row["filename"],
         row["identifier"],
         row["precursor_mz"],
         row["precursor_charge"],

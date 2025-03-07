@@ -50,7 +50,7 @@ def generate_clusters(
     batch_size: int,
     consensus_method: str,
     consensus_params: dict,
-    lazy_loading_off: bool = False,
+    lazy_loading: bool = False,
 ) -> np.ndarray:
     """
     Hierarchical clustering of the given pairwise distance matrix.
@@ -97,11 +97,14 @@ def generate_clusters(
         min_samples,
     )
     # Sort the metadata by increasing precursor m/z for easy subsetting.
-    if not lazy_loading_off:
-        data = dataset.to_table(columns=["precursor_mz"]).to_pandas()
+    if lazy_loading:
+        data = dataset.to_table(
+            columns=["precursor_mz", "identifier"]
+        ).to_pandas()
     else:
         data = dataset.to_table(
             columns=[
+                "identifier",
                 "precursor_mz",
                 "precursor_charge",
                 "retention_time",
@@ -110,7 +113,7 @@ def generate_clusters(
             ]
         ).to_pandas()
     data["row_id"] = data.index
-    data.sort_values("precursor_mz", inplace=True)
+    data.sort_values(["precursor_mz", "identifier"], inplace=True)
     # Cluster per contiguous block of precursor m/z's (relative to the
     # precursor m/z threshold).
     logger.info(
@@ -142,7 +145,7 @@ def generate_clusters(
                 process_chunk = partial(
                     cluster_chunk,
                     dataset=dataset,
-                    data=data if lazy_loading_off else None,
+                    data=data if not lazy_loading else None,
                     linkage=linkage,
                     distance_threshold=distance_threshold,
                     min_matches=min_matches,
@@ -477,19 +480,19 @@ def _cluster_mz_interval(
             fragment_mz_tol,
             min_matches,
         )
-        # labels = (
-        #     sch.fcluster(
-        #         fastcluster.linkage(pdist, linkage),
-        #         distance_threshold,
-        #         "distance",
-        #     )
-        #     - 1
-        # )
+        labels = (
+            sch.fcluster(
+                fastcluster.linkage(pdist, linkage),
+                distance_threshold,
+                "distance",
+            )
+            - 1
+        )
         # make pdist a square matrix
-        pdist_square = squareform(pdist)
-        labels = DBSCAN(
-            eps=distance_threshold, min_samples=2, metric="precomputed"
-        ).fit_predict(pdist_square)
+        # pdist_square = squareform(pdist)
+        # labels = DBSCAN(
+        #     eps=distance_threshold, min_samples=2, metric="precomputed"
+        # ).fit_predict(pdist_square)
         # Refine initial clusters to make sure spectra within a cluster don't
         # have an excessive precursor m/z difference.
         order = np.argsort(labels)

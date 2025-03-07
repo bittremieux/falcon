@@ -72,10 +72,10 @@ class Config:
             "(default: no export).",
         )
         self._parser.add_argument(
-            "--lazy_loading_off",
+            "--lazy_loading",
             action="store_true",
-            help="Turn off lazy loading of the spectra from the lance dataset "
-            "(default: lazy loading).",
+            help="Turn on lazy loading of the spectra from the lance dataset "
+            "(default: eager loading).",
         )
 
         # CLUSTERING

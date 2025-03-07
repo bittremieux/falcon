@@ -1,4 +1,5 @@
 import logging
+import os
 from typing import Dict, IO, Iterable, Union
 
 import pyteomics.mzml
@@ -27,9 +28,15 @@ def get_spectra(source: Union[IO, str]) -> Iterable[sus.MsmsSpectrum]:
         An iterator over the spectra in the given file.
     """
     with pyteomics.mzml.MzML(source) as f_in:
+        filename = os.path.splitext(os.path.basename(f_in.name))[0]
         try:
             for spectrum_dict in f_in:
                 if int(spectrum_dict.get("ms level", -1)) > 1:
+                    # USI-inspired cluster identifier.
+                    scan_nr = spectrum_dict["id"][
+                        spectrum_dict["id"].find("scan=") + 5 :
+                    ]
+                    spectrum_dict["id"] = f"{filename}:scan:{scan_nr}"
                     try:
                         yield _parse_spectrum(spectrum_dict)
                     except (ValueError, KeyError):
