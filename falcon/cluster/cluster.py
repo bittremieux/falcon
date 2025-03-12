@@ -112,9 +112,8 @@ def generate_clusters(
                 "intensity",
             ]
         ).to_pandas()
-    data.reset_index().sort_values(
+    data = data.reset_index().sort_values(
         ["precursor_mz", "retention_time"],
-        inplace=True,
     )
     # Cluster per contiguous block of precursor m/z's (relative to the
     # precursor m/z threshold).
