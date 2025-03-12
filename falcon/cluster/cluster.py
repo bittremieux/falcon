@@ -112,8 +112,10 @@ def generate_clusters(
                 "intensity",
             ]
         ).to_pandas()
-    data["row_id"] = data.index
-    data.sort_values(["precursor_mz", "identifier"], inplace=True)
+    data.reset_index().sort_values(
+        ["precursor_mz", "retention_time"],
+        inplace=True,
+    )
     # Cluster per contiguous block of precursor m/z's (relative to the
     # precursor m/z threshold).
     logger.info(
@@ -131,7 +133,7 @@ def generate_clusters(
         with tqdm(
             total=len(data), desc="Clustering", unit="spectra", smoothing=0
         ) as pbar:
-            idx = data.index.values
+            idx = data["index"].values
             mzs = data["precursor_mz"].values
             splits = _get_precursor_mz_splits(
                 mzs, precursor_tol_mass, precursor_tol_mode, batch_size
@@ -161,7 +163,7 @@ def generate_clusters(
                 for chunk in chunks:
                     data_chunk = []
                     for task_id, (interval_start, interval_stop) in chunk:
-                        row_ids = data.row_id[interval_start:interval_stop]
+                        row_ids = idx[interval_start:interval_stop]
                         idx_interval = idx[interval_start:interval_stop]
                         mz_interval = mzs[interval_start:interval_stop]
                         data_chunk.append(
@@ -199,7 +201,6 @@ def generate_clusters(
             max_label = _assign_global_cluster_labels(
                 cluster_labels, splits, max_label
             )
-        cluster_labels.flush()
         noise_mask = cluster_labels == -1
         n_clusters = np.unique(cluster_labels[~noise_mask]).size
         n_noise = noise_mask.sum()
@@ -213,6 +214,7 @@ def generate_clusters(
         cluster_labels[noise_mask] = np.arange(
             n_clusters, n_clusters + n_noise
         )
+        cluster_labels.flush()
         return cluster_labels, rep_spectra
 
 
@@ -321,7 +323,7 @@ def cluster_chunk(
     fragment_mz_tol: float,
     consensus_method: str,
     consensus_params: dict,
-):
+) -> List[Tuple[int, List[ConsensusTuple]]]:
     """
     Cluster the vectors in the given interval.
 
@@ -464,7 +466,7 @@ def _cluster_mz_interval(
         ).to_pandas()
     else:
         spectra = data.loc[row_ids]
-    spectra = spectra.sort_values("precursor_mz")
+    spectra = spectra.sort_values(["precursor_mz", "retention_time"])
     rts = spectra["retention_time"].values
     spectra = spectra.apply(
         similarity.df_row_to_spectrum_tuple, axis=1
@@ -1445,7 +1447,7 @@ def compute_condensed_distance_matrix(
             shape=(n * (n - 1) // 2,),
         )
 
-        condensed_distance_matrix_parallel(
+        _condensed_distance_matrix_parallel(
             condensed_dist_matrix,
             spec_tuples,
             fragment_mz_tol,
@@ -1456,7 +1458,7 @@ def compute_condensed_distance_matrix(
 
 
 @nb.njit(parallel=True)
-def condensed_distance_matrix_parallel(
+def _condensed_distance_matrix_parallel(
     condensed_dist_matrix: np.ndarray,
     spec_tuples: List[similarity.SpectrumTuple],
     fragment_mz_tol: float,

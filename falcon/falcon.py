@@ -201,7 +201,7 @@ def main(args: Union[str, List[str]] = None) -> int:
                 ]
             )
             .to_pandas()
-            .sort_values(["precursor_mz", "identifier"])
+            .sort_values(["precursor_mz", "retention_time"])
         )
         metadata["cluster"] = clusters
         clusters_all.append(metadata)

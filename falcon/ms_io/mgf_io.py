@@ -1,5 +1,6 @@
 import math
 import os
+import re
 from typing import Dict, IO, Iterable, List, Union
 
 import numba as nb
@@ -38,11 +39,18 @@ def get_spectra(source: Union[IO, str]) -> Iterable[sus.MsmsSpectrum]:
                 spectrum_dict["params"][
                     "title"
                 ] = f'{filename}:scan:{spectrum_dict["params"]["scan"]}'
+            # check if title matches USI regex
             else:
-                # Use the index in the MGF file as identifier.
-                spectrum_dict["params"][
-                    "title"
-                ] = f"{filename}:index:{spectrum_i}"
+                usi_pattern = re.compile(
+                    "^mzspec:[^:\s]+:[^:\s]+:(scan:\d+|\d+)(:[^:\s]+)?$"
+                )
+                # Use the index in the MGF file as identifier if title is not a USI.
+                if not bool(
+                    usi_pattern.match(spectrum_dict["params"]["title"])
+                ):
+                    spectrum_dict["params"][
+                        "title"
+                    ] = f"{filename}:index:{spectrum_i}"
             try:
                 yield _parse_spectrum(spectrum_dict)
             except (ValueError, KeyError):
