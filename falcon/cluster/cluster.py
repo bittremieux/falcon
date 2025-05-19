@@ -28,12 +28,13 @@ logger = logging.getLogger("falcon")
 ConsensusTuple = collections.namedtuple(
     "ConsensusTuple",
     [
-        "precursor_mz",
-        "precursor_charge",
-        "mz",
-        "intensity",
-        "retention_time",
-        "cluster_id",
+        "precursor_mz",  # np.float32
+        "precursor_charge",  # np.int32 or np.nan
+        "mz",  # np.ndarray of np.float32
+        "intensity",  # np.ndarray of np.float32
+        "retention_time",  # np.float32
+        "cluster_id",  # np.int32
+        "mz_split",  # np.int32
     ],
 )
 
@@ -86,8 +87,8 @@ def generate_clusters(
 
     Returns
     -------
-    np.ndarray
-        Cluster labels. Noisy samples are given the label -1.
+    Tuple[np.ndarray, List[ConsensusTuple]]
+        The cluster labels and the representative spectra for each cluster.
     """
     # Hierarchical clustering using the precomputed pairwise distance matrix.
     min_samples = 2
@@ -128,7 +129,7 @@ def generate_clusters(
             cluster_filename, mode="w+", dtype=np.int32, shape=(data.shape[0],)
         )
         cluster_labels.fill(-1)
-        max_label, rep_spectra = 0, []
+        representative_spectra = []
         with tqdm(
             total=len(data), desc="Clustering", unit="spectra", smoothing=0
         ) as pbar:
@@ -192,29 +193,30 @@ def generate_clusters(
                     labels,
                 ) in flattened_results:
                     if interval_rep_spectra is not None:
-                        rep_spectra.extend(interval_rep_spectra)
+                        # add task id (mz_split) to rep_spectra
+                        interval_rep_spectra = [
+                            s._replace(mz_split=np.int32(task_id))
+                            for s in interval_rep_spectra
+                        ]
+                        representative_spectra.extend(interval_rep_spectra)
                         cluster_labels[
                             splits[task_id] : splits[task_id + 1]
                         ] = labels
                         pbar.update(len(labels))
-            max_label = _assign_global_cluster_labels(
-                cluster_labels, splits, max_label
+            _, representative_spectra = _assign_global_cluster_labels(
+                cluster_labels, representative_spectra, splits
             )
-        noise_mask = cluster_labels == -1
-        n_clusters = np.unique(cluster_labels[~noise_mask]).size
-        n_noise = noise_mask.sum()
+        _, counts = np.unique(cluster_labels, return_counts=True)
+        n_clusters = np.count_nonzero(counts > 1)
+        n_noise = np.count_nonzero(counts == 1)
         logger.info(
             "%d spectra grouped in %d clusters, %d spectra remain as singletons",
-            (cluster_labels != -1).sum(),
+            counts[counts > 1].sum(),
             n_clusters,
             n_noise,
         )
-        # Reassign noise points to singleton clusters.
-        cluster_labels[noise_mask] = np.arange(
-            n_clusters, n_clusters + n_noise
-        )
         cluster_labels.flush()
-        return cluster_labels, rep_spectra
+        return cluster_labels, representative_spectra
 
 
 @nb.njit
@@ -246,9 +248,12 @@ def _get_precursor_mz_splits(
         not exceed the precursor m/z tolerance and are separated by at least
         the precursor m/z tolerance.
     """
-    splits, i = nb.typed.List([0]), 1
+    splits = nb.typed.List([0])
     for i in range(1, len(precursor_mzs)):
-        if (
+        block_size = i - splits[-1]
+        if block_size >= batch_size:
+            splits.append(i)
+        elif (
             suu.mass_diff(
                 precursor_mzs[i],
                 precursor_mzs[i - 1],
@@ -256,17 +261,18 @@ def _get_precursor_mz_splits(
             )
             > precursor_tol_mass
         ):
-            block_size = i - splits[-1]
-            if block_size < batch_size:
-                splits.append(i)
-            else:
-                n_chunks = math.ceil(block_size / batch_size)
-                chunk_size = block_size // n_chunks
-                for _ in range(block_size % n_chunks):
-                    splits.append(splits[-1] + chunk_size + 1)
-                for _ in range(n_chunks - (block_size % n_chunks)):
-                    splits.append(splits[-1] + chunk_size)
-    splits.append(len(precursor_mzs))
+            splits.append(i)
+            # if block_size < batch_size: TODO: ask wout about this
+            #     splits.append(i)
+            # else:
+            #     n_chunks = math.ceil(block_size / batch_size)
+            #     chunk_size = block_size // n_chunks
+            #     for _ in range(block_size % n_chunks):
+            #         splits.append(splits[-1] + chunk_size + 1)
+            #     for _ in range(n_chunks - (block_size % n_chunks)):
+            #         splits.append(splits[-1] + chunk_size)
+    if splits[-1] != len(precursor_mzs):
+        splits.append(len(precursor_mzs))
     return splits
 
 
@@ -516,19 +522,17 @@ def _cluster_mz_interval(
                 current_label,
             )
             current_label += n_clusters
-        # Assign cluster labels.
-        # Returned cluster labels should be sorted by precursor mass.
-        cluster_labels = labels[rev_order]
-        if current_label > 0:
-            # Compute cluster medoids.
+        # Get representative spectra for clusters.
+        if current_label + 1 < n_spectra:
             order_ = np.argsort(labels)
+            rev_order_ = np.argsort(order_)
             idx = idx[order_]
             labels = labels[order_]
             rts = rts[order_]
             order_map = order[order_]
             if consensus_method == "medoid":
                 consensus_params["pdist"] = pdist
-            rep_spectra = _get_representative_spectra(
+            rep_spectra = _get_representative_spectra(  # representative spectra are sorted by label
                 spectra,
                 labels,
                 rts,
@@ -536,28 +540,48 @@ def _cluster_mz_interval(
                 consensus_method,
                 consensus_params,
             )
-        else:
+            cluster_labels = labels[rev_order_[rev_order]]
+        else:  # only singletons
             rep_spectra = spectra
             rep_spectra = [
                 ConsensusTuple(
-                    *spec,
-                    retention_time=rts[i],
-                    cluster_id=-1,
+                    precursor_mz=np.float32(spec.precursor_mz),
+                    precursor_charge=(
+                        np.int32(spec.precursor_charge)
+                        if not np.isnan(spec.precursor_charge)
+                        else np.nan
+                    ),
+                    mz=spec.mz.astype(np.float32),
+                    intensity=spec.intensity.astype(np.float32),
+                    retention_time=np.float32(rts[i]),
+                    cluster_id=np.int32(labels[rev_order][i]),
+                    mz_split=None,
                 )
                 for i, spec in enumerate(rep_spectra)
             ]
+            cluster_labels = labels[rev_order]
         # Force memory clearing.
         del pdist
         if n_spectra > 2**11:
             gc.collect()
-    else:
+    else:  # mz split contains only 1 spectrum
+        spec = spectra[0]
         rep_spectra = [
             ConsensusTuple(
-                *spectra[0],
-                retention_time=rts[0],
-                cluster_id=-1,
+                precursor_mz=np.float32(spec.precursor_mz),
+                precursor_charge=(
+                    np.int32(spec.precursor_charge)
+                    if not np.isnan(spec.precursor_charge)
+                    else np.nan
+                ),
+                mz=spec.mz.astype(np.float32),
+                intensity=spec.intensity.astype(np.float32),
+                retention_time=np.float32(rts[0]),
+                cluster_id=np.int32(0),
+                mz_split=None,
             )
         ]
+        cluster_labels[0] = 0
     # Log clustering progress.
     # Only for large splits (> 1% of spectra)
     if n_spectra > 0.01 * len(spectra) and n_spectra > 1000:
@@ -566,134 +590,6 @@ def _cluster_mz_interval(
             "Clustered %d spectra in %d clusters.", n_spectra, len(rep_spectra)
         )
     return rep_spectra, cluster_labels
-
-
-def cluster_1_spectrum(
-    dataset: lance.LanceDataset,
-    row_id: int,
-) -> ConsensusTuple:
-    """
-    "Cluster" a single spectrum.
-
-    Parameters
-    ----------
-    dataset : lance.LanceDataset
-        The dataset containing the spectra to be clustered.
-    row_id : int
-        The row id of the spectrum to be clustered.
-
-    Returns
-    -------
-    ConsensusTuple
-        The representative spectrum.
-    """
-    spectrum = dataset.take(
-        indices=[row_id],
-        columns=[
-            "precursor_mz",
-            "precursor_charge",
-            "retention_time",
-            "mz",
-            "intensity",
-        ],
-    ).to_pandas()
-    rt = spectrum["retention_time"].values[0]
-    spectrum = spectrum.apply(
-        similarity.df_row_to_spectrum_tuple, axis=1
-    ).tolist()[0]
-    return ConsensusTuple(
-        *spectrum,
-        retention_time=rt,
-        cluster_id=-1,
-    )
-
-
-def cluster_2_spectra(
-    dataset: lance.LanceDataset,
-    row_id1: int,
-    row_id2: int,
-    fragment_mz_tol: float,
-    distance_threshold: float,
-    min_matches: int,
-    consensus_method: str,
-    consensus_params: dict,
-):
-    """
-    Cluster two spectra.
-
-    Parameters
-    ----------
-    dataset : lance.LanceDataset
-        The dataset containing the spectra to be clustered.
-    row_id1 : int
-        The row id of the first spectrum to be clustered.
-    row_id2 : int
-        The row id of the second spectrum to be clustered.
-    fragment_mz_tol : float
-        The fragment m/z tolerance.
-    distance_threshold : float
-        The maximum linkage distance threshold during clustering.
-    min_matches: int
-        The minimum number of matched peaks to consider the spectra similar.
-    consensus_method : str
-        The method to use for consensus spectrum computation.
-    min_mz : float
-        The minimum m/z value to consider for binning.
-    max_mz : float
-        The maximum m/z value to consider for binning.
-    bin_size : float
-        The width of each bin in m/z units.
-    n_min : float
-        The number of standard deviations for the lower bound for outlier rejection.
-    n_max : float
-        The number of standard deviations for the upper bound for outlier rejection.
-
-    Returns
-    -------
-    List[ConsensusTuple]
-        The representative spectra for each cluster.
-    """
-    spectra = dataset.take(
-        indices=[row_id1, row_id2],
-        columns=[
-            "precursor_mz",
-            "precursor_charge",
-            "retention_time",
-            "mz",
-            "intensity",
-        ],
-    ).to_pandas()
-    spec1, spec2 = spectra.apply(
-        similarity.df_row_to_spectrum_tuple, axis=1
-    ).tolist()
-    rt1, rt2 = spectra["retention_time"].values
-    sim, n_match = similarity.cosine_fast(spec1, spec2, fragment_mz_tol)
-    if (1 - sim) <= distance_threshold and n_match >= min_matches:
-        # consensus spectrum
-        if consensus_method == "medoid":
-            consensus_params["pdist"] = [sim]
-        return _get_representative_spectra(
-            spectra=[spec1, spec2],
-            labels=np.array([0, 0]),
-            rts=np.array([rt1, rt2]),
-            order_map=np.array([0, 1]),
-            consensus_method=consensus_method,
-            consensus_params=consensus_params,
-        )
-
-    else:
-        return [
-            ConsensusTuple(
-                *spec1,
-                retention_time=rt1,
-                cluster_id=-1,
-            ),
-            ConsensusTuple(
-                *spec2,
-                retention_time=rt2,
-                cluster_id=-1,
-            ),
-        ]
 
 
 @nb.njit
@@ -766,8 +662,11 @@ def _postprocess_cluster(
     """
     # No splitting needed if there are too few items in cluster.
     if cluster_labels.shape[0] < min_samples:
-        cluster_labels.fill(-1)
-        return 0
+        # fill with increasing labels
+        cluster_labels[:] = np.arange(
+            start_label, start_label + cluster_labels.shape[0]
+        )
+        return cluster_labels.shape[0]
     else:
         # Group items within the cluster based on their precursor m/z.
         # Precursor m/z's within a single group can't exceed the specified
@@ -798,7 +697,7 @@ def _postprocess_cluster(
         if n_clusters == 1:
             # Single homogeneous cluster.
             cluster_labels.fill(start_label)
-        elif n_clusters == cluster_mzs.shape[0]:
+        elif n_clusters == cluster_labels.shape[0]:
             # Only singletons.
             cluster_labels.fill(-1)
             n_clusters = 0
@@ -819,6 +718,14 @@ def _postprocess_cluster(
                     n_clusters += 1
             for i, label in enumerate(cluster_assignments):
                 cluster_labels[i] = labels[label]
+        # fill all  -1 labels with increasing labels
+        mask = cluster_labels == -1
+        num_singletons = np.count_nonzero(mask)
+        cluster_labels[mask] = np.arange(
+            start_label + n_clusters,
+            start_label + n_clusters + num_singletons,
+        )
+        n_clusters += num_singletons
         return n_clusters
 
 
@@ -908,17 +815,67 @@ def _get_representative_spectra(
         The representative spectra for each cluster.
     """
     if consensus_method == "medoid":
-        return _get_cluster_medoids(
+        (
+            precursor_mzs,
+            precursor_charges,
+            mzs,
+            intensities,
+            retention_times,
+            cluster_ids,
+        ) = _get_cluster_medoids(
             spectra, labels, rts, order_map, **consensus_params
         )
+        # create consensus spectra outside of numba
+        medoids = [
+            ConsensusTuple(
+                precursor_mz=np.float32(precursor_mzs[i]),
+                precursor_charge=(
+                    np.int32(precursor_charges[i])
+                    if not np.isnan(precursor_charges[i])
+                    else np.nan
+                ),
+                mz=mzs[i].astype(np.float32),
+                intensity=intensities[i].astype(np.float32),
+                retention_time=np.float32(rts[i]),
+                cluster_id=np.int32(cluster_ids[i]),
+                mz_split=None,
+            )
+            for i in range(len(precursor_mzs))
+        ]
+        return medoids
     elif consensus_method == "average":
-        return _get_cluster_average(
+        (
+            precursor_mzs,
+            precursor_charges,
+            mzs,
+            intensities,
+            retention_times,
+            cluster_ids,
+        ) = _get_cluster_average(
             spectra,
             labels,
             rts,
             order_map,
             **consensus_params,
         )
+        # create consensus spectra outside of numba
+        avg_spectra = [
+            ConsensusTuple(
+                precursor_mz=np.float32(precursor_mzs[i]),
+                precursor_charge=(
+                    np.int32(precursor_charges[i])
+                    if not np.isnan(precursor_charges[i])
+                    else np.nan
+                ),
+                mz=mzs[i].astype(np.float32),
+                intensity=intensities[i].astype(np.float32),
+                retention_time=np.float32(rts[i]),
+                cluster_id=np.int32(cluster_ids[i]),
+                mz_split=None,
+            )
+            for i in range(len(precursor_mzs))
+        ]
+        return avg_spectra
     else:
         raise ValueError(
             f"Unknown consensus spectrum method: {consensus_method}"
@@ -932,7 +889,14 @@ def _get_cluster_medoids(
     rts: np.ndarray,
     order_map: np.ndarray,
     pdist: np.ndarray,
-) -> List[ConsensusTuple]:
+) -> Tuple[
+    List[float],
+    List[Optional[int]],
+    List[np.ndarray],
+    List[np.ndarray],
+    List[float],
+    List[int],
+]:
     """
     Get the indexes of the cluster medoids.
 
@@ -951,11 +915,19 @@ def _get_cluster_medoids(
 
     Returns
     -------
-    List[ConsensusTuple]
-        The medoids for each cluster.
+    Tuple[List[float], List[Optional[int]], List[np.ndarray], List[np.ndarray], List[float], List[int]]
+        The medoid spectra for each cluster.
     """
-    medoids, m = [], len(spectra)
+    m = len(spectra)
+    precursor_mzs = []
+    precursor_charges = []
+    mzs = []
+    intensities = []
+    retention_times = []
+    cluster_ids = []
+
     for start_i, stop_i in _get_cluster_group_idx(labels):
+        # If less than 3 spectra in cluster, use the first spectrum as medoid.
         if stop_i - start_i > 2:
             row_sum = np.zeros(stop_i - start_i, np.float32)
             for row in range(stop_i - start_i):
@@ -967,29 +939,28 @@ def _get_cluster_medoids(
                     row_sum[row] += pdist_ij
                     row_sum[col] += pdist_ij
             medoid_spec = spectra[order_map[start_i + np.argmin(row_sum)]]
-            medoids.append(
-                ConsensusTuple(
-                    precursor_mz=medoid_spec.precursor_mz,
-                    precursor_charge=medoid_spec.precursor_charge,
-                    mz=medoid_spec.mz,
-                    intensity=medoid_spec.intensity,
-                    retention_time=rts[start_i + np.argmin(row_sum)],
-                    cluster_id=labels[start_i + np.argmin(row_sum)],
-                )
-            )
+            precursor_mzs.append(medoid_spec.precursor_mz)
+            precursor_charges.append(medoid_spec.precursor_charge)
+            mzs.append(medoid_spec.mz)
+            intensities.append(medoid_spec.intensity)
+            retention_times.append(rts[start_i + np.argmin(row_sum)])
+            cluster_ids.append(labels[start_i + np.argmin(row_sum)])
         else:
             medoid_spec = spectra[start_i]
-            medoids.append(
-                ConsensusTuple(
-                    precursor_mz=medoid_spec.precursor_mz,
-                    precursor_charge=medoid_spec.precursor_charge,
-                    mz=medoid_spec.mz,
-                    intensity=medoid_spec.intensity,
-                    retention_time=rts[start_i],
-                    cluster_id=labels[start_i],
-                )
-            )
-    return medoids
+            precursor_mzs.append(medoid_spec.precursor_mz)
+            precursor_charges.append(medoid_spec.precursor_charge)
+            mzs.append(medoid_spec.mz)
+            intensities.append(medoid_spec.intensity)
+            retention_times.append(rts[start_i])
+            cluster_ids.append(labels[start_i])
+    return (
+        precursor_mzs,
+        precursor_charges,
+        mzs,
+        intensities,
+        retention_times,
+        cluster_ids,
+    )
 
 
 def _get_cluster_average(
@@ -1002,7 +973,14 @@ def _get_cluster_average(
     bin_size: float,
     outlier_cutoff_lower: float,
     outlier_cutoff_upper: float,
-) -> List[ConsensusTuple]:
+) -> Tuple[
+    List[float],
+    List[Optional[int]],
+    List[np.ndarray],
+    List[np.ndarray],
+    List[float],
+    List[int],
+]:
     """
     Get the average spectra for each cluster. The average spectrum is computed
     by binning the spectra, removing (intensity) outliers in each bin, and averaging the remaining peaks.
@@ -1032,10 +1010,15 @@ def _get_cluster_average(
 
     Returns
     -------
-    List[ConsensusTuple]
+    Tuple[List[float], List[Optional[int]], List[np.ndarray], List[np.ndarray], List[float], List[int]]
         The average spectra for each cluster.
     """
-    average_spectra = []
+    precursor_mzs = []
+    precursor_charges = []
+    mzs = []
+    intensities = []
+    retention_times = []
+    cluster_ids = []
     for start_i, stop_i in _get_cluster_group_idx(labels):
         if stop_i - start_i > 1:
             spectra_to_average = [
@@ -1071,18 +1054,29 @@ def _get_cluster_average(
                 avg_rt,
                 labels[start_i],
             )
-            average_spectra.append(avg_spectrum)
+            precursor_mzs.append(avg_spectrum[0])
+            precursor_charges.append(avg_spectrum[1])
+            mzs.append(avg_spectrum[2])
+            intensities.append(avg_spectrum[3])
+            retention_times.append(avg_spectrum[4])
+            cluster_ids.append(avg_spectrum[5])
         else:
             # Single spectrum cluster
             avg_spectrum = spectra[order_map[start_i]]
-            average_spectra.append(
-                ConsensusTuple(
-                    *avg_spectrum,
-                    retention_time=rts[start_i],
-                    cluster_id=labels[start_i],
-                )
-            )
-    return average_spectra
+            precursor_mzs.append(avg_spectrum.precursor_mz)
+            precursor_charges.append(avg_spectrum.precursor_charge)
+            mzs.append(avg_spectrum.mz)
+            intensities.append(avg_spectrum.intensity)
+            retention_times.append(rts[start_i])
+            cluster_ids.append(labels[start_i])
+    return (
+        precursor_mzs,
+        precursor_charges,
+        mzs,
+        intensities,
+        retention_times,
+        cluster_ids,
+    )
 
 
 @nb.njit(cache=True)
@@ -1307,7 +1301,7 @@ def _construct_average_spectrum(
     charge: int,
     avg_rt: float,
     cluster: int,
-) -> similarity.SpectrumTuple:
+) -> Tuple[float, Optional[int], np.ndarray, np.ndarray, float, int]:
     """
     Construct the average spectrum from the binned spectra.
 
@@ -1330,26 +1324,29 @@ def _construct_average_spectrum(
 
     Returns
     -------
-    similarity.SpectrumTuple
-        The average spectrum.
+    Tuple[float, Optional[int], np.ndarray, np.ndarray, float, int]
+        The average spectrum as a tuple containing:
+        - The average precursor m/z.
+        - The precursor charge (or None if not available).
+        - The m/z values.
+        - The intensities.
+        - The average retention time.
+        - The cluster label.
     """
     mz = np.empty(len(bins_indices), np.float32)
     intensity = np.empty(len(bins_indices), np.float32)
 
-    idx = 0
-    for avg_intensity, avg_mz in zip(bins_peaks, bins_mz):
-        # use the middle of the bin as the m/z value
+    for idx, (avg_intensity, avg_mz) in enumerate(zip(bins_peaks, bins_mz)):
         mz[idx] = avg_mz
         intensity[idx] = avg_intensity
         idx += 1
-
-    return ConsensusTuple(
-        precursor_mz=avg_precursor_mz,
-        precursor_charge=charge,
-        mz=mz,
-        intensity=intensity,
-        retention_time=avg_rt,
-        cluster_id=cluster,
+    return (
+        avg_precursor_mz,
+        charge if charge is not None else np.nan,
+        mz,
+        intensity,
+        avg_rt,
+        cluster,
     )
 
 
@@ -1378,40 +1375,56 @@ def typed_list_to_numpy(lst: nb.typed.List) -> np.ndarray:
 @nb.njit(boundscheck=False)
 def _assign_global_cluster_labels(
     cluster_labels: np.ndarray,
+    rep_spectra: List[ConsensusTuple],
     splits: nb.typed.List,
-    current_label: int,
 ) -> int:
     """
-    Convert cluster labels per split to globally unique labels.
+    Convert cluster labels per split to unique labels (within charge).
 
     Parameters
     ----------
     cluster_labels : np.ndarray
         The cluster labels.
+    rep_spectra : List[ConsensusTuple]
+        The representative spectra.
     splits : nb.typed.List
         A list of start and end indices of cluster chunks.
-    current_label : int
-        First cluster label.
 
     Returns
     -------
     int
-        Last cluster label.
+        The maximum cluster label.
+    nb.typed.List
+        The representative spectra with updated cluster IDs.
     """
-    max_label = current_label
-    update_current_label = False
+    current_label = 0
+    typed_rep_spectra = nb.typed.List()
+
     for i in range(len(splits) - 1):
-        for j in range(splits[i], splits[i + 1]):
-            if cluster_labels[j] != -1:
-                cluster_labels[j] += current_label
-                update_current_label = True
-                if cluster_labels[j] > max_label:
-                    max_label = cluster_labels[j]
-        # only update after non-noise clusters
-        if update_current_label:
-            current_label = max_label + 1
-            update_current_label = False
-    return max_label
+        start, end = splits[i], splits[i + 1]
+        cluster_labels[start:end] += current_label
+        max_label = np.max(cluster_labels[start:end])
+
+        for s in rep_spectra:
+            if s.mz_split == i:
+                typed_rep_spectra.append(
+                    ConsensusTuple(
+                        precursor_mz=np.float32(s.precursor_mz),
+                        precursor_charge=(
+                            np.int32(s.precursor_charge)
+                            if not np.isnan(s.precursor_charge)
+                            else np.nan
+                        ),
+                        mz=s.mz.astype(np.float32),
+                        intensity=s.intensity.astype(np.float32),
+                        retention_time=np.float32(s.retention_time),
+                        cluster_id=np.int32(s.cluster_id + current_label),
+                        mz_split=np.int32(s.mz_split),
+                    )
+                )
+        current_label = max_label + 1
+
+    return max_label, typed_rep_spectra
 
 
 def compute_condensed_distance_matrix(
@@ -1512,8 +1525,14 @@ def condensed_index(i: int, j: int, n: int) -> int:
     int
         The index of the condensed distance matrix.
     """
-    if i == j:
+    if n <= 0:
+        raise ValueError("Number of spectra must be greater than 0")
+    elif i == j:
         raise ValueError("No diagonal elements in condensed matrix")
+    elif i < 0 or j < 0:
+        raise ValueError("Indices must be non-negative")
+    elif i >= n or j >= n:
+        raise ValueError("Index out of bounds")
     if i > j:
         i, j = j, i
     return int(n * i + j - ((i + 2) * (i + 1)) // 2)

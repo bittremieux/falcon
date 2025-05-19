@@ -9,6 +9,10 @@ import pyteomics.mgf
 import spectrum_utils.spectrum as sus
 
 from ..cluster import similarity
+from ..cluster import cluster
+
+
+USI_PATTERN = re.compile(r"^mzspec:[^:\s]+:[^:\s]+:(scan:\d+|\d+)(:[^:\s]+)?$")
 
 
 def get_spectra(source: Union[IO, str]) -> Iterable[sus.MsmsSpectrum]:
@@ -27,34 +31,30 @@ def get_spectra(source: Union[IO, str]) -> Iterable[sus.MsmsSpectrum]:
         An iterator over the spectra in the given file.
     """
     with pyteomics.mgf.MGF(source) as f_in:
-        filename = os.path.splitext(os.path.basename(f_in.name))[0]
+        base_filename = os.path.splitext(os.path.basename(f_in.name))[0]
+
         for spectrum_i, spectrum_dict in enumerate(f_in):
-            # USI-inspired cluster identifier.
-            if "scans" in spectrum_dict["params"]:
-                # Use a scan number as identifier.
-                spectrum_dict["params"][
-                    "title"
-                ] = f'{filename}:scan:{spectrum_dict["params"]["scans"]}'
-            elif "scan" in spectrum_dict["params"]:
-                spectrum_dict["params"][
-                    "title"
-                ] = f'{filename}:scan:{spectrum_dict["params"]["scan"]}'
-            # check if title matches USI regex
+            params = spectrum_dict.get("params", {})
+
+            # Prefer original filename from params if available
+            filename = os.path.splitext(
+                os.path.basename(params.get("filename", base_filename))
+            )[0]
+
+            # Build USI-inspired title
+            if "scans" in params:
+                params["title"] = f"{filename}:scan:{params['scans']}"
+            elif "scan" in params:
+                params["title"] = f"{filename}:scan:{params['scan']}"
             else:
-                usi_pattern = re.compile(
-                    "^mzspec:[^:\s]+:[^:\s]+:(scan:\d+|\d+)(:[^:\s]+)?$"
-                )
-                # Use the index in the MGF file as identifier if title is not a USI.
-                if not bool(
-                    usi_pattern.match(spectrum_dict["params"]["title"])
-                ):
-                    spectrum_dict["params"][
-                        "title"
-                    ] = f"{filename}:index:{spectrum_i}"
+                title = params.get("title", "")
+                if not USI_PATTERN.match(title):
+                    params["title"] = f"{filename}:index:{spectrum_i}"
+
             try:
                 yield _parse_spectrum(spectrum_dict)
             except (ValueError, KeyError):
-                pass
+                continue
 
 
 def _parse_spectrum(spectrum_dict: Dict) -> sus.MsmsSpectrum:
@@ -116,14 +116,14 @@ def write_spectra(
 
 
 def _spectra_to_dicts(
-    spectra: List[similarity.SpectrumTuple],
+    spectra: List[cluster.ConsensusTuple],
 ) -> Iterable[Dict]:
     """
     Convert MsmsSpectrum objects to Pyteomics MGF cluster dictionaries.
 
     Parameters
     ----------
-    spectra : List[similarity.SpectrumTuple]
+    spectra : List[cluster.ConsensusTuple]
         The spectra to be converted to Pyteomics MGF dictionaries.
 
     Returns
@@ -131,20 +131,18 @@ def _spectra_to_dicts(
     Iterable[Dict]
         The given spectra as Pyteomics MGF dictionaries.
     """
-    for spectrum in spectra:
+    for i, spectrum in enumerate(spectra):
         params = {
+            "title": f"falcon:cluster:{spectrum.cluster_id}",
+            "scans": i + 1,
             "pepmass": spectrum.precursor_mz,
         }
-        if hasattr(spectrum, "identifier"):
-            params["title"] = spectrum.identifier
         if not math.isnan(spectrum.precursor_charge):
             params["charge"] = spectrum.precursor_charge
         if hasattr(spectrum, "retention_time"):
             params["rtinseconds"] = spectrum.retention_time
         if hasattr(spectrum, "scan"):
             params["scan"] = spectrum.scan
-        if hasattr(spectrum, "cluster"):
-            params["cluster"] = spectrum.cluster
         if hasattr(spectrum, "cluster_size"):
             params["cluster_size"] = spectrum.cluster_size
         yield {

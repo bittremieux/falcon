@@ -188,6 +188,10 @@ def main(args: Union[str, List[str]] = None) -> int:
         # Make sure that different charges have non-overlapping cluster labels.
         # only change labels that are not -1 (noise)
         clusters += current_label
+        rep_spectra = [
+            s._replace(cluster_id=s.cluster_id + current_label)
+            for s in rep_spectra
+        ]
         # noinspection PyUnresolvedReferences
         current_label = np.amax(clusters) + 1
         # Save cluster assignments.
@@ -319,6 +323,7 @@ def _prepare_spectra(process_spectrum: Callable) -> Set[int]:
         try:
             dataset = lance.dataset(dataset_path)
         except ValueError:
+            # If the dataset does not exist or is corrupted, remove its charge from list.
             charge = int(dataset_path.split("_")[-1].split(".")[0])
             logger.error("Failed to create dataset for charge %d", charge)
             charges.remove(charge)
