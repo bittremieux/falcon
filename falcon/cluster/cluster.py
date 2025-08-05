@@ -100,7 +100,7 @@ def generate_clusters(
     # Sort the metadata by increasing precursor m/z for easy subsetting.
     if lazy_loading:
         data = dataset.to_table(
-            columns=["precursor_mz", "identifier"]
+            columns=["identifier", "precursor_mz", "retention_time"]
         ).to_pandas()
     else:
         data = dataset.to_table(
@@ -203,6 +203,12 @@ def generate_clusters(
                             splits[task_id] : splits[task_id + 1]
                         ] = labels
                         pbar.update(len(labels))
+            # for i, representative_spectrum in enumerate(
+            #     representative_spectra
+            # ):
+            #     print(representative_spectrum.cluster_id)
+            #     if i > 17:
+            #         break
             _, representative_spectra = _assign_global_cluster_labels(
                 cluster_labels, representative_spectra, splits
             )
@@ -523,7 +529,7 @@ def _cluster_mz_interval(
             )
             current_label += n_clusters
         # Get representative spectra for clusters.
-        if current_label + 1 < n_spectra:
+        if current_label < n_spectra:
             order_ = np.argsort(labels)
             rev_order_ = np.argsort(order_)
             idx = idx[order_]
@@ -836,7 +842,7 @@ def _get_representative_spectra(
                 ),
                 mz=mzs[i].astype(np.float32),
                 intensity=intensities[i].astype(np.float32),
-                retention_time=np.float32(rts[i]),
+                retention_time=np.float32(retention_times[i]),
                 cluster_id=np.int32(cluster_ids[i]),
                 mz_split=None,
             )
@@ -869,7 +875,7 @@ def _get_representative_spectra(
                 ),
                 mz=mzs[i].astype(np.float32),
                 intensity=intensities[i].astype(np.float32),
-                retention_time=np.float32(rts[i]),
+                retention_time=np.float32(retention_times[i]),
                 cluster_id=np.int32(cluster_ids[i]),
                 mz_split=None,
             )
@@ -1339,7 +1345,6 @@ def _construct_average_spectrum(
     for idx, (avg_intensity, avg_mz) in enumerate(zip(bins_peaks, bins_mz)):
         mz[idx] = avg_mz
         intensity[idx] = avg_intensity
-        idx += 1
     return (
         avg_precursor_mz,
         charge if charge is not None else np.nan,

@@ -186,7 +186,6 @@ def main(args: Union[str, List[str]] = None) -> int:
             config.lazy_loading,
         )
         # Make sure that different charges have non-overlapping cluster labels.
-        # only change labels that are not -1 (noise)
         clusters += current_label
         rep_spectra = [
             s._replace(cluster_id=s.cluster_id + current_label)
