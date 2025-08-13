@@ -203,13 +203,7 @@ def generate_clusters(
                             splits[task_id] : splits[task_id + 1]
                         ] = labels
                         pbar.update(len(labels))
-            # for i, representative_spectrum in enumerate(
-            #     representative_spectra
-            # ):
-            #     print(representative_spectrum.cluster_id)
-            #     if i > 17:
-            #         break
-            _, representative_spectra = _assign_global_cluster_labels(
+            representative_spectra = _assign_global_cluster_labels(
                 cluster_labels, representative_spectra, splits
             )
         _, counts = np.unique(cluster_labels, return_counts=True)
@@ -461,8 +455,8 @@ def _cluster_mz_interval(
 
     Returns
     -------
-    np.ndarray
-        List of representative spectra for each cluster.
+    Tuple[List[ConsensusTuple], np.ndarray]
+        A tuple containing the list of representative spectra for each cluster and the cluster labels.
     """
     if dataset is not None and data is None:
         spectra = dataset.take(
@@ -615,12 +609,15 @@ def _get_cluster_group_idx(clusters: np.ndarray) -> Iterator[Tuple[int, int]]:
         the unique cluster labels.
     """
     start_i = 0
-    while clusters[start_i] == -1 and start_i < clusters.shape[0]:
+    # Yield all noise points (-1) as singletons first
+    while start_i < clusters.shape[0] and clusters[start_i] == -1:
         yield start_i, start_i + 1
         start_i += 1
+    # Now yield actual clusters
     stop_i = start_i
     while stop_i < clusters.shape[0]:
-        start_i, label = stop_i, clusters[stop_i]
+        label = clusters[stop_i]
+        start_i = stop_i
         while stop_i < clusters.shape[0] and clusters[stop_i] == label:
             stop_i += 1
         yield start_i, stop_i
@@ -726,12 +723,12 @@ def _postprocess_cluster(
                 cluster_labels[i] = labels[label]
         # fill all  -1 labels with increasing labels
         mask = cluster_labels == -1
-        num_singletons = np.count_nonzero(mask)
+        n_singletons = np.count_nonzero(mask)
         cluster_labels[mask] = np.arange(
             start_label + n_clusters,
-            start_label + n_clusters + num_singletons,
+            start_label + n_clusters + n_singletons,
         )
-        n_clusters += num_singletons
+        n_clusters += n_singletons
         return n_clusters
 
 
@@ -952,7 +949,7 @@ def _get_cluster_medoids(
             retention_times.append(rts[start_i + np.argmin(row_sum)])
             cluster_ids.append(labels[start_i + np.argmin(row_sum)])
         else:
-            medoid_spec = spectra[start_i]
+            medoid_spec = spectra[order_map[start_i]]
             precursor_mzs.append(medoid_spec.precursor_mz)
             precursor_charges.append(medoid_spec.precursor_charge)
             mzs.append(medoid_spec.mz)
@@ -1382,7 +1379,7 @@ def _assign_global_cluster_labels(
     cluster_labels: np.ndarray,
     rep_spectra: List[ConsensusTuple],
     splits: nb.typed.List,
-) -> int:
+) -> nb.typed.List:
     """
     Convert cluster labels per split to unique labels (within charge).
 
@@ -1397,8 +1394,6 @@ def _assign_global_cluster_labels(
 
     Returns
     -------
-    int
-        The maximum cluster label.
     nb.typed.List
         The representative spectra with updated cluster IDs.
     """
@@ -1429,7 +1424,7 @@ def _assign_global_cluster_labels(
                 )
         current_label = max_label + 1
 
-    return max_label, typed_rep_spectra
+    return typed_rep_spectra
 
 
 def compute_condensed_distance_matrix(
