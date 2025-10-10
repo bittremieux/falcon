@@ -529,7 +529,7 @@ def _cluster_mz_interval(
             idx = idx[order_]
             labels = labels[order_]
             rts = rts[order_]
-            order_map = order[order_]
+            order_map = np.arange(len(labels))[order][order_]
             if consensus_method == "medoid":
                 consensus_params["pdist"] = pdist
             rep_spectra = _get_representative_spectra(  # representative spectra are sorted by label
