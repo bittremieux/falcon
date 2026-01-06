@@ -104,7 +104,9 @@ def generate_clusters(
     logger.info(
         "Cluster %d spectra with charge %s",
         len(data),
-        dataset.uri.split("_")[-1].split(".")[0],
+        dataset.uri.split("spectra_charge_")[-1]
+        .split(".")[0]
+        .replace("_", ", "),
     )
     with tempfile.NamedTemporaryFile(suffix=".npy") as cluster_file:
         cluster_filename = cluster_file.name
@@ -536,7 +538,7 @@ def _cluster_mz_interval(
                 ConsensusTuple(
                     precursor_mz=np.float32(spec.precursor_mz),
                     precursor_charge=(
-                        np.int32(spec.precursor_charge)
+                        np.float64(spec.precursor_charge)
                         if not np.isnan(spec.precursor_charge)
                         else np.nan
                     ),
@@ -559,7 +561,7 @@ def _cluster_mz_interval(
             ConsensusTuple(
                 precursor_mz=np.float32(spec.precursor_mz),
                 precursor_charge=(
-                    np.int32(spec.precursor_charge)
+                    np.float64(spec.precursor_charge)
                     if not np.isnan(spec.precursor_charge)
                     else np.nan
                 ),
@@ -646,7 +648,8 @@ def _postprocess_cluster(
                     rt_labels = np.zeros(len(cluster_rts), np.int32)
                     if len(valid_rts) >= 2:
                         rt_labels[~nan_mask] = (
-                            fcluster(_linkage(valid_rts), rt_tol, "distance") - 1
+                            fcluster(_linkage(valid_rts), rt_tol, "distance")
+                            - 1
                         )
                     # Label for NaN-RT spectra: one past the highest real RT label,
                     # so it is distinct from every real-RT label but the same for

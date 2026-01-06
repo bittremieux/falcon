@@ -312,7 +312,10 @@ def _prepare_spectra(
                 raise ValueError(
                     f"Charge {charge} appears in more than one bucket"
                 )
-            charge_to_bucket[charge] = tuple(sorted(bucket))
+            bucket_tuple = tuple(
+                sorted(bucket, key=lambda x: (isinstance(x, str), x))
+            )
+            charge_to_bucket[charge] = bucket_tuple
 
     lance_writers = multiprocessing.pool.ThreadPool(
         max_file_workers,
@@ -574,7 +577,9 @@ def bucket_key_to_str(bucket_key: Union[Tuple[int, ...], str]) -> str:
     """
     if isinstance(bucket_key, set):
         # Convert set to sorted tuple for consistent ordering
-        bucket_key = tuple(sorted(bucket_key))
+        bucket_key = tuple(
+            sorted(bucket_key, key=lambda x: (isinstance(x, str), x))
+        )
     if isinstance(bucket_key, tuple):
         parts = [str(p) for p in bucket_key]
         return "_" + "_".join(parts)
