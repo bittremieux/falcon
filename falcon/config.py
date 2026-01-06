@@ -1,5 +1,6 @@
 import argparse
 import textwrap
+import ast
 
 import configargparse
 
@@ -143,6 +144,16 @@ class Config:
             default=2**15,
             help="Batch size for clustering (default: %(default)s).",
         )
+        self._parser.add_argument(
+            "--precursor_charge_buckets",
+            nargs="+",
+            default=["[1]", "[2]", "[3]", "[4]", "[unknown]", "other"],
+            metavar="BUCKET",
+            help=(
+                "Charge buckets for precursor charges (default: %(default)s). "
+                "Clustering will be performed separately within each bucket."
+            ),
+        )
 
         # PREPROCESSING
         self._parser.add_argument(
@@ -220,6 +231,57 @@ class Config:
         self._namespace["precursor_tol"][0] = float(
             self._namespace["precursor_tol"][0]
         )
+
+        self._namespace["precursor_charge_buckets"] = (
+            self.parse_and_validate_charge_buckets(
+                self._namespace["precursor_charge_buckets"]
+            )
+        )
+
+    def parse_and_validate_charge_buckets(self, bucket_args):
+        """
+        Parse and validate the precursor charge buckets.
+
+        Parameters
+        ----------
+        bucket_args : list of str
+            List of charge bucket specifications as strings.
+
+        Returns
+        -------
+        List of charge buckets, where each bucket is either a set of
+        integers (charges) or the string "other".
+        """
+        buckets = []
+        seen_values = set()
+
+        for raw in bucket_args:
+            raw = raw.strip()
+
+            if raw == "other":
+                buckets.append("other")
+                continue
+
+            try:
+                values = set(
+                    ast.literal_eval(raw.replace("unknown", "'unknown'"))
+                )
+            except Exception as e:
+                raise argparse.ArgumentTypeError(
+                    f"Invalid charge bucket syntax: {raw}"
+                ) from e
+
+            # Check for duplicates across buckets
+            overlap = values & seen_values
+            if overlap:
+                raise argparse.ArgumentTypeError(
+                    f"Charge value(s) {sorted(overlap)} appear in more than one bucket"
+                )
+
+            seen_values |= values
+            buckets.append(values)
+
+        return buckets
 
     def __getattr__(self, option):
         if self._namespace is None:

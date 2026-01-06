@@ -48,6 +48,9 @@ def main(args: Union[str, List[str]] = None) -> int:
     logger.debug("outlier_cutoff_lower = %.2f", config.outlier_cutoff_lower)
     logger.debug("outlier_cutoff_upper = %.2f", config.outlier_cutoff_upper)
     logger.debug("batch_size = %d", config.batch_size)
+    logger.debug(
+        "precursor_charge_buckets = %s", config.precursor_charge_buckets
+    )
     logger.debug("min_peaks = %d", config.min_peaks)
     logger.debug("min_mz_range = %.2f", config.min_mz_range)
     logger.debug("min_mz = %.2f", config.min_mz)
@@ -115,7 +118,7 @@ def main(args: Union[str, List[str]] = None) -> int:
     ):
         logger.warning(
             "Setting both outlier_cutoff_lower and outlier_cutoff_upper "
-            "to values less than 1 can lead have unexpected results. It "
+            "to values less than 1 can lead to unexpected results. It "
             "is advised to set either outlier_cutoff_lower or "
             "outlier_cutoff_upper to a value >= 1."
         )
@@ -141,17 +144,21 @@ def main(args: Union[str, List[str]] = None) -> int:
 
     charge_path = os.path.join(config.work_dir, "spectra", "charges.joblib")
     if os.path.isfile(charge_path) and not config.overwrite:
-        charges = joblib.load(charge_path)
+        charge_buckets = joblib.load(charge_path)
     else:
         # Recalculate the charge buckets and recreate dataset.
-        charges, _ = _prepare_spectra(process_spectrum)
-        joblib.dump(charges, charge_path)
+        charge_buckets = _prepare_spectra(
+            process_spectrum, config.precursor_charge_buckets
+        )
+        joblib.dump(charge_buckets, charge_path)
 
     # Cluster the spectra per charge.
     clusters_all, current_label, representatives = [], 0, []
-    for charge in charges:
+    for bucket in charge_buckets:
         dataset_path = os.path.join(
-            config.work_dir, "spectra", f"spectra_charge_{charge}.lance"
+            config.work_dir,
+            "spectra",
+            f"spectra_charge{bucket_key_to_str(bucket)}.lance",
         )
         dataset = lance.dataset(dataset_path)
         # No valid spectra found with the current charge.
@@ -199,8 +206,7 @@ def main(args: Union[str, List[str]] = None) -> int:
                     "precursor_mz",
                     "retention_time",
                 ]
-            )
-            .to_pandas()
+            ).to_pandas()
             # Must match the ordering used in `generate_clusters` exactly so the
             # positionally-aligned cluster labels bind to the correct spectra;
             # `identifier` is the unique tiebreaker that makes both sorts agree.
@@ -252,8 +258,8 @@ def main(args: Union[str, List[str]] = None) -> int:
 
 
 def _prepare_spectra(
-    process_spectrum: Callable,
-) -> Tuple[Set[int], List[str]]:
+    process_spectrum: Callable, charge_buckets: List[Set[Union[int, str]]]
+) -> Set[int]:
     """
     Read the spectra from the input peak files and partition to intermediate
     files split and sorted by precursor m/z.
@@ -265,8 +271,8 @@ def _prepare_spectra(
 
     Returns
     -------
-    Tuple[Set[int], List[str]]
-        The precursor charges of the spectra and the per-charge dataset paths.
+    List[Set[Union[int, str]]]
+        The valid precursor charge buckets.
     """
     input_filenames = [
         fn for pattern in config.input_filenames for fn in glob.glob(pattern)
@@ -294,10 +300,30 @@ def _prepare_spectra(
             pa.field("retention_time", pa.float32()),
         ]
     )
+    # create a mapping from charge to bucket
+    charge_to_bucket = {}
+    catch_other_charges = False
+    for bucket in charge_buckets:
+        if bucket == "other":
+            catch_other_charges = True
+            continue  # handled later
+        for charge in bucket:
+            if charge in charge_to_bucket:
+                raise ValueError(
+                    f"Charge {charge} appears in more than one bucket"
+                )
+            charge_to_bucket[charge] = tuple(sorted(bucket))
+
     lance_writers = multiprocessing.pool.ThreadPool(
         max_file_workers,
         _write_spectra_lance,
-        (spectra_queue, lance_locks, schema, charges),
+        (
+            spectra_queue,
+            lance_locks,
+            schema,
+            charge_to_bucket,
+            catch_other_charges,
+        ),
     )
     # Read the peak files and put their spectra in the queue for consumption
     # by the lance writers. Using return_as="generator_unordered" so results
@@ -320,22 +346,19 @@ def _prepare_spectra(
     lance_writers.join()
 
     # Count the total number of spectra in the datasets.
-    dataset_paths = [
-        os.path.join(
-            config.work_dir, "spectra", f"spectra_charge_{charge}.lance"
-        )
-        for charge in charges
-    ]
+    lance_dir = os.path.join(config.work_dir, "spectra")
     n_spectra = 0
-    for dataset_path in dataset_paths:
+    valid_buckets = []
+    for bucket in charge_buckets:
+        dataset_path = os.path.join(
+            lance_dir, f"spectra_charge{bucket_key_to_str(bucket)}.lance"
+        )
         try:
             dataset = lance.dataset(dataset_path)
-        except ValueError:
-            # If the dataset does not exist or is corrupted, remove its charge from list.
-            charge = int(dataset_path.split("_")[-1].split(".")[0])
-            logger.error("Failed to create dataset for charge %d", charge)
-            charges.remove(charge)
-            continue
+            n_spectra += len(dataset)
+            valid_buckets.append(bucket)
+        except (ValueError, FileNotFoundError) as e:
+            logger.error("Failed to open dataset for bucket %s: %s", bucket, e)
         n_spectra += dataset.count_rows()
     logger.info(
         "Read %d spectra from %d peak file(s)",
@@ -343,11 +366,11 @@ def _prepare_spectra(
         len(input_filenames),
     )
     logger.info("Skipped %d low-quality spectra", low_quality_counter)
-    return charges, dataset_paths
+    return valid_buckets
 
 
 def _create_lance_dataset(
-    charge: int, schema: pa.Schema
+    charge_bucket: int, schema: pa.Schema
 ) -> lance.LanceDataset:
     """
     Create a lance dataset.
@@ -365,7 +388,9 @@ def _create_lance_dataset(
         The lance dataset.
     """
     lance_path = os.path.join(
-        config.work_dir, "spectra", f"spectra_charge_{charge}.lance"
+        config.work_dir,
+        "spectra",
+        f"spectra_charge{bucket_key_to_str(charge_bucket)}.lance",
     )
     dataset = lance.write_dataset(
         pa.Table.from_pylist([], schema),
@@ -432,7 +457,8 @@ def _write_spectra_lance(
     spectra_queue: queue.Queue,
     lance_locks: "_PerChargeLockRegistry",
     schema: pa.Schema,
-    charges: Set,
+    charge_to_bucket: Dict[int, Tuple[int, str]],
+    catch_other_charges: bool,
 ) -> None:
     """
     Read spectra from a queue and write to a lance dataset.
@@ -445,8 +471,10 @@ def _write_spectra_lance(
         Per-charge locks to synchronize writes within each dataset.
     schema : pa.Schema
         The schema of the dataset.
-    charges : set
-        The precursor charges of the spectra.
+    charge_buckets : list of sets
+        The precursor charge buckets to assign spectra to.
+    catch_other_charges : bool
+        Whether to catch charges not in any bucket.
     """
     spec_to_write = collections.defaultdict(list)
     while True:
@@ -466,22 +494,29 @@ def _write_spectra_lance(
                 spec_to_write[charge].clear()
             return
         charge = spec["precursor_charge"]
-        spec_to_write[charge].append(spec)
-        charges.add(charge)
-        if len(spec_to_write[charge]) >= 10_000:
+        charge = "unknown" if charge is None else charge
+
+        # Determine bucket key
+        bucket_key = charge_to_bucket.get(charge) or (
+            "other" if catch_other_charges else None
+        )
+        if bucket_key is not None:
+            spec_to_write[bucket_key].append(spec)
+
+        if len(spec_to_write[bucket_key]) >= 10_000:
             _write_to_dataset(
-                spec_to_write[charge],
-                charge,
+                spec_to_write[bucket_key],
+                bucket_key,
                 lance_locks.get(charge),
                 schema,
                 config.work_dir,
             )
-            spec_to_write[charge].clear()
+            spec_to_write[bucket_key].clear()
 
 
 def _write_to_dataset(
     spec_to_write: List[Dict],
-    charge: int,
+    charge_bucket: Union[Tuple[int, ...], str],
     lock: threading.Lock,
     schema: pa.Schema,
     work_dir: str,
@@ -493,10 +528,10 @@ def _write_to_dataset(
     ----------
     spec_to_write : List[Dict]
         The spectra to write.
-    charge : int
-        The precursor charge of the spectra.
-    lock : threading.Lock
-        Lock guarding this charge's dataset.
+    charge_bucket : Union[Tuple[int, ...], str]
+        The bucket key for the spectra.
+    lock : multiprocessing.synchronize.Lock
+        Lock to synchronize writing to the dataset.
     schema : pa.Schema
         The schema of the dataset.
     work_dir : str
@@ -508,12 +543,45 @@ def _write_to_dataset(
     """
     # Write the spectra to the dataset.
     new_rows = pa.Table.from_pylist(spec_to_write, schema)
-    path = os.path.join(work_dir, "spectra", f"spectra_charge_{charge}.lance")
+    bucket_str = bucket_key_to_str(charge_bucket)
+    path = os.path.join(
+        work_dir, "spectra", f"spectra_charge{bucket_str}.lance"
+    )
     with lock:
         if not os.path.exists(path):
-            _create_lance_dataset(charge, schema)
+            _create_lance_dataset(charge_bucket, schema)
         lance.write_dataset(new_rows, path, mode="append")
     return len(new_rows)
+
+
+def bucket_key_to_str(bucket_key: Union[Tuple[int, ...], str]) -> str:
+    """
+    Convert a bucket key to a safe string for filenames.
+
+    Examples:
+        (1,2) -> _1_2
+        (3, "unknown") -> _3_unknown
+        "other" -> _other
+
+    Parameters
+    ----------
+    bucket_key : Union[Tuple[int, ...], str]
+        The bucket key.
+    Returns
+    -------
+    str
+        The string representation of the bucket key.
+    """
+    if isinstance(bucket_key, set):
+        # Convert set to sorted tuple for consistent ordering
+        bucket_key = tuple(sorted(bucket_key))
+    if isinstance(bucket_key, tuple):
+        parts = [str(p) for p in bucket_key]
+        return "_" + "_".join(parts)
+    elif isinstance(bucket_key, str):
+        return "_" + bucket_key
+    else:
+        raise TypeError(f"Unsupported bucket key type: {type(bucket_key)}")
 
 
 def _write_cluster_info(clusters: pd.DataFrame) -> None:
@@ -552,6 +620,10 @@ def _write_cluster_info(clusters: pd.DataFrame) -> None:
             f"# outlier_cutoff_upper = {config.outlier_cutoff_upper:.2f}\n"
         )
         f_out.write(f"# batch_size = {config.batch_size}\n")
+        f_out.write(
+            f"# precursor_charge_buckets = "
+            f"{config.precursor_charge_buckets}\n"
+        )
         f_out.write(f"# min_peaks = {config.min_peaks}\n")
         f_out.write(f"# min_mz_range = {config.min_mz_range:.2f}\n")
         f_out.write(f"# min_mz = {config.min_mz:.2f}\n")
