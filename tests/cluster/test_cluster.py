@@ -1,7 +1,7 @@
 import pytest
 import numba as nb
 import numpy as np
-from falcon.cluster import cluster
+from falcon.cluster import cluster, distance_matrix
 
 
 def test_get_precursor_mz_splits_single_split():
@@ -87,17 +87,17 @@ def test_linkage_da():
 
 def test_condensed_index_basic():
     """Test basic cases where the condensed index is computed correctly."""
-    assert cluster.condensed_index(0, 1, 5) == 0
-    assert cluster.condensed_index(0, 2, 5) == 1
-    assert cluster.condensed_index(1, 3, 5) == 5
-    assert cluster.condensed_index(2, 3, 5) == 7
-    assert cluster.condensed_index(3, 4, 5) == 9
+    assert distance_matrix.condensed_index(0, 1, 5) == 0
+    assert distance_matrix.condensed_index(0, 2, 5) == 1
+    assert distance_matrix.condensed_index(1, 3, 5) == 5
+    assert distance_matrix.condensed_index(2, 3, 5) == 7
+    assert distance_matrix.condensed_index(3, 4, 5) == 9
 
 
 def test_condensed_index_swapped_inputs():
     """Ensure (i, j) gives the same result as (j, i)."""
-    assert cluster.condensed_index(2, 4, 5) == cluster.condensed_index(4, 2, 5)
-    assert cluster.condensed_index(0, 3, 5) == cluster.condensed_index(3, 0, 5)
+    assert distance_matrix.condensed_index(2, 4, 5) == distance_matrix.condensed_index(4, 2, 5)
+    assert distance_matrix.condensed_index(0, 3, 5) == distance_matrix.condensed_index(3, 0, 5)
 
 
 def test_condensed_index_invalid_diagonal():
@@ -105,31 +105,31 @@ def test_condensed_index_invalid_diagonal():
     with pytest.raises(
         ValueError, match="No diagonal elements in condensed matrix"
     ):
-        cluster.condensed_index(2, 2, 5)
+        distance_matrix.condensed_index(2, 2, 5)
 
 
 def test_condensed_index_out_of_bounds():
     """Test cases where i or j is out of range (negative or >= n)."""
     with pytest.raises(ValueError):
-        cluster.condensed_index(-1, 2, 5)
+        distance_matrix.condensed_index(-1, 2, 5)
     with pytest.raises(ValueError):
-        cluster.condensed_index(2, 5, 5)
+        distance_matrix.condensed_index(2, 5, 5)
     with pytest.raises(ValueError):
-        cluster.condensed_index(5, 2, 5)
+        distance_matrix.condensed_index(5, 2, 5)
 
 
 def test_condensed_index_invalid_n():
     """Test cases where n is invalid."""
     with pytest.raises(ValueError):
-        cluster.condensed_index(0, 1, 0)
+        distance_matrix.condensed_index(0, 1, 0)
     with pytest.raises(ValueError):
-        cluster.condensed_index(0, 1, -1)
+        distance_matrix.condensed_index(0, 1, -1)
 
 
 def test_condensed_index_large_matrix():
     """Test with a larger matrix to check correct indexing."""
-    assert cluster.condensed_index(10, 20, 100) == 954
-    assert cluster.condensed_index(50, 99, 100) == 3773
+    assert distance_matrix.condensed_index(10, 20, 100) == 954
+    assert distance_matrix.condensed_index(50, 99, 100) == 3773
 
 
 # ---------------------------------------------------------------------------
