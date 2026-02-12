@@ -24,7 +24,6 @@ from . import similarity
 from .. import utils
 from .consensus import (
     ConsensusTuple,
-    _assign_global_cluster_labels,
     _get_cluster_group_idx,
     _get_representative_spectra,
 )

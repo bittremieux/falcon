@@ -112,3 +112,28 @@ def orthogonal_spectrum_tuple_pair():
         intensity=int2,
     )
     return spec1, spec2
+
+
+@pytest.fixture
+def mock_spectra():
+    """Factory fixture to create a list of SpectrumTuples with similar peaks."""
+    def _make(n, mz_base=100.0, mz_step=1.0, n_peaks=3):
+        spectra = []
+        for i in range(n):
+            mz = np.array(
+                [mz_base + j * mz_step for j in range(n_peaks)], dtype=np.float32
+            )
+            intensity = np.array(
+                [0.5 + 0.1 * j for j in range(n_peaks)], dtype=np.float32
+            )
+            intensity = intensity / np.linalg.norm(intensity)
+            spectra.append(
+                similarity.SpectrumTuple(
+                    precursor_mz=mz_base,
+                    precursor_charge=2,
+                    mz=mz,
+                    intensity=intensity,
+                )
+            )
+        return spectra
+    return _make

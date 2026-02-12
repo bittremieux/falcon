@@ -2,86 +2,78 @@ import math
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from falcon.cluster import similarity
 
 
-def test_cosine_fast_equal():
-    """Test the cosine similarity between two equal spectra."""
-    spec1 = similarity.SpectrumTuple(
-        precursor_mz=100.0,
-        precursor_charge=2,
-        mz=np.array([100.0, 101.0, 102.0]),
-        intensity=np.array([0.5, 0.6, 0.7]),
-    )
-    spec2 = similarity.SpectrumTuple(
-        precursor_mz=100.0,
-        precursor_charge=2,
-        mz=np.array([100.0, 101.0, 102.0]),
-        intensity=np.array([0.5, 0.6, 0.7]),
-    )
-    score, matched_peaks = similarity.cosine_fast(spec1, spec2, 0.5)
-    assert score == 1.0
-    assert matched_peaks == 3
+class TestSimilarity:
+    def test_cosine_fast_equal(self, mock_spectra):
+        """Test the cosine similarity between two equal spectra."""
+        spectra = mock_spectra(2, n_peaks=3)
+        # mock_spectra generates identical spectra
+        spec1, spec2 = spectra[0], spectra[1]
+        
+        score, matched_peaks = similarity.cosine_fast(spec1, spec2, 0.5)
+        assert score == 1.0
+        assert matched_peaks == 3
 
+    def test_cosine_fast_different(self):
+        """Test the cosine similarity between two different spectra."""
+        int1 = np.array([0.5, 0.6, 0.7], dtype=np.float32)
+        int1 = int1 / np.linalg.norm(int1)
+        spec1 = similarity.SpectrumTuple(
+            precursor_mz=100.0,
+            precursor_charge=2,
+            mz=np.array([100.0, 101.0, 102.0], dtype=np.float32),
+            intensity=int1,
+        )
 
-def test_cosine_fast_different():
-    """Test the cosine similarity between two different spectra."""
-    int1 = np.array([0.5, 0.6, 0.7])
-    int1 = int1 / np.linalg.norm(int1)
-    spec1 = similarity.SpectrumTuple(
-        precursor_mz=100.0,
-        precursor_charge=2,
-        mz=np.array([100.0, 101.0, 102.0]),
-        intensity=int1,
-    )
+        int2 = np.array([0.7, 0.6, 0.5], dtype=np.float32)
+        int2 = int2 / np.linalg.norm(int2)
+        spec2 = similarity.SpectrumTuple(
+            precursor_mz=100.0,
+            precursor_charge=2,
+            mz=np.array([100.0, 101.0, 102.0], dtype=np.float32),
+            intensity=int2,
+        )
+        score, matched_peaks = similarity.cosine_fast(spec1, spec2, 0.1)
+        assert round(score, 3) == 0.964
+        assert matched_peaks == 3
 
-    int2 = np.array([0.7, 0.6, 0.5])
-    int2 = int2 / np.linalg.norm(int2)
-    spec2 = similarity.SpectrumTuple(
-        precursor_mz=100.0,
-        precursor_charge=2,
-        mz=np.array([100.0, 101.0, 102.0]),
-        intensity=int2,
-    )
-    score, matched_peaks = similarity.cosine_fast(spec1, spec2, 0.1)
-    assert round(score, 3) == 0.964
-    assert matched_peaks == 3
+    def test_df_row_to_spectrum_tuple(self):
+        """Test the conversion of a DataFrame row to a SpectrumTuple."""
+        int1 = np.array([0.1, 0.2, 0.3])
+        int1 = int1 / np.linalg.norm(int1)
+        int2 = np.array([0.9, 0.5, 0.1])
+        int2 = int2 / np.linalg.norm(int2)
+        int3 = np.array([0.6, 0.4, 0.6])
+        int3 = int3 / np.linalg.norm(int3)
+        df = pd.DataFrame(
+            {
+                "precursor_mz": [100.0, 101.0, 102.0],
+                "precursor_charge": [1, np.nan, 2],
+                "mz": [
+                    np.array([100.0, 101.0, 102.0]),
+                    np.array([200.0, 201.0, 202.0]),
+                    np.array([300.0, 301.0, 302.0]),
+                ],
+                "intensity": [int1, int2, int3],
+            }
+        )
+        spectra = df.apply(similarity.df_row_to_spectrum_tuple, axis=1)
 
+        assert spectra[0].precursor_mz == 100.0
+        assert spectra[0].precursor_charge == 1
+        assert np.array_equal(spectra[0].mz, np.array([100.0, 101.0, 102.0]))
+        assert np.array_equal(spectra[0].intensity, int1)
 
-def test_df_row_to_spectrum_tuple():
-    """Test the conversion of a DataFrame row to a SpectrumTuple."""
-    int1 = np.array([0.1, 0.2, 0.3])
-    int1 = int1 / np.linalg.norm(int1)
-    int2 = np.array([0.9, 0.5, 0.1])
-    int2 = int2 / np.linalg.norm(int2)
-    int3 = np.array([0.6, 0.4, 0.6])
-    int3 = int3 / np.linalg.norm(int3)
-    df = pd.DataFrame(
-        {
-            "precursor_mz": [100.0, 101.0, 102.0],
-            "precursor_charge": [1, np.nan, 2],
-            "mz": [
-                np.array([100.0, 101.0, 102.0]),
-                np.array([200.0, 201.0, 202.0]),
-                np.array([300.0, 301.0, 302.0]),
-            ],
-            "intensity": [int1, int2, int3],
-        }
-    )
-    spectra = df.apply(similarity.df_row_to_spectrum_tuple, axis=1)
+        assert spectra[1].precursor_mz == 101.0
+        assert math.isnan(spectra[1].precursor_charge)
+        assert np.array_equal(spectra[1].mz, np.array([200.0, 201.0, 202.0]))
+        assert np.array_equal(spectra[1].intensity, int2)
 
-    assert spectra[0].precursor_mz == 100.0
-    assert spectra[0].precursor_charge == 1
-    assert np.array_equal(spectra[0].mz, np.array([100.0, 101.0, 102.0]))
-    assert np.array_equal(spectra[0].intensity, int1)
-
-    assert spectra[1].precursor_mz == 101.0
-    assert math.isnan(spectra[1].precursor_charge)
-    assert np.array_equal(spectra[1].mz, np.array([200.0, 201.0, 202.0]))
-    assert np.array_equal(spectra[1].intensity, int2)
-
-    assert spectra[2].precursor_mz == 102.0
-    assert spectra[2].precursor_charge == 2
-    assert np.array_equal(spectra[2].mz, np.array([300.0, 301.0, 302.0]))
-    assert np.array_equal(spectra[2].intensity, int3)
+        assert spectra[2].precursor_mz == 102.0
+        assert spectra[2].precursor_charge == 2
+        assert np.array_equal(spectra[2].mz, np.array([300.0, 301.0, 302.0]))
+        assert np.array_equal(spectra[2].intensity, int3)

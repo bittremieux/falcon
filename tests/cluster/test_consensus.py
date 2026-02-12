@@ -8,39 +8,13 @@ from falcon.cluster import cluster, similarity, consensus
 
 
 # ---------------------------------------------------------------------------
-# Helper: create SpectrumTuple lists
-# ---------------------------------------------------------------------------
-
-def _make_spectrum_tuples(n, mz_base=100.0, mz_step=1.0, n_peaks=3):
-    """Create a list of n SpectrumTuples with similar peaks."""
-    spectra = []
-    for i in range(n):
-        mz = np.array(
-            [mz_base + j * mz_step for j in range(n_peaks)], dtype=np.float32
-        )
-        intensity = np.array(
-            [0.5 + 0.1 * j for j in range(n_peaks)], dtype=np.float32
-        )
-        intensity = intensity / np.linalg.norm(intensity)
-        spectra.append(
-            similarity.SpectrumTuple(
-                precursor_mz=mz_base,
-                precursor_charge=2,
-                mz=mz,
-                intensity=intensity,
-            )
-        )
-    return spectra
-
-
-# ---------------------------------------------------------------------------
 # _spectrum_binning
 # ---------------------------------------------------------------------------
 
 class TestSpectrumBinning:
-    def test_basic(self):
+    def test_basic(self, mock_spectra):
         """Two identical spectra should produce non-empty bins."""
-        spectra = _make_spectrum_tuples(2)
+        spectra = mock_spectra(2)
         bins_idx, bins_peaks, bins_mz = consensus._spectrum_binning(
             spectra, min_mz=50.0, max_mz=200.0, bin_size=1.0
         )
@@ -77,9 +51,9 @@ class TestSpectrumBinning:
             149.5 <= m <= 150.5 for m in bin_mz_values
         ), "Peak at mz=150 (60% presence) should be filtered out"
 
-    def test_empty_bins_excluded(self):
+    def test_empty_bins_excluded(self, mock_spectra):
         """Bins with no peaks should not appear in the output."""
-        spectra = _make_spectrum_tuples(3, mz_base=100.0, mz_step=1.0, n_peaks=2)
+        spectra = mock_spectra(3, mz_base=100.0, mz_step=1.0, n_peaks=2)
         bins_idx, bins_peaks, bins_mz = consensus._spectrum_binning(
             spectra, min_mz=50.0, max_mz=200.0, bin_size=1.0
         )
@@ -189,9 +163,9 @@ class TestConstructAverageSpectrum:
 # ---------------------------------------------------------------------------
 
 class TestGetClusterMedoids:
-    def test_small_cluster(self):
+    def test_small_cluster(self, mock_spectra):
         """Clusters with ≤2 spectra should use the first spectrum."""
-        spectra = _make_spectrum_tuples(2)
+        spectra = mock_spectra(2)
         labels = np.array([0, 0], dtype=np.int32)
         rts = np.array([10.0, 20.0], dtype=np.float32)
         order_map = np.array([0, 1], dtype=np.int64)
@@ -203,9 +177,9 @@ class TestGetClusterMedoids:
         assert len(precursor_mzs) == 1
         assert precursor_mzs[0] == spectra[0].precursor_mz
 
-    def test_single_cluster_three_spectra(self):
+    def test_single_cluster_three_spectra(self, mock_spectra):
         """Medoid should be the spectrum with minimum total distance."""
-        spectra = _make_spectrum_tuples(3)
+        spectra = mock_spectra(3)
         labels = np.array([0, 0, 0], dtype=np.int32)
         rts = np.array([10.0, 20.0, 30.0], dtype=np.float32)
         order_map = np.array([0, 1, 2], dtype=np.int64)
@@ -225,8 +199,8 @@ class TestGetClusterMedoids:
 # ---------------------------------------------------------------------------
 
 class TestGetRepresentativeSpectra:
-    def test_medoid_dispatch(self):
-        spectra = _make_spectrum_tuples(3)
+    def test_medoid_dispatch(self, mock_spectra):
+        spectra = mock_spectra(3)
         labels = np.array([0, 0, 0], dtype=np.int32)
         rts = np.array([10.0, 20.0, 30.0], dtype=np.float32)
         order_map = np.array([0, 1, 2], dtype=np.int64)
@@ -237,8 +211,8 @@ class TestGetRepresentativeSpectra:
         assert len(result) == 1
         assert hasattr(result[0], "precursor_mz")
 
-    def test_invalid_method(self):
-        spectra = _make_spectrum_tuples(2)
+    def test_invalid_method(self, mock_spectra):
+        spectra = mock_spectra(2)
         labels = np.array([0, 0], dtype=np.int32)
         rts = np.array([10.0, 20.0], dtype=np.float32)
         order_map = np.array([0, 1], dtype=np.int64)
