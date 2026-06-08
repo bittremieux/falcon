@@ -1,23 +1,18 @@
-import collections
 import gc
 import logging
-import math
 import multiprocessing
 import tempfile
 from functools import partial
-from typing import Iterator, List, Optional, Tuple
+from typing import List, Tuple
 
 import fastcluster
 import joblib
 import lance
 import numba as nb
 import numpy as np
-import pandas as pd
 import scipy.cluster.hierarchy as sch
 import spectrum_utils.utils as suu
 from scipy.cluster.hierarchy import fcluster
-from scipy.spatial.distance import squareform
-from sklearn.cluster import DBSCAN
 from tqdm import tqdm
 
 from . import similarity
@@ -44,7 +39,6 @@ def generate_clusters(
     batch_size: int,
     consensus_method: str,
     consensus_params: dict,
-    lazy_loading: bool = False,
 ) -> np.ndarray:
     """
     Hierarchical clustering of the given pairwise distance matrix.
@@ -75,9 +69,6 @@ def generate_clusters(
         'medoid' or 'average'.
     consensus_params : dict
         Additional parameters for the consensus spectrum computation.
-    lazy_loading_off : bool
-        Whether to use lazy loading of the dataset.
-
     Returns
     -------
     Tuple[np.ndarray, List[ConsensusTuple]]
@@ -90,24 +81,19 @@ def generate_clusters(
         distance_threshold,
         min_samples,
     )
-    # Sort the metadata by increasing precursor m/z for easy subsetting.
-    if lazy_loading:
-        data = dataset.to_table(
-            columns=["identifier", "precursor_mz", "retention_time"]
-        ).to_pandas()
-    else:
-        data = dataset.to_table(
-            columns=[
-                "identifier",
-                "precursor_mz",
-                "precursor_charge",
-                "retention_time",
-                "mz",
-                "intensity",
-            ]
-        ).to_pandas()
+    # Load only the columns needed for sorting and splitting; full spectra data
+    # (mz, intensity) is fetched on demand per interval inside _cluster_mz_interval.
+    data = dataset.to_table(
+        columns=["identifier", "precursor_mz", "retention_time"]
+    ).to_pandas()
+    # Sort by precursor m/z and retention time, with the unique identifier as
+    # a tiebreaker so the ordering is a deterministic total order. The returned
+    # cluster labels are aligned to this order positionally, and the caller
+    # re-attaches them after an independent sort of the same dataset; without a
+    # unique tiebreaker, ties could be ordered differently between the two
+    # (non-stable) sorts and bind labels to the wrong spectra.
     data = data.reset_index().sort_values(
-        ["precursor_mz", "retention_time"],
+        ["precursor_mz", "retention_time", "identifier"],
     )
     # Cluster per contiguous block of precursor m/z's (relative to the
     # precursor m/z threshold).
@@ -140,7 +126,6 @@ def generate_clusters(
                 process_chunk = partial(
                     cluster_chunk,
                     dataset=dataset,
-                    data=data if not lazy_loading else None,
                     linkage=linkage,
                     distance_threshold=distance_threshold,
                     min_matches=min_matches,
@@ -170,7 +155,7 @@ def generate_clusters(
                     data_chunks.append(data_chunk)
 
                 results = joblib.Parallel(
-                    n_jobs=-1, backend="loky", verbose=5
+                    n_jobs=-1, backend="loky", verbose=0
                 )(
                     joblib.delayed(process_chunk)(data_chunk)
                     for data_chunk in data_chunks
@@ -181,6 +166,9 @@ def generate_clusters(
                     for split_result in chunk_results
                 ]
                 flattened_results.sort(key=lambda x: x[0])
+                n_total = len(data)
+                n_processed = 0
+                next_heartbeat = n_total // 10
                 for task_id, (
                     interval_rep_spectra,
                     labels,
@@ -195,7 +183,19 @@ def generate_clusters(
                         cluster_labels[
                             splits[task_id] : splits[task_id + 1]
                         ] = labels
+                        n_processed += len(labels)
                         pbar.update(len(labels))
+                        if (
+                            next_heartbeat > 0
+                            and n_processed >= next_heartbeat
+                        ):
+                            logger.info(
+                                "Clustering progress: %d/%d spectra (%.0f%%)",
+                                n_processed,
+                                n_total,
+                                100 * n_processed / n_total,
+                            )
+                            next_heartbeat += n_total // 10
             representative_spectra = _assign_global_cluster_labels(
                 cluster_labels, representative_spectra, splits
             )
@@ -310,8 +310,7 @@ def cost_based_chunking(
 
 def cluster_chunk(
     chunk: List[Tuple[int, Tuple[int, int]]],
-    dataset: Optional[lance.LanceDataset],
-    data: Optional[pd.DataFrame],
+    dataset: lance.LanceDataset,
     linkage: str,
     distance_threshold: float,
     min_matches: int,
@@ -330,10 +329,8 @@ def cluster_chunk(
     chunk : List[Tuple[int, Tuple[int, int]]]
         The cluster tasks as a list of tuples containing the index of the task and the
         m/z split bounds.
-    dataset : Optional[lance.LanceDataset]
+    dataset : lance.LanceDataset
         The dataset containing the spectra to be clustered.
-    data : Optional[pd.DataFrame]
-        The spectra to be clustered (only when not lazy loading).
     linkage : str
         Linkage method to calculate the cluster distances.
     distance_threshold : float
@@ -374,7 +371,6 @@ def cluster_chunk(
             i,
             _cluster_mz_interval(
                 dataset,
-                data,
                 row_ids,
                 idx,
                 mzs,
@@ -394,8 +390,7 @@ def cluster_chunk(
 
 
 def _cluster_mz_interval(
-    dataset: Optional[lance.LanceDataset],
-    data: Optional[pd.DataFrame],
+    dataset: lance.LanceDataset,
     row_ids: List[int],
     idx: np.ndarray,
     mzs: np.ndarray,
@@ -408,16 +403,14 @@ def _cluster_mz_interval(
     fragment_mz_tol: float,
     consensus_method: str,
     consensus_params: dict,
-) -> np.ndarray:
+) -> Tuple[List[ConsensusTuple], np.ndarray]:
     """
     Cluster the vectors in the given interval.
 
     Parameters
     ----------
-    dataset : Optional[lance.LanceDataset]
+    dataset : lance.LanceDataset
         The dataset containing the spectra to be clustered.
-    data : Optional[pd.DataFrame]
-        The spectra to be clustered (only when not lazy loading).
     row_ids : List[int]
         The row ids of the spectra in the current interval.
     idx : np.ndarray
@@ -451,20 +444,26 @@ def _cluster_mz_interval(
     Tuple[List[ConsensusTuple], np.ndarray]
         A tuple containing the list of representative spectra for each cluster and the cluster labels.
     """
-    if dataset is not None and data is None:
-        spectra = dataset.take(
-            indices=row_ids,
-            columns=[
-                "precursor_mz",
-                "precursor_charge",
-                "retention_time",
-                "mz",
-                "intensity",
-            ],
-        ).to_pandas()
-    else:
-        spectra = data.loc[row_ids]
-    spectra = spectra.sort_values(["precursor_mz", "retention_time"])
+    spectra = dataset.take(
+        indices=row_ids,
+        columns=[
+            "identifier",
+            "precursor_mz",
+            "precursor_charge",
+            "retention_time",
+            "mz",
+            "intensity",
+        ],
+    ).to_pandas()
+    # Sort with the same total-order key as the outer `data` sort in
+    # `generate_clusters` so this interval's spectra line up positionally with
+    # the `idx`/`mzs` arrays (which come from that outer order). `idx`/`mzs`
+    # (outer order) and `rts`/`labels` (this order) are used together below, so
+    # any mismatch on (precursor_mz, retention_time) ties would corrupt the
+    # clustering; `identifier` is the unique tiebreaker that keeps them aligned.
+    spectra = spectra.sort_values(
+        ["precursor_mz", "retention_time", "identifier"]
+    )
     rts = spectra["retention_time"].values
     spectra = spectra.apply(
         similarity.df_row_to_spectrum_tuple, axis=1
@@ -488,11 +487,6 @@ def _cluster_mz_interval(
             )
             - 1
         )
-        # make pdist a square matrix
-        # pdist_square = squareform(pdist)
-        # labels = DBSCAN(
-        #     eps=distance_threshold, min_samples=2, metric="precomputed"
-        # ).fit_predict(pdist_square)
         # Refine initial clusters to make sure spectra within a cluster don't
         # have an excessive precursor m/z difference.
         order = np.argsort(labels)
@@ -546,7 +540,7 @@ def _cluster_mz_interval(
                     ),
                     mz=spec.mz.astype(np.float32),
                     intensity=spec.intensity.astype(np.float32),
-                    retention_time=np.float32(rts[i]),
+                    retention_time=np.float32(rts[rev_order][i]),
                     cluster_id=np.int32(labels[rev_order][i]),
                     mz_split=None,
                 )
@@ -575,13 +569,6 @@ def _cluster_mz_interval(
             )
         ]
         cluster_labels[0] = 0
-    # Log clustering progress.
-    # Only for large splits (> 1% of spectra)
-    if n_spectra > 0.01 * len(spectra) and n_spectra > 1000:
-        logger = utils.configure_logger()
-        logger.debug(
-            "Clustered %d spectra in %d clusters.", n_spectra, len(rep_spectra)
-        )
     return rep_spectra, cluster_labels
 
 
@@ -644,18 +631,33 @@ def _postprocess_cluster(
                 sch.fcluster(linkage, precursor_tol_mass, "distance") - 1
             )
         # Optionally restrict clusters by their retention time as well.
+        # Only spectra with a known RT participate in the RT linkage; NaN-RT
+        # spectra are not split by RT but receive a distinct RT label so they
+        # cannot accidentally merge with real-RT spectra in the combined encoding.
         if rt_tol is not None:
             with nb.objmode(cluster_assignments="int32[:]"):
-                cluster_assignments_rt = (
-                    fcluster(_linkage(cluster_rts), rt_tol, "distance") - 1
-                )
-                # Merge cluster assignments based on precursor m/z and RT.
-                # First prime factorization is used to get unique combined cluster
-                # labels, after which consecutive labels are obtained.
-                cluster_assignments = np.unique(
-                    cluster_assignments * 2 + cluster_assignments_rt * 3,
-                    return_inverse=True,
-                )[1]
+                nan_mask = np.isnan(cluster_rts)
+                if not nan_mask.all():
+                    valid_rts = cluster_rts[~nan_mask]
+                    rt_labels = np.zeros(len(cluster_rts), np.int32)
+                    if len(valid_rts) >= 2:
+                        rt_labels[~nan_mask] = (
+                            fcluster(_linkage(valid_rts), rt_tol, "distance") - 1
+                        )
+                    # Label for NaN-RT spectra: one past the highest real RT label,
+                    # so it is distinct from every real-RT label but the same for
+                    # all NaN spectra in the cluster (they stay together by m/z).
+                    n_rt = int(rt_labels[~nan_mask].max()) + 1
+                    rt_labels[nan_mask] = n_rt
+                    # Injective mixed-radix encoding of the (m/z, RT) pair.
+                    # n_rt + 1 is the RT radix: covers labels 0..n_rt (inclusive).
+                    cluster_assignments = np.unique(
+                        cluster_assignments * (n_rt + 1) + rt_labels,
+                        return_inverse=True,
+                    )[1].astype(np.int32)
+                else:
+                    # All RTs unknown: skip RT splitting, keep m/z assignments.
+                    cluster_assignments = cluster_assignments.copy()
 
         n_clusters = cluster_assignments.max() + 1
         # Update cluster assignments.
@@ -747,19 +749,51 @@ def _linkage(values: np.ndarray, tol_mode: str = None) -> np.ndarray:
 
     return linkage
 
+
 @nb.njit(boundscheck=False)
+def _offset_cluster_labels(
+    cluster_labels: np.ndarray,
+    splits: nb.typed.List,
+) -> np.ndarray:
+    """
+    Renumber cluster_labels per split in-place so labels are globally unique,
+    and return the label offset applied to each split.
+
+    Parameters
+    ----------
+    cluster_labels : np.ndarray
+        The cluster labels (mutated in place).
+    splits : nb.typed.List
+        A list of start and end indices of cluster chunks.
+
+    Returns
+    -------
+    np.ndarray
+        Per-split offsets (int64), one entry per split.
+    """
+    n_splits = len(splits) - 1
+    offsets = np.empty(n_splits, np.int64)
+    current_label = 0
+    for i in range(n_splits):
+        start, end = splits[i], splits[i + 1]
+        offsets[i] = current_label
+        cluster_labels[start:end] += current_label
+        current_label = np.max(cluster_labels[start:end]) + 1
+    return offsets
+
+
 def _assign_global_cluster_labels(
     cluster_labels: np.ndarray,
     rep_spectra: List[ConsensusTuple],
     splits: nb.typed.List,
-) -> nb.typed.List:
+) -> List[ConsensusTuple]:
     """
     Convert cluster labels per split to unique labels (within charge).
 
     Parameters
     ----------
     cluster_labels : np.ndarray
-        The cluster labels.
+        The cluster labels (mutated in place).
     rep_spectra : List[ConsensusTuple]
         The representative spectra.
     splits : nb.typed.List
@@ -767,34 +801,18 @@ def _assign_global_cluster_labels(
 
     Returns
     -------
-    nb.typed.List
+    List[ConsensusTuple]
         The representative spectra with updated cluster IDs.
     """
-    current_label = 0
-    typed_rep_spectra = nb.typed.List()
-
-    for i in range(len(splits) - 1):
-        start, end = splits[i], splits[i + 1]
-        cluster_labels[start:end] += current_label
-        max_label = np.max(cluster_labels[start:end])
-
-        for s in rep_spectra:
-            if s.mz_split == i:
-                typed_rep_spectra.append(
-                    ConsensusTuple(
-                        precursor_mz=np.float32(s.precursor_mz),
-                        precursor_charge=(
-                            np.int32(s.precursor_charge)
-                            if not np.isnan(s.precursor_charge)
-                            else np.nan
-                        ),
-                        mz=s.mz.astype(np.float32),
-                        intensity=s.intensity.astype(np.float32),
-                        retention_time=np.float32(s.retention_time),
-                        cluster_id=np.int32(s.cluster_id + current_label),
-                        mz_split=np.int32(s.mz_split),
-                    )
-                )
-        current_label = max_label + 1
-
-    return typed_rep_spectra
+    offsets = _offset_cluster_labels(cluster_labels, splits)
+    # Group reps by mz_split in one pass — O(R) instead of O(S × R).
+    reps_by_split: dict = {}
+    for s in rep_spectra:
+        reps_by_split.setdefault(int(s.mz_split), []).append(s)
+    relabeled: List[ConsensusTuple] = []
+    for i, offset in enumerate(offsets):
+        for s in reps_by_split.get(i, ()):
+            relabeled.append(
+                s._replace(cluster_id=np.int32(s.cluster_id + int(offset)))
+            )
+    return relabeled

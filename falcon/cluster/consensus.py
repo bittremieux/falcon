@@ -208,13 +208,14 @@ def _get_cluster_medoids(
                     pdist_ij = pdist[m * i + j - ((i + 2) * (i + 1)) // 2]
                     row_sum[row] += pdist_ij
                     row_sum[col] += pdist_ij
-            medoid_spec = spectra[order_map[start_i + np.argmin(row_sum)]]
+            medoid_idx = np.argmin(row_sum)
+            medoid_spec = spectra[order_map[start_i + medoid_idx]]
             precursor_mzs.append(medoid_spec.precursor_mz)
             precursor_charges.append(medoid_spec.precursor_charge)
             mzs.append(medoid_spec.mz)
             intensities.append(medoid_spec.intensity)
-            retention_times.append(rts[start_i + np.argmin(row_sum)])
-            cluster_ids.append(labels[start_i + np.argmin(row_sum)])
+            retention_times.append(rts[start_i + medoid_idx])
+            cluster_ids.append(labels[start_i + medoid_idx])
         else:
             medoid_spec = spectra[order_map[start_i]]
             precursor_mzs.append(medoid_spec.precursor_mz)

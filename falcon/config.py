@@ -71,12 +71,6 @@ class Config:
             help="Export cluster representatives to an MGF file "
             "(default: no export).",
         )
-        self._parser.add_argument(
-            "--lazy_loading",
-            action="store_true",
-            help="Turn on lazy loading of the spectra from the lance dataset "
-            "(default: eager loading).",
-        )
 
         # CLUSTERING
         self._parser.add_argument(

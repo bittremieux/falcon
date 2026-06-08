@@ -3,7 +3,6 @@ import functools
 import glob
 import logging
 import multiprocessing
-import multiprocessing.synchronize
 import os
 import queue
 import shutil
@@ -23,7 +22,6 @@ from . import __version__, utils
 from .cluster import cluster, spectrum
 from .config import config
 from .ms_io import ms_io
-
 
 logger = logging.getLogger("falcon")
 
@@ -64,7 +62,7 @@ def main(args: Union[str, List[str]] = None) -> int:
         config.work_dir = tempfile.mkdtemp()
         rm_work_dir = True
     elif os.path.isdir(config.work_dir):
-        logging.warning(
+        logger.warning(
             "Working directory %s already exists, previous "
             "results might get overwritten",
             config.work_dir,
@@ -183,7 +181,6 @@ def main(args: Union[str, List[str]] = None) -> int:
             config.batch_size,
             config.consensus_method,
             consensus_params,
-            config.lazy_loading,
         )
         # Make sure that different charges have non-overlapping cluster labels.
         clusters += current_label
@@ -204,7 +201,10 @@ def main(args: Union[str, List[str]] = None) -> int:
                 ]
             )
             .to_pandas()
-            .sort_values(["precursor_mz", "retention_time"])
+            # Must match the ordering used in `generate_clusters` exactly so the
+            # positionally-aligned cluster labels bind to the correct spectra;
+            # `identifier` is the unique tiebreaker that makes both sorts agree.
+            .sort_values(["precursor_mz", "retention_time", "identifier"])
         )
         metadata["cluster"] = clusters
         clusters_all.append(metadata)
@@ -251,7 +251,9 @@ def main(args: Union[str, List[str]] = None) -> int:
     return 0
 
 
-def _prepare_spectra(process_spectrum: Callable) -> Set[int]:
+def _prepare_spectra(
+    process_spectrum: Callable,
+) -> Tuple[Set[int], List[str]]:
     """
     Read the spectra from the input peak files and partition to intermediate
     files split and sorted by precursor m/z.
@@ -263,21 +265,24 @@ def _prepare_spectra(process_spectrum: Callable) -> Set[int]:
 
     Returns
     -------
-    Set[int]
-        The precursor charges of the spectra.
+    Tuple[Set[int], List[str]]
+        The precursor charges of the spectra and the per-charge dataset paths.
     """
     input_filenames = [
         fn for pattern in config.input_filenames for fn in glob.glob(pattern)
     ]
-    logger.info("Read spectra from %d peak file(s)", len(input_filenames))
+    logger.info(
+        "Reading spectra from %d peak file(s)...", len(input_filenames)
+    )
     # Use multiple worker processes to read the peak files.
     max_file_workers = min(len(input_filenames), multiprocessing.cpu_count())
     # Restrict the number of spectra simultaneously in memory to avoid
     # excessive memory requirements.
     max_spectra_in_memory = 1_000_000
     spectra_queue = queue.Queue(maxsize=max_spectra_in_memory)
-    # Start the lance writers.
-    lance_lock = multiprocessing.Lock()
+    # Per-charge locks so writers serialize only within a charge's dataset,
+    # not across unrelated charges.
+    lance_locks = _PerChargeLockRegistry()
     charges = set()
     schema = pa.schema(
         [
@@ -292,12 +297,16 @@ def _prepare_spectra(process_spectrum: Callable) -> Set[int]:
     lance_writers = multiprocessing.pool.ThreadPool(
         max_file_workers,
         _write_spectra_lance,
-        (spectra_queue, lance_lock, schema, charges),
+        (spectra_queue, lance_locks, schema, charges),
     )
     # Read the peak files and put their spectra in the queue for consumption
-    # by the lance writers.
+    # by the lance writers. Using return_as="generator_unordered" so results
+    # are yielded as each worker finishes rather than after all workers are
+    # done, allowing the queue's maxsize to actually bound memory usage.
     low_quality_counter = 0
-    for file_spectra, lqc in joblib.Parallel(n_jobs=max_file_workers)(
+    for file_spectra, lqc in joblib.Parallel(
+        n_jobs=max_file_workers, return_as="generator_unordered"
+    )(
         joblib.delayed(_read_spectra)(file, process_spectrum)
         for file in input_filenames
     ):
@@ -329,7 +338,9 @@ def _prepare_spectra(process_spectrum: Callable) -> Set[int]:
             continue
         n_spectra += dataset.count_rows()
     logger.info(
-        "Read %d spectra from %d peak files", n_spectra, len(input_filenames)
+        "Read %d spectra from %d peak file(s)",
+        n_spectra,
+        len(input_filenames),
     )
     logger.info("Skipped %d low-quality spectra", low_quality_counter)
     return charges, dataset_paths
@@ -398,9 +409,28 @@ def _read_spectra(
     return spectra, low_quality_counter
 
 
+class _PerChargeLockRegistry:
+    """
+    Lazily-created per-charge locks so writers can serialize within a charge's
+    lance dataset while allowing different charges to be written concurrently.
+    """
+
+    def __init__(self) -> None:
+        self._locks: Dict[int, threading.Lock] = {}
+        self._guard = threading.Lock()
+
+    def get(self, charge: int) -> threading.Lock:
+        with self._guard:
+            lock = self._locks.get(charge)
+            if lock is None:
+                lock = threading.Lock()
+                self._locks[charge] = lock
+            return lock
+
+
 def _write_spectra_lance(
     spectra_queue: queue.Queue,
-    lance_lock: multiprocessing.synchronize.Lock,
+    lance_locks: "_PerChargeLockRegistry",
     schema: pa.Schema,
     charges: Set,
 ) -> None:
@@ -411,8 +441,8 @@ def _write_spectra_lance(
     ----------
     spectra_queue : queue.Queue
         Queue from which to read spectra for writing to pickle files.
-    lance_lock : multiprocessing.synchronize.Lock
-        Lock to synchronize writing to the dataset.
+    lance_locks : _PerChargeLockRegistry
+        Per-charge locks to synchronize writes within each dataset.
     schema : pa.Schema
         The schema of the dataset.
     charges : set
@@ -429,7 +459,7 @@ def _write_spectra_lance(
                 _write_to_dataset(
                     spec_to_write[charge],
                     charge,
-                    lance_lock,
+                    lance_locks.get(charge),
                     schema,
                     config.work_dir,
                 )
@@ -442,7 +472,7 @@ def _write_spectra_lance(
             _write_to_dataset(
                 spec_to_write[charge],
                 charge,
-                lance_lock,
+                lance_locks.get(charge),
                 schema,
                 config.work_dir,
             )
@@ -452,7 +482,7 @@ def _write_spectra_lance(
 def _write_to_dataset(
     spec_to_write: List[Dict],
     charge: int,
-    lock: multiprocessing.synchronize.Lock,
+    lock: threading.Lock,
     schema: pa.Schema,
     work_dir: str,
 ) -> int:
@@ -465,8 +495,8 @@ def _write_to_dataset(
         The spectra to write.
     charge : int
         The precursor charge of the spectra.
-    lock : multiprocessing.synchronize.Lock
-        Lock to synchronize writing to the dataset.
+    lock : threading.Lock
+        Lock guarding this charge's dataset.
     schema : pa.Schema
         The schema of the dataset.
     work_dir : str

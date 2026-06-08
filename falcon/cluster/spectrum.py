@@ -1,4 +1,3 @@
-import collections
 import math
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -8,19 +7,6 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as ss
 import spectrum_utils.spectrum as sus
-
-
-MsmsSpectrumNb = collections.namedtuple(
-    "MsmsSpectrumNb",
-    [
-        "identifier",
-        "precursor_mz",
-        "precursor_charge",
-        "retention_time",
-        "mz",
-        "intensity",
-    ],
-)
 
 
 @nb.njit(cache=True)
@@ -294,26 +280,3 @@ def _to_vector(
     return data, indices, indptr
 
 
-def df_row_to_spec(row: pd.Series) -> MsmsSpectrumNb:
-    """
-    Convert a row from a DataFrame to a `MsmsSpectrum`.
-
-    Parameters
-    ----------
-    row : pd.Series
-        A row from a DataFrame containing the spectrum metadata.
-
-    Returns
-    -------
-    MsmsSpectrumNb
-        The spectrum object.
-    """
-    spectrum = MsmsSpectrumNb(
-        row["identifier"],
-        row["precursor_mz"],
-        row["precursor_charge"],
-        row["retention_time"],
-        row["mz"],
-        row["intensity"],
-    )
-    return spectrum

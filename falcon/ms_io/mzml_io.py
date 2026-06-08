@@ -33,9 +33,16 @@ def get_spectra(source: Union[IO, str]) -> Iterable[sus.MsmsSpectrum]:
             for spectrum_dict in f_in:
                 if int(spectrum_dict.get("ms level", -1)) > 1:
                     # USI-inspired cluster identifier.
-                    scan_nr = spectrum_dict["id"][
-                        spectrum_dict["id"].find("scan=") + 5 :
-                    ]
+                    scan_idx = spectrum_dict["id"].find("scan=")
+                    if scan_idx == -1:
+                        logger.warning(
+                            "Skipping spectrum with unrecognized id "
+                            "(no 'scan=' field) in %s: %s",
+                            source,
+                            spectrum_dict["id"],
+                        )
+                        continue
+                    scan_nr = spectrum_dict["id"][scan_idx + 5 :]
                     spectrum_dict["id"] = f"{filename}:scan:{scan_nr}"
                     try:
                         yield _parse_spectrum(spectrum_dict)
@@ -63,7 +70,7 @@ def _parse_spectrum(spectrum_dict: Dict) -> sus.MsmsSpectrum:
     mz_array = spectrum_dict["m/z array"]
     intensity_array = spectrum_dict["intensity array"]
     retention_time = spectrum_dict["scanList"]["scan"][0].get(
-        "scan start time", -1
+        "scan start time", float("nan")
     )
 
     precursor = spectrum_dict["precursorList"]["precursor"][0]
