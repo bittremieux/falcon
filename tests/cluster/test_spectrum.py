@@ -4,40 +4,52 @@ import math
 
 import numpy as np
 import pytest
+import scipy.sparse as ss
 import spectrum_utils.spectrum as sus
 
 from falcon.cluster import spectrum
-
 
 # ---------------------------------------------------------------------------
 # _check_spectrum_valid
 # ---------------------------------------------------------------------------
 
+
 class TestCheckSpectrumValid:
     def test_valid(self):
         mz = np.array([100.0, 200.0, 300.0, 400.0, 500.0])
-        assert spectrum._check_spectrum_valid(mz, min_peaks=5, min_mz_range=250.0)
+        assert spectrum._check_spectrum_valid(
+            mz, min_peaks=5, min_mz_range=250.0
+        )
 
     def test_exact_min_peaks(self):
         mz = np.array([100.0, 200.0, 300.0, 400.0, 500.0])
-        assert spectrum._check_spectrum_valid(mz, min_peaks=5, min_mz_range=100.0)
+        assert spectrum._check_spectrum_valid(
+            mz, min_peaks=5, min_mz_range=100.0
+        )
 
     def test_too_few_peaks(self):
         mz = np.array([100.0, 200.0, 300.0])
-        assert not spectrum._check_spectrum_valid(mz, min_peaks=5, min_mz_range=100.0)
+        assert not spectrum._check_spectrum_valid(
+            mz, min_peaks=5, min_mz_range=100.0
+        )
 
     def test_exact_min_mz_range(self):
         mz = np.array([100.0, 150.0, 200.0, 250.0, 350.0])
-        assert spectrum._check_spectrum_valid(mz, min_peaks=5, min_mz_range=250.0)
+        assert spectrum._check_spectrum_valid(
+            mz, min_peaks=5, min_mz_range=250.0
+        )
 
     def test_too_narrow_range(self):
         mz = np.array([100.0, 100.5, 101.0, 101.5, 102.0])
-        assert not spectrum._check_spectrum_valid(mz, min_peaks=5, min_mz_range=250.0)
+        assert not spectrum._check_spectrum_valid(
+            mz, min_peaks=5, min_mz_range=250.0
+        )
 
 
 # ---------------------------------------------------------------------------
 # _norm_intensity
 # ---------------------------------------------------------------------------
+
 
 class TestNormIntensity:
     def test_unit_norm(self):
@@ -54,6 +66,7 @@ class TestNormIntensity:
 # ---------------------------------------------------------------------------
 # get_dim
 # ---------------------------------------------------------------------------
+
 
 class TestGetDim:
     def test_basic(self):
@@ -76,6 +89,7 @@ class TestGetDim:
 # ---------------------------------------------------------------------------
 # process_spectrum
 # ---------------------------------------------------------------------------
+
 
 class TestProcessSpectrum:
     def test_valid_spectrum(self, simple_spectrum):
@@ -220,5 +234,3 @@ class TestProcessSpectrum:
         )
         assert result is not None
         assert abs(np.linalg.norm(result["intensity"]) - 1.0) < 1e-5
-
-

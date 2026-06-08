@@ -59,3 +59,68 @@ class TestConfigParse:
             cfg = Config()
             cfg.parse([str(dummy), "output", "--scaling", scaling])
             assert cfg.scaling == scaling
+
+    def test_rt_tol_default_and_override(self, tmp_path):
+        """rt_tol defaults to None and parses as a float when given."""
+        dummy = tmp_path / "dummy.mgf"
+        dummy.write_text("")
+        cfg = Config()
+        cfg.parse([str(dummy), "output"])
+        assert cfg.rt_tol is None
+        cfg = Config()
+        cfg.parse([str(dummy), "output", "--rt_tol", "30"])
+        assert cfg.rt_tol == 30.0
+
+    def test_clustering_overrides(self, tmp_path):
+        """Linkage, fragment_tol, and consensus_method parse correctly."""
+        dummy = tmp_path / "dummy.mgf"
+        dummy.write_text("")
+        cfg = Config()
+        cfg.parse(
+            [
+                str(dummy), "output",
+                "--linkage", "average",
+                "--fragment_tol", "0.02",
+                "--consensus_method", "average",
+            ]
+        )
+        assert cfg.linkage == "average"
+        assert cfg.fragment_tol == 0.02
+        assert cfg.consensus_method == "average"
+
+    def test_outlier_cutoffs(self, tmp_path):
+        """Outlier cutoff bounds parse as floats."""
+        dummy = tmp_path / "dummy.mgf"
+        dummy.write_text("")
+        cfg = Config()
+        cfg.parse(
+            [
+                str(dummy), "output",
+                "--outlier_cutoff_lower", "2.0",
+                "--outlier_cutoff_upper", "3.0",
+            ]
+        )
+        assert cfg.outlier_cutoff_lower == 2.0
+        assert cfg.outlier_cutoff_upper == 3.0
+
+    def test_config_file_loading(self, tmp_path):
+        """Settings in a config file are applied via -c."""
+        dummy = tmp_path / "dummy.mgf"
+        dummy.write_text("")
+        cfg_file = tmp_path / "config.ini"
+        cfg_file.write_text("fragment_tol = 0.1\nmin_peaks = 9\n")
+        cfg = Config()
+        cfg.parse([str(dummy), "output", "-c", str(cfg_file)])
+        assert cfg.fragment_tol == 0.1
+        assert cfg.min_peaks == 9
+
+    def test_cli_overrides_config_file(self, tmp_path):
+        """Command-line arguments take precedence over the config file."""
+        dummy = tmp_path / "dummy.mgf"
+        dummy.write_text("")
+        cfg_file = tmp_path / "config.ini"
+        cfg_file.write_text("fragment_tol = 0.1\n")
+        cfg = Config()
+        cfg.parse([str(dummy), "output", "-c", str(cfg_file),
+                   "--fragment_tol", "0.03"])
+        assert cfg.fragment_tol == 0.03

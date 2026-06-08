@@ -137,3 +137,65 @@ def mock_spectra():
             )
         return spectra
     return _make
+
+
+def make_spectrum_row(
+    identifier,
+    precursor_mz,
+    mz,
+    intensity,
+    precursor_charge=2,
+    retention_time=0.0,
+):
+    """Build a single Lance row dict for a spectrum (L2-normalized intensity)."""
+    mz = np.asarray(mz, dtype=np.float32)
+    intensity = np.asarray(intensity, dtype=np.float32)
+    intensity = intensity / np.linalg.norm(intensity)
+    return {
+        "identifier": identifier,
+        "precursor_mz": np.float32(precursor_mz),
+        "precursor_charge": precursor_charge,
+        "mz": mz,
+        "intensity": intensity,
+        "retention_time": np.float32(retention_time),
+    }
+
+
+@pytest.fixture
+def spectrum_row():
+    """Expose ``make_spectrum_row`` as a fixture."""
+    return make_spectrum_row
+
+
+@pytest.fixture
+def lance_dataset(tmp_path):
+    """Factory fixture that writes rows to a Lance dataset and returns it.
+
+    The dataset path mirrors the production layout
+    (``spectra_charge_<charge>.lance``) so ``generate_clusters`` can derive the
+    charge from the URI.
+    """
+    import pyarrow as pa
+    import lance
+
+    schema = pa.schema(
+        [
+            pa.field("identifier", pa.string()),
+            pa.field("precursor_mz", pa.float32()),
+            pa.field("precursor_charge", pa.int8()),
+            pa.field("mz", pa.list_(pa.float32())),
+            pa.field("intensity", pa.list_(pa.float32())),
+            pa.field("retention_time", pa.float32()),
+        ]
+    )
+
+    def _make(rows, charge=2):
+        path = str(tmp_path / f"spectra_charge_{charge}.lance")
+        return lance.write_dataset(
+            pa.Table.from_pylist(rows, schema),
+            path,
+            mode="overwrite",
+            data_storage_version="stable",
+        )
+
+    return _make

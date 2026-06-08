@@ -41,6 +41,63 @@ class TestSimilarity:
         assert round(score, 3) == 0.964
         assert matched_peaks == 3
 
+    def test_cosine_fast_partial_overlap(self):
+        """Only the shared peaks contribute to the match count and score."""
+        inten = np.array([1.0, 1.0, 1.0], dtype=np.float32)
+        inten = inten / np.linalg.norm(inten)
+        spec1 = similarity.SpectrumTuple(
+            precursor_mz=100.0,
+            precursor_charge=2,
+            mz=np.array([100.0, 200.0, 300.0], dtype=np.float32),
+            intensity=inten,
+        )
+        spec2 = similarity.SpectrumTuple(
+            precursor_mz=100.0,
+            precursor_charge=2,
+            mz=np.array([100.0, 200.0, 999.0], dtype=np.float32),
+            intensity=inten,
+        )
+        score, matched = similarity.cosine_fast(spec1, spec2, 0.1)
+        assert matched == 2
+        # Two of three normalized peaks match => score 2/3.
+        assert score == pytest.approx(2.0 / 3.0, rel=1e-3)
+
+    def test_cosine_fast_tolerance_boundary(self):
+        """A peak just outside the tolerance must not match."""
+        inten = np.array([1.0], dtype=np.float32)
+        spec1 = similarity.SpectrumTuple(
+            precursor_mz=100.0, precursor_charge=2,
+            mz=np.array([100.0], dtype=np.float32), intensity=inten,
+        )
+        spec2 = similarity.SpectrumTuple(
+            precursor_mz=100.0, precursor_charge=2,
+            mz=np.array([100.2], dtype=np.float32), intensity=inten,
+        )
+        # Difference 0.2 > tolerance 0.1 => no match.
+        score, matched = similarity.cosine_fast(spec1, spec2, 0.1)
+        assert matched == 0
+        assert score == 0.0
+        # Within tolerance => match.
+        score, matched = similarity.cosine_fast(spec1, spec2, 0.25)
+        assert matched == 1
+        assert score == pytest.approx(1.0)
+
+    def test_cosine_fast_empty_other(self):
+        """Comparing against an empty spectrum yields no matches."""
+        spec1 = similarity.SpectrumTuple(
+            precursor_mz=100.0, precursor_charge=2,
+            mz=np.array([100.0, 200.0], dtype=np.float32),
+            intensity=np.array([0.7, 0.7], dtype=np.float32),
+        )
+        spec2 = similarity.SpectrumTuple(
+            precursor_mz=100.0, precursor_charge=2,
+            mz=np.array([], dtype=np.float32),
+            intensity=np.array([], dtype=np.float32),
+        )
+        score, matched = similarity.cosine_fast(spec1, spec2, 0.1)
+        assert matched == 0
+        assert score == 0.0
+
     def test_df_row_to_spectrum_tuple(self):
         """Test the conversion of a DataFrame row to a SpectrumTuple."""
         int1 = np.array([0.1, 0.2, 0.3])

@@ -142,6 +142,110 @@ class TestMgfRead:
         assert len(spectra) == 1
         assert "scan:42" in spectra[0].identifier
 
+    def test_missing_rt_is_nan(self, tmp_path):
+        """A spectrum without RTINSECONDS should parse RT as NaN (not -1/0)."""
+        mgf = tmp_path / "nort.mgf"
+        mgf.write_text(
+            "BEGIN IONS\n"
+            "TITLE=test:scan:1\n"
+            "PEPMASS=500.0\n"
+            "CHARGE=2+\n"
+            "100.0 50\n"
+            "200.0 100\n"
+            "END IONS\n"
+        )
+        from falcon.ms_io import mgf_io
+
+        spectra = list(mgf_io.get_spectra(str(mgf)))
+        assert len(spectra) == 1
+        assert math.isnan(spectra[0].retention_time)
+
+    def test_cluster_title_preserved(self, tmp_path):
+        """A '<filename>:cluster:<id>' title should be passed through as-is."""
+        mgf = tmp_path / "myrun.mgf"
+        mgf.write_text(
+            "BEGIN IONS\n"
+            "TITLE=myrun:cluster:7\n"
+            "PEPMASS=500.0\n"
+            "CHARGE=2+\n"
+            "100.0 50\n"
+            "200.0 100\n"
+            "END IONS\n"
+        )
+        from falcon.ms_io import mgf_io
+
+        spectra = list(mgf_io.get_spectra(str(mgf)))
+        assert len(spectra) == 1
+        assert spectra[0].identifier == "myrun:cluster:7"
+
+
+# ---------------------------------------------------------------------------
+# MGF write (_spectra_to_dicts) — optional fields
+# ---------------------------------------------------------------------------
+
+class TestSpectraToDicts:
+    def _consensus(self, charge, rt):
+        from falcon.cluster.cluster import ConsensusTuple
+
+        return ConsensusTuple(
+            precursor_mz=np.float32(500.0),
+            precursor_charge=charge,
+            mz=np.array([100.0, 200.0], dtype=np.float32),
+            intensity=np.array([0.5, 1.0], dtype=np.float32),
+            retention_time=rt,
+            cluster_id=np.int32(3),
+            mz_split=np.int32(0),
+        )
+
+    def test_full_fields(self):
+        from falcon.ms_io import mgf_io
+
+        dicts = list(
+            mgf_io._spectra_to_dicts(
+                [self._consensus(np.int32(2), np.float32(120.0))]
+            )
+        )
+        params = dicts[0]["params"]
+        assert params["title"] == "falcon:cluster:3"
+        assert params["charge"] == 2
+        assert params["rtinseconds"] == pytest.approx(120.0)
+
+    def test_nan_charge_omitted(self):
+        from falcon.ms_io import mgf_io
+
+        dicts = list(
+            mgf_io._spectra_to_dicts(
+                [self._consensus(np.nan, np.float32(120.0))]
+            )
+        )
+        params = dicts[0]["params"]
+        assert "charge" not in params
+        assert params["rtinseconds"] == pytest.approx(120.0)
+
+    def test_nan_rt_omitted(self):
+        from falcon.ms_io import mgf_io
+
+        dicts = list(
+            mgf_io._spectra_to_dicts(
+                [self._consensus(np.int32(2), np.float32("nan"))]
+            )
+        )
+        params = dicts[0]["params"]
+        assert "rtinseconds" not in params
+        assert params["charge"] == 2
+
+    def test_nan_rt_roundtrip(self, tmp_path):
+        """A NaN RT written to MGF is read back as NaN."""
+        from falcon.ms_io import mgf_io
+
+        out_path = str(tmp_path / "nanrt.mgf")
+        mgf_io.write_spectra(
+            out_path, [self._consensus(np.int32(2), np.float32("nan"))]
+        )
+        spectra = list(mgf_io.get_spectra(out_path))
+        assert len(spectra) == 1
+        assert math.isnan(spectra[0].retention_time)
+
 
 # ---------------------------------------------------------------------------
 # _scale_intensities

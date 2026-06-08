@@ -220,3 +220,81 @@ class TestGetRepresentativeSpectra:
             consensus._get_representative_spectra(
                 spectra, labels, rts, order_map, "nonexistent", {}
             )
+
+    def test_average_dispatch(self, mock_spectra):
+        """The 'average' method should dispatch to the averaging path."""
+        spectra = mock_spectra(3, mz_base=100.0, mz_step=1.0, n_peaks=3)
+        labels = np.array([0, 0, 0], dtype=np.int32)
+        rts = np.array([10.0, 20.0, 30.0], dtype=np.float32)
+        order_map = np.array([0, 1, 2], dtype=np.int64)
+        params = {
+            "min_mz": 50.0,
+            "max_mz": 200.0,
+            "bin_size": 1.0,
+            "outlier_cutoff_lower": 1.5,
+            "outlier_cutoff_upper": 1.5,
+        }
+        result = consensus._get_representative_spectra(
+            spectra, labels, rts, order_map, "average", params
+        )
+        assert len(result) == 1
+        assert hasattr(result[0], "precursor_mz")
+        assert len(result[0].mz) == len(result[0].intensity)
+
+
+# ---------------------------------------------------------------------------
+# _get_cluster_average
+# ---------------------------------------------------------------------------
+
+class TestGetClusterAverage:
+    def test_single_cluster_averaged(self, mock_spectra):
+        """A cluster of 3 identical spectra averages into one spectrum."""
+        spectra = mock_spectra(3, mz_base=100.0, mz_step=1.0, n_peaks=3)
+        labels = np.array([0, 0, 0], dtype=np.int32)
+        rts = np.array([10.0, 20.0, 30.0], dtype=np.float32)
+        order_map = np.array([0, 1, 2], dtype=np.int64)
+        result = consensus._get_cluster_average(
+            spectra, labels, rts, order_map,
+            min_mz=50.0, max_mz=200.0, bin_size=1.0,
+            outlier_cutoff_lower=1.5, outlier_cutoff_upper=1.5,
+        )
+        precursor_mzs, charges, mzs, intensities, retention_times, cluster_ids = (
+            result
+        )
+        assert len(precursor_mzs) == 1
+        # Averaged RT of identical-content spectra is the mean of the inputs.
+        assert retention_times[0] == pytest.approx(20.0)
+        assert cluster_ids[0] == 0
+        assert len(mzs[0]) > 0
+
+    def test_singleton_passthrough(self, mock_spectra):
+        """A singleton cluster returns the original spectrum unchanged."""
+        spectra = mock_spectra(1, n_peaks=3)
+        labels = np.array([0], dtype=np.int32)
+        rts = np.array([42.0], dtype=np.float32)
+        order_map = np.array([0], dtype=np.int64)
+        result = consensus._get_cluster_average(
+            spectra, labels, rts, order_map,
+            min_mz=50.0, max_mz=200.0, bin_size=1.0,
+            outlier_cutoff_lower=1.5, outlier_cutoff_upper=1.5,
+        )
+        precursor_mzs, charges, mzs, intensities, retention_times, cluster_ids = (
+            result
+        )
+        assert len(precursor_mzs) == 1
+        assert retention_times[0] == 42.0
+        np.testing.assert_array_equal(mzs[0], spectra[0].mz)
+
+
+# ---------------------------------------------------------------------------
+# typed_list_to_numpy
+# ---------------------------------------------------------------------------
+
+class TestTypedListToNumpy:
+    def test_roundtrip(self):
+        lst = nb.typed.List.empty_list(nb.types.float32)
+        for v in (1.0, 2.5, 3.5):
+            lst.append(np.float32(v))
+        arr = consensus.typed_list_to_numpy(lst)
+        assert arr.dtype == np.float32
+        np.testing.assert_array_equal(arr, np.array([1.0, 2.5, 3.5], np.float32))
