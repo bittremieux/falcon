@@ -8,7 +8,6 @@ import numpy as np
 import pyteomics.mgf
 import spectrum_utils.spectrum as sus
 
-from ..cluster import similarity
 from ..cluster import cluster
 
 USI_PATTERN = re.compile(r"^mzspec:[^:\s]+:[^:\s]+:(scan:\d+|\d+)(:[^:\s]+)?$")
@@ -98,7 +97,7 @@ def _parse_spectrum(spectrum_dict: Dict) -> sus.MsmsSpectrum:
 
 
 def write_spectra(
-    filename: str, spectra: List[similarity.SpectrumTuple]
+    filename: str, spectra: List[cluster.ConsensusTuple]
 ) -> None:
     """
     Write the given spectra to an MGF file.
@@ -107,8 +106,8 @@ def write_spectra(
     ----------
     filename : str
         The MGF file name where the spectra will be written.
-    spectra : List[similarity.SpectrumTuple]
-        The spectra to be written to the MGF file.
+    spectra : List[cluster.ConsensusTuple]
+        The representative spectra to be written to the MGF file.
     """
     with open(filename, "w") as f_out:
         pyteomics.mgf.write(

@@ -41,34 +41,38 @@ def generate_clusters(
     consensus_params: dict,
 ) -> np.ndarray:
     """
-    Hierarchical clustering of the given pairwise distance matrix.
+    Cluster the spectra in the given dataset using hierarchical clustering.
 
     Parameters
     ----------
     dataset : lance.LanceDataset
         The dataset containing the spectra to be clustered.
-    linkage: str
-        The linkage method to use for hierarchical clustering.
+    linkage : str
+        The linkage method to use for hierarchical clustering
+        ('single', 'complete', or 'average').
     distance_threshold : float
-        The linkage distance threshold at or above which clusters will not be merged.
-    min_matches: int
-        The minimum number of matched peaks to consider the spectra similar.
+        The linkage distance threshold at or above which clusters will not be
+        merged.
+    min_matches : int
+        The minimum number of matched peaks to consider two spectra similar.
     precursor_tol_mass : float
         Maximum precursor mass tolerance for points to be clustered together.
     precursor_tol_mode : str
         The unit of the precursor m/z tolerance ('Da' or 'ppm').
     rt_tol : float
-        The retention time tolerance for points to be clustered together. If
-        `None`, do not restrict the retention time.
-    fragment_tol: float
+        The retention time tolerance for points to be clustered together.
+        Spectra with NaN retention time are not split by RT but remain
+        eligible for m/z-based splitting. If `None`, RT is not used.
+    fragment_tol : float
         The fragment m/z tolerance.
     batch_size : int
-        Maximum interval size.
+        Maximum number of spectra per precursor m/z split.
     consensus_method : str
-        The method to use for consensus spectrum computation. Should be either
-        'medoid' or 'average'.
+        The method to use for consensus spectrum computation
+        ('medoid' or 'average').
     consensus_params : dict
         Additional parameters for the consensus spectrum computation.
+
     Returns
     -------
     Tuple[np.ndarray, List[ConsensusTuple]]
@@ -273,20 +277,23 @@ def cost_based_chunking(
     tasks: List[int], num_chunks: int
 ) -> List[List[Tuple[int, Tuple[int, int]]]]:
     """
-    Groups tasks into chunks based on estimated computational costs.
+    Distribute tasks across chunks to balance estimated computational cost.
+
+    Cost is proportional to the square of the interval size. Tasks are
+    assigned greedily to the chunk with the lowest cumulative cost.
 
     Parameters
     ----------
-    tasks: List[int]
-        List of tasks.
-    num_chunks: int
-        Number of chunks (e.g., number of workers).
+    tasks : List[int]
+        Sorted split-point indices defining the task intervals.
+    num_chunks : int
+        Number of chunks (typically equal to the number of workers).
 
     Returns
     -------
-    List[List[Tuple[int, Tuple[int, int]]]
-        A tuple containing the chunks. Each chunk is a list of tuples containing
-        the index of the task and the m/z split bounds.
+    List[List[Tuple[int, Tuple[int, int]]]]
+        A list of chunks. Each chunk is a list of (task_index,
+        (interval_start, interval_stop)) tuples.
     """
     split_tuples = [(tasks[i], tasks[i + 1]) for i in range(len(tasks) - 1)]
     indexed_tasks = list(enumerate(split_tuples))
@@ -322,48 +329,42 @@ def cluster_chunk(
     consensus_params: dict,
 ) -> List[Tuple[int, List[ConsensusTuple]]]:
     """
-    Cluster the vectors in the given interval.
+    Cluster all m/z intervals in the given chunk.
 
     Parameters
     ----------
     chunk : List[Tuple[int, Tuple[int, int]]]
-        The cluster tasks as a list of tuples containing the index of the task and the
-        m/z split bounds.
+        The cluster tasks: each entry is (task_id, (interval_start,
+        interval_stop)) where the interval bounds index into the sorted
+        precursor m/z array.
     dataset : lance.LanceDataset
         The dataset containing the spectra to be clustered.
     linkage : str
-        Linkage method to calculate the cluster distances.
+        Linkage method for hierarchical clustering
+        ('single', 'complete', or 'average').
     distance_threshold : float
-        The maximum linkage distance threshold during clustering. Either
-        'complete', 'average' or 'single'.
-    min_matches: int
-        The minimum number of matched peaks to consider the spectra similar.
+        The maximum linkage distance threshold during clustering.
+    min_matches : int
+        The minimum number of matched peaks to consider two spectra similar.
     precursor_tol_mass : float
         The value of the precursor m/z tolerance.
     precursor_tol_mode : str
         The unit of the precursor m/z tolerance ('Da' or 'ppm').
     rt_tol : float
-        The retention time tolerance for points to be clustered together. If
-        `None`, do not restrict the retention time.
-    fragment_mz_tol: float
+        The retention time tolerance. Spectra with NaN RT are not split by RT.
+        If `None`, RT is not used.
+    fragment_mz_tol : float
         The fragment m/z tolerance.
     consensus_method : str
-        The method to use for consensus spectrum computation.
-    min_mz : float
-        The minimum peak m/z value.
-    max_mz : float
-        The maximum peak m/z value.
-    bin_size : float
-        The width of each bin in m/z units.
-    n_min : float
-        The number of standard deviations for the lower bound for outlier rejection.
-    n_max : float
-        The number of standard deviations for the upper bound for outlier rejection.
+        The method to use for consensus spectrum computation
+        ('medoid' or 'average').
+    consensus_params : dict
+        Additional parameters for the consensus spectrum computation.
 
     Returns
     -------
-    List[Tuple[int, List[ConsensusTuple]]]
-        The task index and representative spectra for each cluster.
+    List[Tuple[int, Tuple[List[ConsensusTuple], np.ndarray]]]
+        For each task: the task index and the result of `_cluster_mz_interval`.
     """
 
     return [
@@ -405,44 +406,45 @@ def _cluster_mz_interval(
     consensus_params: dict,
 ) -> Tuple[List[ConsensusTuple], np.ndarray]:
     """
-    Cluster the vectors in the given interval.
+    Cluster the spectra in a single precursor m/z interval.
 
     Parameters
     ----------
     dataset : lance.LanceDataset
-        The dataset containing the spectra to be clustered.
+        The dataset from which spectra are fetched on demand.
     row_ids : List[int]
-        The row ids of the spectra in the current interval.
+        Lance row indices of the spectra in this interval.
     idx : np.ndarray
-        The indexes of the spectra in the current interval.
+        Sorted positional indices of the spectra within the global ordering.
     mzs : np.ndarray
-        The precursor m/z's corresponding to the current interval indexes.
+        Precursor m/z values corresponding to `idx`.
     linkage : str
-        Linkage method to calculate the cluster distances. See
-        `scipy.cluster.hierarchy.linkage` for possible options.
+        Linkage method for hierarchical clustering. See
+        `scipy.cluster.hierarchy.linkage` for options.
     distance_threshold : float
         The maximum linkage distance threshold during clustering.
-    min_matches: int
-        The minimum number of matched peaks to consider the spectra similar.
+    min_matches : int
+        The minimum number of matched peaks to consider two spectra similar.
     precursor_tol_mass : float
         The value of the precursor m/z tolerance.
     precursor_tol_mode : str
         The unit of the precursor m/z tolerance ('Da' or 'ppm').
     rt_tol : float
-        The retention time tolerance for points to be clustered together. If
-        `None`, do not restrict the retention time.
+        The retention time tolerance. Spectra with NaN RT are not split by RT.
+        If `None`, RT is not used.
     fragment_mz_tol : float
         The fragment m/z tolerance.
     consensus_method : str
-        The method to use for consensus spectrum computation. Should be either
-        'medoid' or 'average'.
+        The method to use for consensus spectrum computation
+        ('medoid' or 'average').
     consensus_params : dict
         Additional parameters for the consensus spectrum computation.
 
     Returns
     -------
     Tuple[List[ConsensusTuple], np.ndarray]
-        A tuple containing the list of representative spectra for each cluster and the cluster labels.
+        The representative spectrum for each cluster and the cluster label
+        array aligned to the input interval order.
     """
     spectra = dataset.take(
         indices=row_ids,
@@ -584,33 +586,35 @@ def _postprocess_cluster(
     start_label: int,
 ) -> int:
     """
-    Partitioning based on the precursor m/z's within each initial cluster to
-    avoid that spectra within a cluster have an excessive precursor m/z
-    difference.
+    Split an initial cluster on precursor m/z (and optionally RT) to prevent
+    spectra with excessive precursor m/z differences from sharing a cluster.
 
     Parameters
     ----------
     cluster_labels : np.ndarray
-        Array in which to write the cluster labels.
+        Array in which to write the output cluster labels (mutated in place).
     cluster_mzs : np.ndarray
-        Precursor m/z's of the samples in a single initial cluster.
-    cluster_rts: np.ndarray
-        Retention times of the samples in a single intial cluster.
+        Precursor m/z values of the spectra in this initial cluster.
+    cluster_rts : np.ndarray
+        Retention times of the spectra. NaN entries are excluded from the RT
+        linkage but remain in the cluster (not split by RT).
     precursor_tol_mass : float
-        Maximum precursor mass tolerance for points to be clustered together.
+        Maximum precursor m/z difference allowed within a cluster.
     precursor_tol_mode : str
         The unit of the precursor m/z tolerance ('Da' or 'ppm').
-    rt_tol: float
-        Maximum retention time tolerance for points to be clustered together.
+    rt_tol : float
+        Maximum retention time difference allowed within a cluster. If `None`,
+        retention time is not used for splitting.
     min_samples : int
-        The minimum number of samples in a cluster.
+        Minimum number of spectra required to form a cluster (smaller groups
+        become singletons).
     start_label : int
-        The first cluster label.
+        The first cluster label to assign.
 
     Returns
     -------
     int
-        The number of clusters after splitting on precursor m/z.
+        The total number of output clusters (including singletons).
     """
     # No splitting needed if there are too few items in cluster.
     if cluster_labels.shape[0] < min_samples:
@@ -712,8 +716,8 @@ def _linkage(values: np.ndarray, tol_mode: str = None) -> np.ndarray:
     values : np.ndarray
         The precursor m/z's or RTs for which pairwise distances are computed.
     tol_mode : str
-        The unit of the tolerance ('Da' or 'ppm' for precursor m/z, 'rt' for
-        retention time).
+        The unit of the tolerance ('Da' or 'ppm' for precursor m/z;
+        `None` for retention time, where distances are absolute).
 
     Returns
     -------
