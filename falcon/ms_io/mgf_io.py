@@ -11,7 +11,6 @@ import spectrum_utils.spectrum as sus
 from ..cluster import similarity
 from ..cluster import cluster
 
-
 USI_PATTERN = re.compile(r"^mzspec:[^:\s]+:[^:\s]+:(scan:\d+|\d+)(:[^:\s]+)?$")
 
 
@@ -41,15 +40,17 @@ def get_spectra(source: Union[IO, str]) -> Iterable[sus.MsmsSpectrum]:
                 os.path.basename(params.get("filename", base_filename))
             )[0]
 
-            # Build USI-inspired title
-            if "scans" in params:
-                params["title"] = f"{filename}:scan:{params['scans']}"
-            elif "scan" in params:
-                params["title"] = f"{filename}:scan:{params['scan']}"
-            else:
-                title = params.get("title", "")
-                if not USI_PATTERN.match(title):
-                    params["title"] = f"{filename}:index:{spectrum_i}"
+            if "title" not in params or not (
+                USI_PATTERN.match(params["title"])
+                or params["title"].startswith(f"{filename}:cluster:")
+            ):
+                if "scans" in params:
+                    usi = f"{filename}:scan:{params['scans']}"
+                elif "scan" in params:
+                    usi = f"{filename}:scan:{params['scan']}"
+                else:
+                    usi = f"{filename}:index:{spectrum_i}"
+                params["title"] = usi
 
             try:
                 yield _parse_spectrum(spectrum_dict)
@@ -75,7 +76,9 @@ def _parse_spectrum(spectrum_dict: Dict) -> sus.MsmsSpectrum:
 
     mz_array = spectrum_dict["m/z array"]
     intensity_array = spectrum_dict["intensity array"]
-    retention_time = float(spectrum_dict["params"].get("rtinseconds", -1))
+    retention_time = float(
+        spectrum_dict["params"].get("rtinseconds", float("nan"))
+    )
 
     precursor_mz = float(spectrum_dict["params"]["pepmass"][0])
     if "charge" in spectrum_dict["params"]:
@@ -135,16 +138,12 @@ def _spectra_to_dicts(
         params = {
             "title": f"falcon:cluster:{spectrum.cluster_id}",
             "scans": i + 1,
-            "pepmass": spectrum.precursor_mz,
+            "pepmass": float(spectrum.precursor_mz),
         }
-        if not math.isnan(spectrum.precursor_charge):
-            params["charge"] = spectrum.precursor_charge
-        if hasattr(spectrum, "retention_time"):
-            params["rtinseconds"] = spectrum.retention_time
-        if hasattr(spectrum, "scan"):
-            params["scan"] = spectrum.scan
-        if hasattr(spectrum, "cluster_size"):
-            params["cluster_size"] = spectrum.cluster_size
+        if not math.isnan(float(spectrum.precursor_charge)):
+            params["charge"] = int(spectrum.precursor_charge)
+        if not math.isnan(float(spectrum.retention_time)):
+            params["rtinseconds"] = float(spectrum.retention_time)
         yield {
             "params": params,
             "m/z array": spectrum.mz,
@@ -153,18 +152,18 @@ def _spectra_to_dicts(
 
 
 @nb.njit(cache=True, fastmath=True)
-def _scale_intensities(intensity: List[float]) -> List[float]:
+def _scale_intensities(intensity: np.ndarray) -> np.ndarray:
     """
     Scale the intensities to the range [0, 1000].
 
     Parameters
     ----------
-    intensity : List[float]
+    intensity : np.ndarray
         The intensity array to be scaled.
 
     Returns
     -------
-    List[float]
+    np.ndarray
         The scaled intensities.
     """
     return intensity * 1000 / np.max(intensity)
