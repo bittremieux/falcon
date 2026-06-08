@@ -4,7 +4,6 @@ import math
 
 import numpy as np
 import pytest
-import scipy.sparse as ss
 import spectrum_utils.spectrum as sus
 
 from falcon.cluster import spectrum

@@ -178,6 +178,176 @@ class TestMgfRead:
         assert len(spectra) == 1
         assert spectra[0].identifier == "myrun:cluster:7"
 
+    def test_usi_title_preserved(self, tmp_path):
+        """A valid USI title (mzspec:...) should be passed through as-is."""
+        mgf = tmp_path / "run.mgf"
+        mgf.write_text(
+            "BEGIN IONS\n"
+            "TITLE=mzspec:PXD000000:run:scan:9\n"
+            "PEPMASS=500.0\n"
+            "CHARGE=2+\n"
+            "100.0 50\n"
+            "200.0 100\n"
+            "END IONS\n"
+        )
+        from falcon.ms_io import mgf_io
+
+        spectra = list(mgf_io.get_spectra(str(mgf)))
+        assert len(spectra) == 1
+        assert spectra[0].identifier == "mzspec:PXD000000:run:scan:9"
+
+    def test_scan_singular_fallback(self, tmp_path):
+        """A 'SCAN' (singular) param should be used when 'SCANS' is absent."""
+        mgf = tmp_path / "sng.mgf"
+        mgf.write_text(
+            "BEGIN IONS\n"
+            "SCAN=77\n"
+            "PEPMASS=500.0\n"
+            "CHARGE=2+\n"
+            "100.0 50\n"
+            "200.0 100\n"
+            "END IONS\n"
+        )
+        from falcon.ms_io import mgf_io
+
+        spectra = list(mgf_io.get_spectra(str(mgf)))
+        assert len(spectra) == 1
+        assert spectra[0].identifier == "sng:scan:77"
+
+    def test_index_fallback(self, tmp_path):
+        """Without a title/scans/scan, the identifier falls back to the index."""
+        mgf = tmp_path / "idx.mgf"
+        mgf.write_text(
+            "BEGIN IONS\n"
+            "PEPMASS=500.0\n"
+            "CHARGE=2+\n"
+            "100.0 50\n"
+            "200.0 100\n"
+            "END IONS\n"
+            "BEGIN IONS\n"
+            "PEPMASS=600.0\n"
+            "CHARGE=2+\n"
+            "100.0 50\n"
+            "200.0 100\n"
+            "END IONS\n"
+        )
+        from falcon.ms_io import mgf_io
+
+        spectra = list(mgf_io.get_spectra(str(mgf)))
+        assert [s.identifier for s in spectra] == [
+            "idx:index:0",
+            "idx:index:1",
+        ]
+
+    def test_non_usi_title_replaced(self, tmp_path):
+        """A plain title (not a USI, not a cluster title) is replaced."""
+        mgf = tmp_path / "foo.mgf"
+        mgf.write_text(
+            "BEGIN IONS\n"
+            "TITLE=just a label\n"
+            "PEPMASS=500.0\n"
+            "CHARGE=2+\n"
+            "100.0 50\n"
+            "200.0 100\n"
+            "END IONS\n"
+        )
+        from falcon.ms_io import mgf_io
+
+        spectra = list(mgf_io.get_spectra(str(mgf)))
+        assert len(spectra) == 1
+        # No scans/scan present => identifier falls back to the index.
+        assert spectra[0].identifier == "foo:index:0"
+
+    def test_filename_param_override(self, tmp_path):
+        """A 'FILENAME' param overrides the on-disk file name in identifiers."""
+        mgf = tmp_path / "ondisk.mgf"
+        mgf.write_text(
+            "BEGIN IONS\n"
+            "FILENAME=original.raw\n"
+            "SCANS=5\n"
+            "PEPMASS=500.0\n"
+            "CHARGE=2+\n"
+            "100.0 50\n"
+            "200.0 100\n"
+            "END IONS\n"
+        )
+        from falcon.ms_io import mgf_io
+
+        spectra = list(mgf_io.get_spectra(str(mgf)))
+        assert len(spectra) == 1
+        assert spectra[0].identifier == "original:scan:5"
+
+    def test_rt_parsed(self, tmp_path):
+        """RTINSECONDS should be parsed into the retention time."""
+        mgf = tmp_path / "rt.mgf"
+        mgf.write_text(
+            "BEGIN IONS\n"
+            "SCANS=1\n"
+            "PEPMASS=500.0\n"
+            "CHARGE=2+\n"
+            "RTINSECONDS=123.5\n"
+            "100.0 50\n"
+            "200.0 100\n"
+            "END IONS\n"
+        )
+        from falcon.ms_io import mgf_io
+
+        spectra = list(mgf_io.get_spectra(str(mgf)))
+        assert len(spectra) == 1
+        assert spectra[0].retention_time == pytest.approx(123.5)
+
+    def test_negative_charge(self, tmp_path):
+        """Negative-mode charge states are parsed with their sign."""
+        mgf = tmp_path / "neg.mgf"
+        mgf.write_text(
+            "BEGIN IONS\n"
+            "SCANS=1\n"
+            "PEPMASS=500.0\n"
+            "CHARGE=3-\n"
+            "100.0 50\n"
+            "200.0 100\n"
+            "END IONS\n"
+        )
+        from falcon.ms_io import mgf_io
+
+        spectra = list(mgf_io.get_spectra(str(mgf)))
+        assert len(spectra) == 1
+        assert spectra[0].precursor_charge == -3
+
+    def test_multiple_spectra_with_malformed_skipped(self, tmp_path):
+        """A spectrum that fails to parse is skipped; valid ones still read."""
+        mgf = tmp_path / "multi.mgf"
+        mgf.write_text(
+            "BEGIN IONS\n"
+            "SCANS=1\n"
+            "PEPMASS=500.0\n"
+            "CHARGE=2+\n"
+            "100.0 50\n"
+            "200.0 100\n"
+            "END IONS\n"
+            # Missing PEPMASS => raises and is skipped.
+            "BEGIN IONS\n"
+            "SCANS=2\n"
+            "CHARGE=2+\n"
+            "100.0 50\n"
+            "200.0 100\n"
+            "END IONS\n"
+            "BEGIN IONS\n"
+            "SCANS=3\n"
+            "PEPMASS=600.0\n"
+            "CHARGE=3+\n"
+            "100.0 50\n"
+            "200.0 100\n"
+            "END IONS\n"
+        )
+        from falcon.ms_io import mgf_io
+
+        spectra = list(mgf_io.get_spectra(str(mgf)))
+        assert [s.identifier for s in spectra] == [
+            "multi:scan:1",
+            "multi:scan:3",
+        ]
+
 
 # ---------------------------------------------------------------------------
 # MGF write (_spectra_to_dicts) — optional fields

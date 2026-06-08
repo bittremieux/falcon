@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="ISO-8859-1"?>
+<mzXML xmlns="http://sashimi.sourceforge.net/schema_revision/mzXML_3.2">
+ <msRun scanCount="2">
+  <scan num="1" msLevel="1" peaksCount="1" retentionTime="PT5S">
+   <peaks compressionType="none" precision="32" byteOrder="network" contentType="m/z-int">QyAAAEEgAAA=</peaks>
+  </scan>
+  <scan num="2" msLevel="2" peaksCount="1" retentionTime="PT6S">
+   <precursorMz precursorCharge="2">400.0</precursorMz>
+   <peaks compressionType="none" precision="32" byteOrder="network" contentType="m/z-int">QyAAAEEgAAA=</peaks>
+  </scan>
+ </msRun>
+</mzXML>
