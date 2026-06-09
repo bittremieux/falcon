@@ -1,5 +1,6 @@
 import gc
 import logging
+import math
 import multiprocessing
 import tempfile
 from functools import partial
@@ -249,9 +250,7 @@ def _get_precursor_mz_splits(
     splits = nb.typed.List([0])
     for i in range(1, len(precursor_mzs)):
         block_size = i - splits[-1]
-        if block_size >= batch_size:
-            splits.append(i)
-        elif (
+        if (
             suu.mass_diff(
                 precursor_mzs[i],
                 precursor_mzs[i - 1],
@@ -259,16 +258,18 @@ def _get_precursor_mz_splits(
             )
             > precursor_tol_mass
         ):
+            if block_size < batch_size:
+                splits.append(i)
+            else:
+                # split into evenly sized chunks of at most batch_size
+                n_chunks = math.ceil(block_size / batch_size)
+                chunk_size = block_size // n_chunks
+                for _ in range(block_size % n_chunks):
+                    splits.append(splits[-1] + chunk_size + 1)
+                for _ in range(n_chunks - (block_size % n_chunks)):
+                    splits.append(splits[-1] + chunk_size)
+        elif block_size >= batch_size:
             splits.append(i)
-            # if block_size < batch_size: TODO: ask wout about this
-            #     splits.append(i)
-            # else:
-            #     n_chunks = math.ceil(block_size / batch_size)
-            #     chunk_size = block_size // n_chunks
-            #     for _ in range(block_size % n_chunks):
-            #         splits.append(splits[-1] + chunk_size + 1)
-            #     for _ in range(n_chunks - (block_size % n_chunks)):
-            #         splits.append(splits[-1] + chunk_size)
     if splits[-1] != len(precursor_mzs):
         splits.append(len(precursor_mzs))
     return splits
@@ -679,7 +680,7 @@ def _postprocess_cluster(
                 key_type=nb.int64, value_type=nb.int64
             )
             # Count cluster sizes
-            for i, label in enumerate(cluster_assignments):
+            for label in cluster_assignments:
                 labels[label] = labels.get(label, 0) + 1
             n_clusters = 0
             # Assign unique cluster labels
@@ -811,7 +812,7 @@ def _assign_global_cluster_labels(
         The representative spectra with updated cluster IDs.
     """
     offsets = _offset_cluster_labels(cluster_labels, splits)
-    # Group reps by mz_split in one pass — O(R) instead of O(S × R).
+    # Group reps by mz_split in one pass —- O(R) instead of O(S x R).
     reps_by_split: dict = {}
     for s in rep_spectra:
         reps_by_split.setdefault(int(s.mz_split), []).append(s)
