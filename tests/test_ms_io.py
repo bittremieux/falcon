@@ -8,10 +8,10 @@ import pytest
 
 from falcon.ms_io import ms_io
 
-
 # ---------------------------------------------------------------------------
 # ms_io.get_spectra dispatch
 # ---------------------------------------------------------------------------
+
 
 class TestGetSpectraDispatch:
     def test_unknown_extension(self, tmp_path):
@@ -46,6 +46,7 @@ class TestGetSpectraDispatch:
 # ms_io.write_spectra
 # ---------------------------------------------------------------------------
 
+
 class TestWriteSpectra:
     def test_unsupported_format(self, tmp_path):
         """Non-MGF output should raise ValueError."""
@@ -56,6 +57,7 @@ class TestWriteSpectra:
 # ---------------------------------------------------------------------------
 # MGF round-trip
 # ---------------------------------------------------------------------------
+
 
 class TestMgfRoundtrip:
     def test_write_and_read(self, tmp_path):
@@ -86,6 +88,7 @@ class TestMgfRoundtrip:
 # ---------------------------------------------------------------------------
 # MGF read specifics
 # ---------------------------------------------------------------------------
+
 
 class TestMgfRead:
     def test_basic_parse(self, tmp_path):
@@ -353,6 +356,7 @@ class TestMgfRead:
 # MGF write (_spectra_to_dicts) — optional fields
 # ---------------------------------------------------------------------------
 
+
 class TestSpectraToDicts:
     def _consensus(self, charge, rt):
         from falcon.cluster.cluster import ConsensusTuple
@@ -420,6 +424,7 @@ class TestSpectraToDicts:
 # ---------------------------------------------------------------------------
 # _scale_intensities
 # ---------------------------------------------------------------------------
+
 
 class TestScaleIntensities:
     def test_scale_to_1000(self):

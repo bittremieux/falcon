@@ -5,7 +5,6 @@ import numba as nb
 import numpy as np
 import pandas as pd
 
-
 SpectrumTuple = collections.namedtuple(
     "SpectrumTuple", ["precursor_mz", "precursor_charge", "mz", "intensity"]
 )

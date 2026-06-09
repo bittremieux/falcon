@@ -2,6 +2,7 @@ import pytest
 import numpy as np
 from falcon.cluster import distance_matrix, cluster
 
+
 class TestCondensedIndex:
     def test_condensed_index_basic(self):
         """Test basic cases where the condensed index is computed correctly."""
@@ -13,8 +14,12 @@ class TestCondensedIndex:
 
     def test_condensed_index_swapped_inputs(self):
         """Ensure (i, j) gives the same result as (j, i)."""
-        assert distance_matrix.condensed_index(2, 4, 5) == distance_matrix.condensed_index(4, 2, 5)
-        assert distance_matrix.condensed_index(0, 3, 5) == distance_matrix.condensed_index(3, 0, 5)
+        assert distance_matrix.condensed_index(
+            2, 4, 5
+        ) == distance_matrix.condensed_index(4, 2, 5)
+        assert distance_matrix.condensed_index(
+            0, 3, 5
+        ) == distance_matrix.condensed_index(3, 0, 5)
 
     def test_condensed_index_invalid_diagonal(self):
         """Check that passing (i, i) raises a ValueError."""

@@ -142,7 +142,6 @@ def generate_clusters(
                     consensus_method=consensus_method,
                     consensus_params=consensus_params,
                 )
-                # TODO: move to chunking method
                 data_chunks = []
                 for chunk in chunks:
                     data_chunk = []

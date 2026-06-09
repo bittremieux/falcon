@@ -78,10 +78,14 @@ class TestConfigParse:
         cfg = Config()
         cfg.parse(
             [
-                str(dummy), "output",
-                "--linkage", "average",
-                "--fragment_tol", "0.02",
-                "--consensus_method", "average",
+                str(dummy),
+                "output",
+                "--linkage",
+                "average",
+                "--fragment_tol",
+                "0.02",
+                "--consensus_method",
+                "average",
             ]
         )
         assert cfg.linkage == "average"
@@ -95,9 +99,12 @@ class TestConfigParse:
         cfg = Config()
         cfg.parse(
             [
-                str(dummy), "output",
-                "--outlier_cutoff_lower", "2.0",
-                "--outlier_cutoff_upper", "3.0",
+                str(dummy),
+                "output",
+                "--outlier_cutoff_lower",
+                "2.0",
+                "--outlier_cutoff_upper",
+                "3.0",
             ]
         )
         assert cfg.outlier_cutoff_lower == 2.0
@@ -121,6 +128,14 @@ class TestConfigParse:
         cfg_file = tmp_path / "config.ini"
         cfg_file.write_text("fragment_tol = 0.1\n")
         cfg = Config()
-        cfg.parse([str(dummy), "output", "-c", str(cfg_file),
-                   "--fragment_tol", "0.03"])
+        cfg.parse(
+            [
+                str(dummy),
+                "output",
+                "-c",
+                str(cfg_file),
+                "--fragment_tol",
+                "0.03",
+            ]
+        )
         assert cfg.fragment_tol == 0.03

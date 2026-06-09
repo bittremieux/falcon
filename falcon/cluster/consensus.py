@@ -7,7 +7,6 @@ import numpy as np
 
 from . import similarity
 
-
 ConsensusTuple = collections.namedtuple(
     "ConsensusTuple",
     [
@@ -72,7 +71,7 @@ def _get_representative_spectra(
         Cluster labels.
     rts : np.ndarray
         The retention times corresponding to the current interval indexes.
-        order_map : np.ndarray
+    order_map : np.ndarray
         Map to convert label indexes to pairwise distance matrix indexes.
     consensus_method : str
         The method to use for consensus spectrum computation.
@@ -356,7 +355,7 @@ def _spectrum_binning(
     min_mz: float,
     max_mz: float,
     bin_size: float,
-) -> Tuple[List[int], nb.typed.List]:
+) -> Tuple[List[int], nb.typed.List, nb.typed.List]:
     """
     Jointly bin multiple spectra into fixed-size bins based on m/z values.
 
@@ -373,10 +372,11 @@ def _spectrum_binning(
 
     Returns
     -------
-    Tuple[np.ndarray, nb.typed.List]
+    Tuple[np.ndarray, nb.typed.List, nb.typed.List]
         A tuple containing:
         - An array of integers representing the indices of the non-empty bins.
         - A Numba typed list of arrays containing the intensities for each bin.
+        - A Numba typed list of arrays containing the m/z values for each bin.
     """
     start_dim = min_mz - (min_mz % bin_size)
     end_dim = max_mz + bin_size - (max_mz % bin_size)
@@ -429,7 +429,7 @@ def _outlier_rejection(
     bins_mz: nb.typed.List,
     outlier_cutoff_lower: float,
     outlier_cutoff_upper: float,
-) -> Tuple[nb.typed.List]:
+) -> Tuple[List[int], np.ndarray, np.ndarray]:
     """
     Remove outliers from binned spectra using the sigma clipping algorithm and
     return the averaged intensities.
@@ -449,8 +449,11 @@ def _outlier_rejection(
 
     Returns
     -------
-    nb.typed.List
-        The cleaned and averaged intensities for each bin.
+    Tuple[List[int], np.ndarray, np.ndarray]
+        A tuple containing:
+        - The indices of the bins that are not empty after outlier removal.
+        - The averaged intensities for each non-empty bin.
+        - The averaged m/z values for each non-empty bin.
     """
     n_peaks = len(bins_indices)
     cleaned_bins_peaks = np.zeros(n_peaks, dtype=np.float32)
@@ -490,7 +493,7 @@ def _sigma_clipping(
     mzs: np.ndarray,
     outlier_cutoff_lower: float,
     outlier_cutoff_upper: float,
-) -> np.ndarray:
+) -> Tuple[np.ndarray, np.ndarray]:
     """
     Apply sigma clipping to remove outliers from the array.
 
@@ -509,6 +512,8 @@ def _sigma_clipping(
     -------
     np.ndarray
         The array of intensities with outliers removed.
+    np.ndarray
+        The array of m/z values with outliers removed.
     """
     while len(intensities) > 2:
         med = np.median(intensities)
@@ -566,8 +571,8 @@ def _sigma_clip(
 @nb.njit(cache=True)
 def _construct_average_spectrum(
     bins_indices: List[int],
-    bins_peaks: nb.typed.List,
-    bins_mz: nb.typed.List,
+    bins_peaks: np.ndarray,
+    bins_mz: np.ndarray,
     avg_precursor_mz: float,
     charge: int,
     avg_rt: float,
@@ -640,6 +645,3 @@ def typed_list_to_numpy(lst: nb.typed.List) -> np.ndarray:
     for i in range(n):
         arr[i] = lst[i]
     return arr
-
-
-

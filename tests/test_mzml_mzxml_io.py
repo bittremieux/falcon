@@ -40,7 +40,9 @@ def _mzml_dict(scan=None, ion_extra=None):
 class TestMzmlParseSpectrum:
     def test_missing_rt_is_nan(self):
         """No 'scan start time' should yield a NaN retention time."""
-        spec = mzml_io._parse_spectrum(_mzml_dict(ion_extra={"charge state": 2}))
+        spec = mzml_io._parse_spectrum(
+            _mzml_dict(ion_extra={"charge state": 2})
+        )
         assert math.isnan(spec.retention_time)
         assert spec.precursor_mz == 500.0
         assert spec.precursor_charge == 2

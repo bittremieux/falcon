@@ -17,7 +17,6 @@ from falcon.falcon import (
 )
 from falcon.config import config as _global_config
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -66,7 +65,9 @@ def _make_spec(identifier, charge):
     }
 
 
-def _run_write_worker(spectra, charge_to_bucket, catch_other_charges, work_dir):
+def _run_write_worker(
+    spectra, charge_to_bucket, catch_other_charges, work_dir
+):
     """Push spectra through _write_spectra_lance and return a dict of row counts.
 
     Requires the ``work_dir`` fixture to have set config.work_dir already.
@@ -77,7 +78,9 @@ def _run_write_worker(spectra, charge_to_bucket, catch_other_charges, work_dir):
     q.put(None)  # sentinel
 
     locks = _PerChargeLockRegistry()
-    _write_spectra_lance(q, locks, SCHEMA, charge_to_bucket, catch_other_charges)
+    _write_spectra_lance(
+        q, locks, SCHEMA, charge_to_bucket, catch_other_charges
+    )
 
     spectra_dir = work_dir / "spectra"
     counts = {}
@@ -130,7 +133,9 @@ class TestBucketKeyToStr:
 class TestWriteToDataset:
     def test_creates_dataset_at_correct_path(self, work_dir):
         lock = threading.Lock()
-        _write_to_dataset([_make_spec("s1", 2)], (2,), lock, SCHEMA, str(work_dir))
+        _write_to_dataset(
+            [_make_spec("s1", 2)], (2,), lock, SCHEMA, str(work_dir)
+        )
         assert (work_dir / "spectra" / "spectra_charge_2.lance").exists()
 
     def test_returns_correct_row_count(self, work_dir):
@@ -141,9 +146,15 @@ class TestWriteToDataset:
 
     def test_appends_to_existing_dataset(self, work_dir):
         lock = threading.Lock()
-        _write_to_dataset([_make_spec("s1", 2)], (2,), lock, SCHEMA, str(work_dir))
-        _write_to_dataset([_make_spec("s2", 2)], (2,), lock, SCHEMA, str(work_dir))
-        ds = lance.dataset(str(work_dir / "spectra" / "spectra_charge_2.lance"))
+        _write_to_dataset(
+            [_make_spec("s1", 2)], (2,), lock, SCHEMA, str(work_dir)
+        )
+        _write_to_dataset(
+            [_make_spec("s2", 2)], (2,), lock, SCHEMA, str(work_dir)
+        )
+        ds = lance.dataset(
+            str(work_dir / "spectra" / "spectra_charge_2.lance")
+        )
         assert ds.count_rows() == 2
 
 
@@ -167,7 +178,10 @@ class TestChargeRouting:
         charge_to_bucket = {1: (1,), 2: (2,)}
         spectra = [_make_spec("a", 1), _make_spec("b", 2), _make_spec("c", 1)]
         counts = _run_write_worker(
-            spectra, charge_to_bucket, catch_other_charges=False, work_dir=work_dir
+            spectra,
+            charge_to_bucket,
+            catch_other_charges=False,
+            work_dir=work_dir,
         )
         assert counts["spectra_charge_1.lance"] == 2
         assert counts["spectra_charge_2.lance"] == 1
@@ -177,7 +191,10 @@ class TestChargeRouting:
         charge_to_bucket = {1: (1, 2), 2: (1, 2)}
         spectra = [_make_spec("a", 1), _make_spec("b", 2)]
         counts = _run_write_worker(
-            spectra, charge_to_bucket, catch_other_charges=False, work_dir=work_dir
+            spectra,
+            charge_to_bucket,
+            catch_other_charges=False,
+            work_dir=work_dir,
         )
         assert counts == {"spectra_charge_1_2.lance": 2}
 
@@ -185,7 +202,10 @@ class TestChargeRouting:
         charge_to_bucket = {"unknown": ("unknown",)}
         spectra = [_make_spec("u1", None)]
         counts = _run_write_worker(
-            spectra, charge_to_bucket, catch_other_charges=False, work_dir=work_dir
+            spectra,
+            charge_to_bucket,
+            catch_other_charges=False,
+            work_dir=work_dir,
         )
         assert counts == {"spectra_charge_unknown.lance": 1}
 
@@ -193,7 +213,10 @@ class TestChargeRouting:
         charge_to_bucket = {1: (1,)}  # charge 3 has no explicit bucket
         spectra = [_make_spec("x", 3)]
         counts = _run_write_worker(
-            spectra, charge_to_bucket, catch_other_charges=True, work_dir=work_dir
+            spectra,
+            charge_to_bucket,
+            catch_other_charges=True,
+            work_dir=work_dir,
         )
         assert counts == {"spectra_charge_other.lance": 1}
 
@@ -201,7 +224,10 @@ class TestChargeRouting:
         charge_to_bucket = {1: (1,)}
         spectra = [_make_spec("x", 3)]
         counts = _run_write_worker(
-            spectra, charge_to_bucket, catch_other_charges=False, work_dir=work_dir
+            spectra,
+            charge_to_bucket,
+            catch_other_charges=False,
+            work_dir=work_dir,
         )
         assert counts == {}
 
@@ -211,10 +237,13 @@ class TestChargeRouting:
             _make_spec("a", 1),
             _make_spec("b", 2),
             _make_spec("c", None),  # unknown charge
-            _make_spec("d", 5),     # not in any bucket
+            _make_spec("d", 5),  # not in any bucket
         ]
         counts = _run_write_worker(
-            spectra, charge_to_bucket, catch_other_charges=True, work_dir=work_dir
+            spectra,
+            charge_to_bucket,
+            catch_other_charges=True,
+            work_dir=work_dir,
         )
         assert counts["spectra_charge_1.lance"] == 1
         assert counts["spectra_charge_2.lance"] == 1

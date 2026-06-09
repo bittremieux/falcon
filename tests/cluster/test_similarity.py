@@ -13,7 +13,7 @@ class TestSimilarity:
         spectra = mock_spectra(2, n_peaks=3)
         # mock_spectra generates identical spectra
         spec1, spec2 = spectra[0], spectra[1]
-        
+
         score, matched_peaks = similarity.cosine_fast(spec1, spec2, 0.5)
         assert score == 1.0
         assert matched_peaks == 3
@@ -66,12 +66,16 @@ class TestSimilarity:
         """A peak just outside the tolerance must not match."""
         inten = np.array([1.0], dtype=np.float32)
         spec1 = similarity.SpectrumTuple(
-            precursor_mz=100.0, precursor_charge=2,
-            mz=np.array([100.0], dtype=np.float32), intensity=inten,
+            precursor_mz=100.0,
+            precursor_charge=2,
+            mz=np.array([100.0], dtype=np.float32),
+            intensity=inten,
         )
         spec2 = similarity.SpectrumTuple(
-            precursor_mz=100.0, precursor_charge=2,
-            mz=np.array([100.2], dtype=np.float32), intensity=inten,
+            precursor_mz=100.0,
+            precursor_charge=2,
+            mz=np.array([100.2], dtype=np.float32),
+            intensity=inten,
         )
         # Difference 0.2 > tolerance 0.1 => no match.
         score, matched = similarity.cosine_fast(spec1, spec2, 0.1)
@@ -85,12 +89,14 @@ class TestSimilarity:
     def test_cosine_fast_empty_other(self):
         """Comparing against an empty spectrum yields no matches."""
         spec1 = similarity.SpectrumTuple(
-            precursor_mz=100.0, precursor_charge=2,
+            precursor_mz=100.0,
+            precursor_charge=2,
             mz=np.array([100.0, 200.0], dtype=np.float32),
             intensity=np.array([0.7, 0.7], dtype=np.float32),
         )
         spec2 = similarity.SpectrumTuple(
-            precursor_mz=100.0, precursor_charge=2,
+            precursor_mz=100.0,
+            precursor_charge=2,
             mz=np.array([], dtype=np.float32),
             intensity=np.array([], dtype=np.float32),
         )

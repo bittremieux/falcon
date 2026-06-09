@@ -8,7 +8,6 @@ from lxml.etree import LxmlError
 
 from ..config import config
 
-
 logger = logging.getLogger("falcon")
 
 

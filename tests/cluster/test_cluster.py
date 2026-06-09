@@ -76,7 +76,6 @@ class TestLinkage:
         values = np.array([100, 101, 105, 107, 110])
         linkage_matrix = cluster._linkage(values, "Da")
         assert linkage_matrix.shape == (4, 4)
-        print(linkage_matrix)
         assert (
             linkage_matrix
             == np.array(
@@ -268,7 +267,7 @@ class TestPostprocessCluster:
         Two m/z groups each contain one real-RT pair and one NaN-RT pair.
         The NaN-RT spectra should stay together within their m/z group
         (not be split away) and must not merge with the other m/z group.
-        Expected result: 4 clusters (2 m/z groups × 2 RT sub-groups each:
+        Expected result: 4 clusters (2 m/z groups x 2 RT sub-groups each:
         real-RT pair + NaN-RT pair).
         """
         mzs = np.array(
@@ -460,7 +459,7 @@ class TestGenerateClusters:
             ),
         ]
         dataset = lance_dataset(rows)
-        labels, reps = cluster.generate_clusters(
+        labels, _ = cluster.generate_clusters(
             dataset,
             "complete",
             0.1,
@@ -537,7 +536,7 @@ class TestGenerateClusters:
             spectrum_row("f:scan:3", 900.0, peaks, inten, retention_time=12.0),
         ]
         dataset = lance_dataset(rows)
-        labels, reps = cluster.generate_clusters(
+        labels, _ = cluster.generate_clusters(
             dataset,
             "complete",
             0.1,

@@ -32,9 +32,7 @@ def narrow_spectrum():
         "test:scan:2",
         precursor_mz=500.0,
         precursor_charge=2,
-        mz=np.array(
-            [200.0, 200.5, 201.0, 201.5, 202.0], dtype=np.float32
-        ),
+        mz=np.array([200.0, 200.5, 201.0, 201.5, 202.0], dtype=np.float32),
         intensity=np.array(
             [100.0, 200.0, 50.0, 300.0, 150.0], dtype=np.float32
         ),
@@ -117,11 +115,13 @@ def orthogonal_spectrum_tuple_pair():
 @pytest.fixture
 def mock_spectra():
     """Factory fixture to create a list of SpectrumTuples with similar peaks."""
+
     def _make(n, mz_base=100.0, mz_step=1.0, n_peaks=3):
         spectra = []
         for i in range(n):
             mz = np.array(
-                [mz_base + j * mz_step for j in range(n_peaks)], dtype=np.float32
+                [mz_base + j * mz_step for j in range(n_peaks)],
+                dtype=np.float32,
             )
             intensity = np.array(
                 [0.5 + 0.1 * j for j in range(n_peaks)], dtype=np.float32
@@ -136,6 +136,7 @@ def mock_spectra():
                 )
             )
         return spectra
+
     return _make
 
 

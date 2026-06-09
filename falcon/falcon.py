@@ -28,7 +28,7 @@ logger = logging.getLogger("falcon")
 utils.set_seeds()
 
 
-def main(args: Union[str, List[str]] = None) -> int:
+def main(args: Union[str, List[str], None] = None) -> int:
     # Configure logging.
     logger = utils.configure_logger()
 
@@ -383,15 +383,15 @@ def _prepare_spectra(
 
 
 def _create_lance_dataset(
-    charge_bucket: int, schema: pa.Schema
+    charge_bucket: Union[int, Tuple[int, ...]], schema: pa.Schema
 ) -> lance.LanceDataset:
     """
     Create a lance dataset.
 
     Parameters
     ----------
-    charge : int
-        The precursor charge of the spectra.
+    charge_bucket : Union[int, Tuple[int, ...]]
+        The key of the charge bucket for which the dataset is created.
     schema : pa.Schema
         The schema of the dataset.
 

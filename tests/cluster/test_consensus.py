@@ -6,10 +6,10 @@ import pytest
 
 from falcon.cluster import cluster, similarity, consensus
 
-
 # ---------------------------------------------------------------------------
 # _spectrum_binning
 # ---------------------------------------------------------------------------
+
 
 class TestSpectrumBinning:
     def test_basic(self, mock_spectra):
@@ -66,6 +66,7 @@ class TestSpectrumBinning:
 # _outlier_rejection
 # ---------------------------------------------------------------------------
 
+
 class TestOutlierRejection:
     def test_no_outliers(self):
         """When all values are similar, nothing should be removed."""
@@ -100,14 +101,15 @@ class TestOutlierRejection:
 # _sigma_clipping
 # ---------------------------------------------------------------------------
 
+
 class TestSigmaClipping:
     def test_convergence(self):
         """Sigma clipping should converge and not loop infinitely."""
-        intensities = np.array(
-            [1.0, 1.1, 0.9, 1.0, 100.0], dtype=np.float32
-        )
+        intensities = np.array([1.0, 1.1, 0.9, 1.0, 100.0], dtype=np.float32)
         mzs = np.array([100.0, 100.1, 99.9, 100.0, 100.0], dtype=np.float32)
-        result_i, result_m = consensus._sigma_clipping(intensities, mzs, 1.5, 1.5)
+        result_i, result_m = consensus._sigma_clipping(
+            intensities, mzs, 1.5, 1.5
+        )
         # The 100.0 outlier should be removed
         assert len(result_i) < len(intensities)
         assert np.max(result_i) < 2.0
@@ -116,13 +118,16 @@ class TestSigmaClipping:
         """When std=0, the loop should break without removing values."""
         intensities = np.array([0.5, 0.5, 0.5], dtype=np.float32)
         mzs = np.array([100.0, 100.0, 100.0], dtype=np.float32)
-        result_i, result_m = consensus._sigma_clipping(intensities, mzs, 1.5, 1.5)
+        result_i, result_m = consensus._sigma_clipping(
+            intensities, mzs, 1.5, 1.5
+        )
         assert len(result_i) == 3
 
 
 # ---------------------------------------------------------------------------
 # _sigma_clip
 # ---------------------------------------------------------------------------
+
 
 class TestSigmaClip:
     def test_mask_correct(self):
@@ -140,14 +145,20 @@ class TestSigmaClip:
 # _construct_average_spectrum
 # ---------------------------------------------------------------------------
 
+
 class TestConstructAverageSpectrum:
     def test_output_types(self):
         bins_indices = np.array([5, 10], dtype=np.int32)
         bins_peaks = np.array([0.5, 0.7], dtype=np.float32)
         bins_mz = np.array([100.0, 101.0], dtype=np.float32)
         result = consensus._construct_average_spectrum(
-            bins_indices, bins_peaks, bins_mz,
-            avg_precursor_mz=200.0, charge=2, avg_rt=60.0, cluster=5
+            bins_indices,
+            bins_peaks,
+            bins_mz,
+            avg_precursor_mz=200.0,
+            charge=2,
+            avg_rt=60.0,
+            cluster=5,
         )
         precursor_mz, charge, mz, intensity, rt, cluster_id = result
         assert precursor_mz == 200.0
@@ -162,6 +173,7 @@ class TestConstructAverageSpectrum:
 # _get_cluster_medoids
 # ---------------------------------------------------------------------------
 
+
 class TestGetClusterMedoids:
     def test_small_cluster(self, mock_spectra):
         """Clusters with ≤2 spectra should use the first spectrum."""
@@ -173,9 +185,10 @@ class TestGetClusterMedoids:
         result = consensus._get_cluster_medoids(
             spectra, labels, rts, order_map, pdist
         )
-        precursor_mzs, charges, mzs, intensities, retention_times, cluster_ids = result
+        precursor_mzs, _, _, _, retention_times, _ = result
         assert len(precursor_mzs) == 1
         assert precursor_mzs[0] == spectra[0].precursor_mz
+        assert retention_times[0] == 10.0
 
     def test_single_cluster_three_spectra(self, mock_spectra):
         """Medoid should be the spectrum with minimum total distance."""
@@ -188,7 +201,14 @@ class TestGetClusterMedoids:
         result = consensus._get_cluster_medoids(
             spectra, labels, rts, order_map, pdist
         )
-        precursor_mzs, charges, mzs, intensities, retention_times, cluster_ids = result
+        (
+            precursor_mzs,
+            charges,
+            mzs,
+            intensities,
+            retention_times,
+            cluster_ids,
+        ) = result
         assert len(precursor_mzs) == 1
         # Spectrum 1 should be the medoid (lowest row sum: 0.1+0.2=0.3)
         assert retention_times[0] == 20.0
@@ -197,6 +217,7 @@ class TestGetClusterMedoids:
 # ---------------------------------------------------------------------------
 # _get_representative_spectra
 # ---------------------------------------------------------------------------
+
 
 class TestGetRepresentativeSpectra:
     def test_medoid_dispatch(self, mock_spectra):
@@ -216,7 +237,9 @@ class TestGetRepresentativeSpectra:
         labels = np.array([0, 0], dtype=np.int32)
         rts = np.array([10.0, 20.0], dtype=np.float32)
         order_map = np.array([0, 1], dtype=np.int64)
-        with pytest.raises(ValueError, match="Unknown consensus spectrum method"):
+        with pytest.raises(
+            ValueError, match="Unknown consensus spectrum method"
+        ):
             consensus._get_representative_spectra(
                 spectra, labels, rts, order_map, "nonexistent", {}
             )
@@ -246,6 +269,7 @@ class TestGetRepresentativeSpectra:
 # _get_cluster_average
 # ---------------------------------------------------------------------------
 
+
 class TestGetClusterAverage:
     def test_single_cluster_averaged(self, mock_spectra):
         """A cluster of 3 identical spectra averages into one spectrum."""
@@ -254,13 +278,24 @@ class TestGetClusterAverage:
         rts = np.array([10.0, 20.0, 30.0], dtype=np.float32)
         order_map = np.array([0, 1, 2], dtype=np.int64)
         result = consensus._get_cluster_average(
-            spectra, labels, rts, order_map,
-            min_mz=50.0, max_mz=200.0, bin_size=1.0,
-            outlier_cutoff_lower=1.5, outlier_cutoff_upper=1.5,
+            spectra,
+            labels,
+            rts,
+            order_map,
+            min_mz=50.0,
+            max_mz=200.0,
+            bin_size=1.0,
+            outlier_cutoff_lower=1.5,
+            outlier_cutoff_upper=1.5,
         )
-        precursor_mzs, charges, mzs, intensities, retention_times, cluster_ids = (
-            result
-        )
+        (
+            precursor_mzs,
+            charges,
+            mzs,
+            intensities,
+            retention_times,
+            cluster_ids,
+        ) = result
         assert len(precursor_mzs) == 1
         # Averaged RT of identical-content spectra is the mean of the inputs.
         assert retention_times[0] == pytest.approx(20.0)
@@ -274,13 +309,24 @@ class TestGetClusterAverage:
         rts = np.array([42.0], dtype=np.float32)
         order_map = np.array([0], dtype=np.int64)
         result = consensus._get_cluster_average(
-            spectra, labels, rts, order_map,
-            min_mz=50.0, max_mz=200.0, bin_size=1.0,
-            outlier_cutoff_lower=1.5, outlier_cutoff_upper=1.5,
+            spectra,
+            labels,
+            rts,
+            order_map,
+            min_mz=50.0,
+            max_mz=200.0,
+            bin_size=1.0,
+            outlier_cutoff_lower=1.5,
+            outlier_cutoff_upper=1.5,
         )
-        precursor_mzs, charges, mzs, intensities, retention_times, cluster_ids = (
-            result
-        )
+        (
+            precursor_mzs,
+            charges,
+            mzs,
+            intensities,
+            retention_times,
+            cluster_ids,
+        ) = result
         assert len(precursor_mzs) == 1
         assert retention_times[0] == 42.0
         np.testing.assert_array_equal(mzs[0], spectra[0].mz)
@@ -290,6 +336,7 @@ class TestGetClusterAverage:
 # typed_list_to_numpy
 # ---------------------------------------------------------------------------
 
+
 class TestTypedListToNumpy:
     def test_roundtrip(self):
         lst = nb.typed.List.empty_list(nb.types.float32)
@@ -297,4 +344,6 @@ class TestTypedListToNumpy:
             lst.append(np.float32(v))
         arr = consensus.typed_list_to_numpy(lst)
         assert arr.dtype == np.float32
-        np.testing.assert_array_equal(arr, np.array([1.0, 2.5, 3.5], np.float32))
+        np.testing.assert_array_equal(
+            arr, np.array([1.0, 2.5, 3.5], np.float32)
+        )
