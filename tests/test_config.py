@@ -71,6 +71,38 @@ class TestConfigParse:
         cfg.parse([str(dummy), "output", "--rt_tol", "30"])
         assert cfg.rt_tol == 30.0
 
+    def test_precursor_charge_buckets_default_none(self, tmp_path):
+        """Without --precursor_charge_buckets the value stays None so that
+        every distinct charge is clustered separately."""
+        dummy = tmp_path / "dummy.mgf"
+        dummy.write_text("")
+        cfg = Config()
+        cfg.parse([str(dummy), "output"])
+        assert cfg.precursor_charge_buckets is None
+
+    def test_precursor_charge_buckets_override(self, tmp_path):
+        """Explicit buckets are parsed and validated into sets/'other'."""
+        dummy = tmp_path / "dummy.mgf"
+        dummy.write_text("")
+        cfg = Config()
+        cfg.parse(
+            [
+                str(dummy),
+                "output",
+                "--precursor_charge_buckets",
+                "[1]",
+                "[2, 3]",
+                "[unknown]",
+                "other",
+            ]
+        )
+        assert cfg.precursor_charge_buckets == [
+            {1},
+            {2, 3},
+            {"unknown"},
+            "other",
+        ]
+
     def test_clustering_overrides(self, tmp_path):
         """Linkage, fragment_tol, and consensus_method parse correctly."""
         dummy = tmp_path / "dummy.mgf"

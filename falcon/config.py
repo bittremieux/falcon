@@ -147,11 +147,18 @@ class Config:
         self._parser.add_argument(
             "--precursor_charge_buckets",
             nargs="+",
-            default=["[1]", "[2]", "[3]", "[4]", "[unknown]", "other"],
+            default=None,
             metavar="BUCKET",
             help=(
-                "Charge buckets for precursor charges (default: %(default)s). "
-                "Clustering will be performed separately within each bucket."
+                "Charge buckets for precursor charges. Clustering will be "
+                "performed separately within each bucket. If not specified, "
+                "every distinct precursor charge is caught and "
+                "clustered separately, including spectra with a missing "
+                "charge. To group charges instead, pass one bucket per "
+                "argument, e.g. '[1]' '[2]' '[3]' '[4]' '[unknown]' 'other' "
+                "(each bucket is a list of charges; 'unknown' matches missing "
+                "charges and 'other' catches any charge not in a named "
+                "bucket)."
             ),
         )
 
@@ -232,11 +239,14 @@ class Config:
             self._namespace["precursor_tol"][0]
         )
 
-        self._namespace["precursor_charge_buckets"] = (
-            self.parse_and_validate_charge_buckets(
-                self._namespace["precursor_charge_buckets"]
+        # When no buckets are specified, leave the value as None so that each
+        # distinct charge (including missing charges) is clustered separately.
+        if self._namespace["precursor_charge_buckets"] is not None:
+            self._namespace["precursor_charge_buckets"] = (
+                self.parse_and_validate_charge_buckets(
+                    self._namespace["precursor_charge_buckets"]
+                )
             )
-        )
 
     def parse_and_validate_charge_buckets(self, bucket_args):
         """

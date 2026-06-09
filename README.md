@@ -85,9 +85,12 @@ a distance of 1.0. Default is 0; typically set to 6 for metabolomics data.
 - `batch_size`: Maximum number of spectra per precursor _m_/_z_ batch.
 Default is 32768.
 - `precursor_charge_buckets`: Charge state groupings that determine which
-spectra are clustered together. Each bucket is a list of charges (e.g. `[1]`,
-`[2, 3]`); charges not matched by any named bucket go into `other`. Default
-buckets are `[1]`, `[2]`, `[3]`, `[4]`, `[unknown]`, and `other`.
+spectra can be clustered together. Each bucket is a list of charges (e.g. `[1]`,
+`[2, 3]`); `unknown` matches spectra with a missing charge and `other` catches
+any charge not matched by a named bucket. By default this option is not set,
+in which case every distinct charge (including missing charges) is caught and
+clustered separately. To group charges instead, pass one bucket per argument,
+e.g. `[1]` `[2]` `[3]` `[4]` `[unknown]` `other`.
 
 **Consensus spectrum**
 

@@ -11,6 +11,7 @@ import pytest
 
 from falcon.falcon import (
     _PerChargeLockRegistry,
+    _discover_auto_buckets,
     _write_spectra_lance,
     _write_to_dataset,
     bucket_key_to_str,
@@ -66,7 +67,11 @@ def _make_spec(identifier, charge):
 
 
 def _run_write_worker(
-    spectra, charge_to_bucket, catch_other_charges, work_dir
+    spectra,
+    charge_to_bucket,
+    catch_other_charges,
+    work_dir,
+    auto_bucket=False,
 ):
     """Push spectra through _write_spectra_lance and return a dict of row counts.
 
@@ -79,7 +84,7 @@ def _run_write_worker(
 
     locks = _PerChargeLockRegistry()
     _write_spectra_lance(
-        q, locks, SCHEMA, charge_to_bucket, catch_other_charges
+        q, locks, SCHEMA, charge_to_bucket, catch_other_charges, auto_bucket
     )
 
     spectra_dir = work_dir / "spectra"
@@ -249,3 +254,89 @@ class TestChargeRouting:
         assert counts["spectra_charge_2.lance"] == 1
         assert counts["spectra_charge_unknown.lance"] == 1
         assert counts["spectra_charge_other.lance"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Auto-bucket mode: every distinct charge clustered separately
+# ---------------------------------------------------------------------------
+
+
+class TestAutoBucketRouting:
+    def test_each_charge_gets_own_bucket(self, work_dir):
+        spectra = [
+            _make_spec("a", 1),
+            _make_spec("b", 2),
+            _make_spec("c", 1),
+            _make_spec("d", 3),
+        ]
+        counts = _run_write_worker(
+            spectra,
+            charge_to_bucket={},
+            catch_other_charges=False,
+            work_dir=work_dir,
+            auto_bucket=True,
+        )
+        assert counts == {
+            "spectra_charge_1.lance": 2,
+            "spectra_charge_2.lance": 1,
+            "spectra_charge_3.lance": 1,
+        }
+
+    def test_missing_charge_clustered_separately(self, work_dir):
+        spectra = [_make_spec("a", 2), _make_spec("u", None)]
+        counts = _run_write_worker(
+            spectra,
+            charge_to_bucket={},
+            catch_other_charges=False,
+            work_dir=work_dir,
+            auto_bucket=True,
+        )
+        assert counts == {
+            "spectra_charge_2.lance": 1,
+            "spectra_charge_unknown.lance": 1,
+        }
+
+    def test_no_charge_is_dropped(self, work_dir):
+        # Charges that would be dropped without 'other' are still captured.
+        spectra = [_make_spec("x", 7), _make_spec("y", 13)]
+        counts = _run_write_worker(
+            spectra,
+            charge_to_bucket={},
+            catch_other_charges=False,
+            work_dir=work_dir,
+            auto_bucket=True,
+        )
+        assert counts == {
+            "spectra_charge_7.lance": 1,
+            "spectra_charge_13.lance": 1,
+        }
+
+
+# ---------------------------------------------------------------------------
+# _discover_auto_buckets
+# ---------------------------------------------------------------------------
+
+
+class TestDiscoverAutoBuckets:
+    def test_discovers_and_sorts_buckets(self, work_dir):
+        spectra = [
+            _make_spec("a", 3),
+            _make_spec("b", 1),
+            _make_spec("c", None),
+            _make_spec("d", 2),
+        ]
+        _run_write_worker(
+            spectra,
+            charge_to_bucket={},
+            catch_other_charges=False,
+            work_dir=work_dir,
+            auto_bucket=True,
+        )
+        spectra_dir = str(work_dir / "spectra")
+        # Numeric charges sorted ascending, "unknown" last.
+        assert _discover_auto_buckets(spectra_dir) == [
+            (1,),
+            (2,),
+            (3,),
+            ("unknown",),
+        ]

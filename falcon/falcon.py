@@ -148,19 +148,30 @@ def main(args: Union[str, List[str], None] = None) -> int:
 
     charge_path = os.path.join(config.work_dir, "spectra", "charges.joblib")
     if os.path.isfile(charge_path) and not config.overwrite:
-        charge_buckets = joblib.load(charge_path)
-        if charge_buckets != config.precursor_charge_buckets:
+        cached = joblib.load(charge_path)
+        # Validate against the *configuration* that produced the cached
+        # partitioning, not just the resulting buckets. This catches switching
+        # between explicit buckets and auto mode (None), which would otherwise
+        # silently reuse a partitioning grouped differently than expected.
+        if (
+            not isinstance(cached, dict)
+            or cached["config"] != config.precursor_charge_buckets
+        ):
             raise ValueError(
                 "Cached charge buckets do not match the current "
                 "--precursor_charge_buckets configuration, rerun "
                 "with --overwrite or a different --work_dir."
             )
+        charge_buckets = cached["buckets"]
     else:
         # Recalculate the charge buckets and recreate dataset.
         charge_buckets = _prepare_spectra(
             process_spectrum, config.precursor_charge_buckets
         )
-        joblib.dump(charge_buckets, charge_path)
+        joblib.dump(
+            {"config": config.precursor_charge_buckets, "buckets": charge_buckets},
+            charge_path,
+        )
 
     # Cluster the spectra per charge.
     clusters_all, current_label, representatives = [], 0, []
@@ -311,22 +322,26 @@ def _prepare_spectra(
             pa.field("retention_time", pa.float32()),
         ]
     )
+    # When no buckets are specified, every distinct charge (including missing
+    # charges) is caught and clustered separately.
+    auto_bucket = charge_buckets is None
     # create a mapping from charge to bucket
     charge_to_bucket = {}
     catch_other_charges = False
-    for bucket in charge_buckets:
-        if bucket == "other":
-            catch_other_charges = True
-            continue  # handled later
-        for charge in bucket:
-            if charge in charge_to_bucket:
-                raise ValueError(
-                    f"Charge {charge} appears in more than one bucket"
+    if not auto_bucket:
+        for bucket in charge_buckets:
+            if bucket == "other":
+                catch_other_charges = True
+                continue  # handled later
+            for charge in bucket:
+                if charge in charge_to_bucket:
+                    raise ValueError(
+                        f"Charge {charge} appears in more than one bucket"
+                    )
+                bucket_tuple = tuple(
+                    sorted(bucket, key=lambda x: (isinstance(x, str), x))
                 )
-            bucket_tuple = tuple(
-                sorted(bucket, key=lambda x: (isinstance(x, str), x))
-            )
-            charge_to_bucket[charge] = bucket_tuple
+                charge_to_bucket[charge] = bucket_tuple
 
     lance_writers = multiprocessing.pool.ThreadPool(
         max_file_workers,
@@ -337,6 +352,7 @@ def _prepare_spectra(
             schema,
             charge_to_bucket,
             catch_other_charges,
+            auto_bucket,
         ),
     )
     # Read the peak files and put their spectra in the queue for consumption
@@ -361,9 +377,14 @@ def _prepare_spectra(
 
     # Count the total number of spectra in the datasets.
     lance_dir = os.path.join(config.work_dir, "spectra")
+    # In auto mode the buckets are not known in advance, so discover the
+    # per-charge datasets that the writers created.
+    candidate_buckets = (
+        _discover_auto_buckets(lance_dir) if auto_bucket else charge_buckets
+    )
     n_spectra = 0
     valid_buckets = []
-    for bucket in charge_buckets:
+    for bucket in candidate_buckets:
         dataset_path = os.path.join(
             lance_dir, f"spectra_charge{bucket_key_to_str(bucket)}.lance"
         )
@@ -380,6 +401,40 @@ def _prepare_spectra(
     )
     logger.info("Skipped %d low-quality spectra", low_quality_counter)
     return valid_buckets
+
+
+def _discover_auto_buckets(
+    lance_dir: str,
+) -> List[Tuple[Union[int, str], ...]]:
+    """
+    Discover the per-charge buckets created in auto mode.
+
+    In auto mode every distinct charge is written to its own singleton bucket,
+    so the buckets are not known until the spectra have been read. Reconstruct
+    them from the ``spectra_charge<key>.lance`` datasets on disk.
+
+    Parameters
+    ----------
+    lance_dir : str
+        The directory containing the per-charge lance datasets.
+
+    Returns
+    -------
+    List[Tuple[Union[int, str], ...]]
+        The discovered singleton charge buckets, sorted for deterministic
+        cluster labeling (numeric charges first, then "unknown").
+    """
+    prefix, suffix = "spectra_charge_", ".lance"
+    buckets = []
+    for name in os.listdir(lance_dir):
+        if not (name.startswith(prefix) and name.endswith(suffix)):
+            continue
+        key = name[len(prefix) : -len(suffix)]
+        bucket = (key,) if key == "unknown" else (int(key),)
+        buckets.append(bucket)
+    return sorted(
+        buckets, key=lambda b: (isinstance(b[0], str), b[0])
+    )
 
 
 def _create_lance_dataset(
@@ -472,6 +527,7 @@ def _write_spectra_lance(
     schema: pa.Schema,
     charge_to_bucket: Dict[int, Tuple[int, str]],
     catch_other_charges: bool,
+    auto_bucket: bool,
 ) -> None:
     """
     Read spectra from a queue and write to a lance dataset.
@@ -488,6 +544,10 @@ def _write_spectra_lance(
         The precursor charge buckets to assign spectra to.
     catch_other_charges : bool
         Whether to catch charges not in any bucket.
+    auto_bucket : bool
+        Whether to cluster every distinct charge separately, assigning each
+        spectrum to its own per-charge bucket. Takes precedence over
+        ``charge_to_bucket`` and ``catch_other_charges``.
     """
     spec_to_write = collections.defaultdict(list)
     while True:
@@ -510,9 +570,13 @@ def _write_spectra_lance(
         charge = "unknown" if charge is None else charge
 
         # Determine bucket key
-        bucket_key = charge_to_bucket.get(charge, None) or (
-            "other" if catch_other_charges else None
-        )
+        if auto_bucket:
+            # Every distinct charge is clustered in its own singleton bucket.
+            bucket_key = (charge,)
+        else:
+            bucket_key = charge_to_bucket.get(charge, None) or (
+                "other" if catch_other_charges else None
+            )
         if bucket_key is not None:
             spec_to_write[bucket_key].append(spec)
 
