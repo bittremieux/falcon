@@ -438,20 +438,20 @@ def _read_spectra(
 
 class _PerChargeLockRegistry:
     """
-    Lazily-created per-charge locks so writers can serialize within a charge's
-    lance dataset while allowing different charges to be written concurrently.
+    Lazily-created per-bucket locks so writers can serialize within a bucket's
+    Lance dataset while allowing different buckets to be written concurrently.
     """
 
     def __init__(self) -> None:
-        self._locks: Dict[int, threading.Lock] = {}
+        self._locks: Dict[object, threading.Lock] = {}
         self._guard = threading.Lock()
 
-    def get(self, charge: int) -> threading.Lock:
+    def get(self, key: object) -> threading.Lock:
         with self._guard:
-            lock = self._locks.get(charge)
+            lock = self._locks.get(key)
             if lock is None:
                 lock = threading.Lock()
-                self._locks[charge] = lock
+                self._locks[key] = lock
             return lock
 
 
