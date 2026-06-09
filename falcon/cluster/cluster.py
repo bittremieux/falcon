@@ -634,7 +634,7 @@ def _postprocess_cluster(
         with nb.objmode(cluster_assignments="int32[:]"):
             cluster_assignments = (
                 sch.fcluster(linkage, precursor_tol_mass, "distance") - 1
-            )
+            ).astype(np.int32)
         # Optionally restrict clusters by their retention time as well.
         # Only spectra with a known RT participate in the RT linkage; NaN-RT
         # spectra are not split by RT but receive a distinct RT label so they
@@ -649,7 +649,7 @@ def _postprocess_cluster(
                         rt_labels[~nan_mask] = (
                             fcluster(_linkage(valid_rts), rt_tol, "distance")
                             - 1
-                        )
+                        ).astype(np.int32)
                     # Label for NaN-RT spectra: one past the highest real RT label,
                     # so it is distinct from every real-RT label but the same for
                     # all NaN spectra in the cluster (they stay together by m/z).
