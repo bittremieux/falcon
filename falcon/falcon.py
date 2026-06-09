@@ -140,11 +140,21 @@ def main(args: Union[str, List[str]] = None) -> int:
 
     if config.overwrite:
         for filename in os.listdir(os.path.join(config.work_dir, "spectra")):
-            os.remove(os.path.join(config.work_dir, "spectra", filename))
+            path = os.path.join(config.work_dir, "spectra", filename)
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+            else:
+                os.remove(path)
 
     charge_path = os.path.join(config.work_dir, "spectra", "charges.joblib")
     if os.path.isfile(charge_path) and not config.overwrite:
         charge_buckets = joblib.load(charge_path)
+        if charge_buckets != config.precursor_charge_buckets:
+            raise ValueError(
+                "Cached charge buckets do not match the current "
+                "--precursor_charge_buckets configuration, rerun "
+                "with --overwrite or a different --work_dir."
+            )
     else:
         # Recalculate the charge buckets and recreate dataset.
         charge_buckets = _prepare_spectra(
@@ -484,37 +494,37 @@ def _write_spectra_lance(
         spec = spectra_queue.get()
         if spec is None:
             # Write remaining spectra to the dataset.
-            for charge in spec_to_write.keys():
-                if len(spec_to_write[charge]) == 0:
+            for bucket_key in spec_to_write.keys():
+                if len(spec_to_write[bucket_key]) == 0:
                     continue
                 _write_to_dataset(
-                    spec_to_write[charge],
-                    charge,
-                    lance_locks.get(charge),
+                    spec_to_write[bucket_key],
+                    bucket_key,
+                    lance_locks.get(bucket_key),
                     schema,
                     config.work_dir,
                 )
-                spec_to_write[charge].clear()
+                spec_to_write[bucket_key].clear()
             return
         charge = spec["precursor_charge"]
         charge = "unknown" if charge is None else charge
 
         # Determine bucket key
-        bucket_key = charge_to_bucket.get(charge) or (
+        bucket_key = charge_to_bucket.get(charge, None) or (
             "other" if catch_other_charges else None
         )
         if bucket_key is not None:
             spec_to_write[bucket_key].append(spec)
 
-        if len(spec_to_write[bucket_key]) >= 10_000:
-            _write_to_dataset(
-                spec_to_write[bucket_key],
-                bucket_key,
-                lance_locks.get(charge),
-                schema,
-                config.work_dir,
-            )
-            spec_to_write[bucket_key].clear()
+            if len(spec_to_write[bucket_key]) >= 10_000:
+                _write_to_dataset(
+                    spec_to_write[bucket_key],
+                    bucket_key,
+                    lance_locks.get(bucket_key),
+                    schema,
+                    config.work_dir,
+                )
+                spec_to_write[bucket_key].clear()
 
 
 def _write_to_dataset(

@@ -8,7 +8,6 @@ from lxml.etree import LxmlError
 
 from ..config import config
 
-
 logger = logging.getLogger("falcon")
 
 
@@ -28,7 +27,17 @@ def get_spectra(source: Union[IO, str]) -> Iterable[sus.MsmsSpectrum]:
         An iterator over the spectra in the given file.
     """
     with pyteomics.mzml.MzML(source) as f_in:
-        filename = os.path.splitext(os.path.basename(f_in.name))[0]
+        if isinstance(source, str):
+            filename = os.path.splitext(os.path.basename(source))[0]
+        else:
+            source_name = getattr(source, "name", None) or getattr(
+                f_in, "name", None
+            )
+            filename = (
+                os.path.splitext(os.path.basename(source_name))[0]
+                if source_name
+                else "unknown"
+            )
         try:
             for spectrum_dict in f_in:
                 if int(spectrum_dict.get("ms level", -1)) > 1:

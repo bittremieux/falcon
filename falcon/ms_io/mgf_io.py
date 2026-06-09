@@ -165,7 +165,7 @@ def _scale_intensities(intensity: np.ndarray) -> np.ndarray:
     np.ndarray
         The scaled intensities.
     """
-    max_i = np.max(intensity) if intensity.size else 0.0
+    max_i = np.max(intensity) if intensity.size else np.float32(0.0)
     if max_i <= 0.0:
         return intensity
-    return intensity * (1000.0 / max_i)
+    return intensity * (np.float32(1000.0) / max_i)

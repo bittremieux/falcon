@@ -72,7 +72,7 @@ comparison. Default is 0.05 Da.
 
 **Clustering**
 
-- `linkage`: The linkage criterion for hierarchical clustering. Should be one
+- `linkage`: The linkage criterion for hierarchical clustering. It should be one
 of `single`, `complete`, or `average`. Default is `complete`.
 - `distance_threshold`: The cosine distance threshold at which clusters are cut
 from the hierarchical tree. This parameter crucially governs cluster purity

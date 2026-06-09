@@ -275,7 +275,7 @@ class Config:
             overlap = values & seen_values
             if overlap:
                 raise argparse.ArgumentTypeError(
-                    f"Charge value(s) {sorted(overlap)} appear in more than one bucket"
+                    f"Charge value(s) {sorted(overlap, key=lambda x: (isinstance(x, str), x))} appear in more than one bucket"
                 )
 
             seen_values |= values

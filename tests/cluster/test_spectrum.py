@@ -141,7 +141,7 @@ class TestProcessSpectrum:
         # Peaks at 490.0 should be within 1.5 Da tolerance from charge-1
         # precursor at 500.0 => removed; peaks at 480.0 may survive.
         for mz_val in result["mz"]:
-            assert abs(mz_val - 500.0) > 1.5 or abs(mz_val - 500.0) == 0
+            assert abs(mz_val - 500.0) > 1.5
 
     def test_intensity_filter(self):
         """Peaks below min_intensity fraction of base peak should be removed."""

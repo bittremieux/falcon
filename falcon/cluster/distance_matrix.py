@@ -30,23 +30,25 @@ def compute_condensed_distance_matrix(
         The condensed pairwise distance matrix.
     """
     n = len(spec_tuples)
-    with tempfile.NamedTemporaryFile(suffix=".npy") as pdist_file:
-        pdist_filename = pdist_file.name
-        condensed_dist_matrix = np.lib.format.open_memmap(
-            pdist_filename,
-            mode="w+",
-            dtype=np.float32,
-            shape=(n * (n - 1) // 2,),
-        )
+    pdist_file = tempfile.NamedTemporaryFile(suffix=".npy", delete=False)
+    pdist_filename = pdist_file.name
+    pdist_file.close()  # Close the file so that it can be opened by memmap
 
-        _condensed_distance_matrix_parallel(
-            condensed_dist_matrix,
-            spec_tuples,
-            fragment_mz_tol,
-            min_matches,
-        )
+    condensed_dist_matrix = np.lib.format.open_memmap(
+        pdist_filename,
+        mode="w+",
+        dtype=np.float32,
+        shape=(n * (n - 1) // 2,),
+    )
 
-        return condensed_dist_matrix
+    _condensed_distance_matrix_parallel(
+        condensed_dist_matrix,
+        spec_tuples,
+        fragment_mz_tol,
+        min_matches,
+    )
+
+    return condensed_dist_matrix
 
 
 @nb.njit(parallel=True)
