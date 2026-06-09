@@ -560,7 +560,7 @@ def _cluster_mz_interval(
             ConsensusTuple(
                 precursor_mz=np.float32(spec.precursor_mz),
                 precursor_charge=(
-                    np.float64(spec.precursor_charge)
+                    np.int32(spec.precursor_charge)
                     if not np.isnan(spec.precursor_charge)
                     else np.nan
                 ),
