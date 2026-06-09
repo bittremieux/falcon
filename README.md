@@ -5,16 +5,15 @@ _falcon_
 
 For more information:
 
-* [Official code website](https://github.com/bittremieux/falcon)
+* [Official code website](https://github.com/bittremieuxlab/falcon)
 
 The _falcon_ spectrum clustering tool uses advanced algorithmic techniques for
-highly efficient processing of millions of MS/MS spectra. First,
-high-resolution spectra are binned and converted to low-dimensional vectors
-using feature hashing. Next, the spectrum vectors are used to construct nearest
-neighbor indexes for fast similarity searching. The nearest neighbor indexes
-are used to efficiently compute a sparse pairwise distance matrix without
-having to exhaustively compare all spectra to each other. Finally,
-density-based clustering is performed to group similar spectra into clusters.
+highly efficient processing of millions of MS/MS spectra. Spectra are read from
+peak files and stored in Lance columnar datasets, partitioned by precursor
+charge. Within each charge bucket spectra are split into batches by precursor
+_m_/_z_, a full pairwise cosine distance matrix
+is computed in parallel using Numba-accelerated code, and hierarchical
+clustering is applied to group similar spectra into clusters.
 
 The software is available as open-source under the BSD license.
 
@@ -32,7 +31,7 @@ _falcon_ requires Python 3.8+ and is available on the Linux and OSX platforms.
 
 You can easily install _falcon_ with pip:
 
-    pip install falcon-ms spectrum-utils==0.3.5
+    pip install falcon-ms
 
 Running _falcon_
 ----------------
@@ -46,7 +45,7 @@ to an MGF file.
 
 Example _falcon_ run with some relevant command-line arguments:
 
-    falcon peak/*.mzml falcon --export_representatives --precursor_tol 20 ppm --fragment_tol 0.05 --eps 0.10
+    falcon peak/*.mzml falcon --export_representatives --precursor_tol 20 ppm --fragment_tol 0.05 --distance_threshold 0.10
 
 This will cluster all MS/MS spectra in mzML files in the `peak` directory with
 the specified settings and write (i) the cluster assignments to the `falcon.csv` file, and (ii) the cluster representatives to the `falcon.mgf` file.
@@ -64,19 +63,41 @@ For detailed information on all available settings, run `falcon -h` or
 **Spectrum comparison**
 
 - `precursor_tol`: The precursor mass tolerance and unit (in ppm or Dalton) to
-compare spectra to each other.
+compare spectra to each other. Default is 20 ppm.
+- `rt_tol`: Optional retention time tolerance (in seconds) to restrict
+clustering to spectra with similar retention times. Default is no retention
+time filtering.
 - `fragment_tol`: The fragment mass tolerance (in Dalton) used during spectrum
-comparison.
+comparison. Default is 0.05 Da.
 
 **Clustering**
 
-- `eps`: The maximum cosine distance between two spectra for them to be
-considered as neighbors of each other. This parameter crucially governs cluster
-purity (i.e. clusters contain spectra corresponding to only a single peptide).
-The ideal value of this parameter depends on the spectral characteristics of
-your data and optional spectrum preprocessing configured in _falcon_. Values
-between 0.05 and 0.15 will typically generate a pure clustering result. For
-more aggressive clustering values up to 0.30 can be used.
+- `linkage`: The linkage criterion for hierarchical clustering. Should be one
+of `single`, `complete`, or `average`. Default is `complete`.
+- `distance_threshold`: The cosine distance threshold at which clusters are cut
+from the hierarchical tree. This parameter crucially governs cluster purity
+(i.e. clusters contain spectra corresponding to only a single peptide).
+Values between 0.05 and 0.15 typically yield pure clusters; values up to 0.30
+can be used for more aggressive merging. Default is 0.10.
+- `min_matched_peaks`: Minimum number of matched fragment peaks required to
+consider two spectra similar. Spectra pairs below this threshold are assigned
+a distance of 1.0. Default is 0; typically set to 6 for metabolomics data.
+- `batch_size`: Maximum number of spectra per precursor _m_/_z_ batch.
+Default is 32768.
+- `precursor_charge_buckets`: Charge state groupings that determine which
+spectra are clustered together. Each bucket is a list of charges (e.g. `[1]`,
+`[2, 3]`); charges not matched by any named bucket go into `other`. Default
+buckets are `[1]`, `[2]`, `[3]`, `[4]`, `[unknown]`, and `other`.
+
+**Consensus spectrum**
+
+- `consensus_method`: Method used to compute the representative spectrum for
+each cluster. Either `medoid` (the spectrum with the lowest average distance
+to all others in the cluster) or `average` (intensity-averaged spectrum with
+optional outlier rejection). Default is `medoid`.
+- `outlier_cutoff_lower` and `outlier_cutoff_upper`: Number of standard
+deviations below/above the median intensity used for outlier rejection when
+`consensus_method=average`. Default is 1.5 for both.
 
 **Spectrum preprocessing**
 
@@ -92,62 +113,34 @@ range. It is recommended to reduce these values when clustering metabolomics
 data.
 - `min_mz` and `max_mz`: The minimum and maximum peak _m_/_z_ value,
 respectively. Peaks outside these values will be discarded. Default values are
-101 _m_/_z_ and 500 _m_/_z_, respectively.
+101 _m_/_z_ and 1500 _m_/_z_, respectively.
 - `scaling`: Scale the peak intensities by their square root, logarithm, rank,
 or no scaling. Default is no scaling, with square root scaling often giving good
 results as well. Note that the scaling method can influence the cosine threshold
-`eps`.
-
-**Nearest neighbor indexing** (see below)
-
-The settings for nearest neighbor indexing can be modified to tune clustering
-time versus accuracy. Changing these settings is only recommended for advanced
-users.
-
-- `n_probe`: The maximum number of lists in the inverted index to inspect
-during querying. Inspecting fewer lists will run faster but will give slightly
-less accurate clustering results.
-- `n_neighbors` and `n_neighbors_ann`: The final number of neighbors to
-consider for each spectrum and during nearest neighbor searching. Querying less
-neighbors will run faster but will give slightly less accurate clustering
-results. `n_neighbors_ann` should be equal or greater than `n_neighbors`.
-- `low_dim`: The length of the low-dimensional vectors used for nearest neighbor
-searching. Larger vectors will more accurately approximate the true cosine
-distance, at the expense of longer nearest neighbor searching and memory
-requirements.
+`distance_threshold`.
 
 How does it work?
 -----------------
 
-![falcon spectrum clustering](falcon_how.png)
+![falcon spectrum clustering](falcon_how_v2.png)
 
-1. High-resolution MS/MS spectra are converted to low-dimensional vectors using
-feature hashing. First, spectra are converted to sparse vectors using small
-mass bins to tightly capture their fragment masses. Next, the sparse,
-high-dimensional, vectors are hashed to lower-dimensional vectors by using a
-hash function (the non-cryptographic MurmurHash3 algorithm) to map the mass
-bins separately to a small number of hash bins. This feature hashing conserves
-the cosine similarity between hashed vectors and can be used to approximate the
-similarity between the original spectra.
-2. Vectors are split into buckets based on the precursor _m_/_z_ of the
-corresponding spectra to construct nearest neighbor indexes for highly
-efficient spectrum comparison. The spectrum vectors in each bucket are
-partitioned into data subspaces to create a Voronoi diagram, and all vectors
-are assigned to their nearest representative vector in an inverted index.
-3. A sparse pairwise distance matrix is computed by retrieving similarities to
-neighboring spectra using the nearest neighbor indexes. The accuracy and speed
-of similarity searching is governed by the number of neighboring cells to
-explore during searching: exploring more cells during searching decreases the
-chance of missing a nearest neighbor in the high-dimensional space, at the
-expense of a longer searching time.
-4. Density-based clustering using the pairwise distance matrix is performed to
-find spectrum clusters. The DBSCAN algorithm is used to find spectra that are
-close to each other and that form a dense data subspace, and group them into
-clusters.
+1. Input peak files (mzML, mzXML, or MGF) are read in parallel and preprocessed
+spectra are written to per-charge Lance columnar datasets stored in the working
+directory.
+2. Within each charge bucket, spectra are sorted by precursor _m_/_z_ and split into overlapping batches of at most
+`batch_size` spectra.
+3. For each batch a full pairwise cosine distance matrix is computed using a
+Numba-parallelized routine. Peak pairs with fewer than `min_matched_peaks`
+matched fragments are treated as maximally distant (distance = 1.0).
+4. Hierarchical clustering is performed on the pairwise distance matrix using
+the `fastcluster` library. The dendrogram is cut at `distance_threshold` using
+the chosen `linkage` criterion to produce flat clusters.
+5. One representative (consensus) spectrum is selected or computed for each
+cluster and, if requested, exported to an MGF file.
+6. Cluster assignments are exported to a csv file, while consensus spectra are written to an mgf file.
 
 Contact
 -------
 
 For more information you can visit the
-[official code website](https://github.com/bittremieux/falcon) or send an email
-to <wbittremieux@health.ucsd.edu>.
+[official code website](https://github.com/bittremieuxlab/falcon) or reach out to the Bittremieux Lab.
