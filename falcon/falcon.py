@@ -358,11 +358,10 @@ def _prepare_spectra(
         )
         try:
             dataset = lance.dataset(dataset_path)
-            n_spectra += len(dataset)
+            n_spectra += dataset.count_rows()
             valid_buckets.append(bucket)
-        except (ValueError, FileNotFoundError) as e:
-            logger.error("Failed to open dataset for bucket %s: %s", bucket, e)
-        n_spectra += dataset.count_rows()
+        except (ValueError, FileNotFoundError):
+            logger.debug("No spectra for bucket %s, skipping", bucket)
     logger.info(
         "Read %d spectra from %d peak file(s)",
         n_spectra,
