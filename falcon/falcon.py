@@ -258,8 +258,9 @@ def main(args: Union[str, List[str]] = None) -> int:
 
 
 def _prepare_spectra(
-    process_spectrum: Callable, charge_buckets: List[Set[Union[int, str]]]
-) -> Set[int]:
+    process_spectrum: Callable,
+    charge_buckets: List[Union[Set[Union[int, str]], str]],
+) -> List[Union[Set[Union[int, str]], str]]:
     """
     Read the spectra from the input peak files and partition to intermediate
     files split and sorted by precursor m/z.

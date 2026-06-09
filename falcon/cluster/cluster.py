@@ -16,7 +16,6 @@ from scipy.cluster.hierarchy import fcluster
 from tqdm import tqdm
 
 from . import similarity
-from .. import utils
 from .consensus import (
     ConsensusTuple,
     _get_cluster_group_idx,
@@ -39,7 +38,7 @@ def generate_clusters(
     batch_size: int,
     consensus_method: str,
     consensus_params: dict,
-) -> np.ndarray:
+) -> Tuple[np.ndarray, List[ConsensusTuple]]:
     """
     Cluster the spectra in the given dataset using hierarchical clustering.
 
@@ -329,7 +328,7 @@ def cluster_chunk(
     fragment_mz_tol: float,
     consensus_method: str,
     consensus_params: dict,
-) -> List[Tuple[int, List[ConsensusTuple]]]:
+) -> List[Tuple[int, Tuple[List[ConsensusTuple], np.ndarray]]]:
     """
     Cluster all m/z intervals in the given chunk.
 
