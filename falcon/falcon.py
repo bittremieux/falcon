@@ -169,12 +169,27 @@ def main(args: Union[str, List[str], None] = None) -> int:
             process_spectrum, config.precursor_charge_buckets
         )
         joblib.dump(
-            {"config": config.precursor_charge_buckets, "buckets": charge_buckets},
+            {
+                "config": config.precursor_charge_buckets,
+                "buckets": charge_buckets,
+            },
             charge_path,
         )
 
-    # Cluster the spectra per charge.
-    clusters_all, current_label, representatives = [], 0, []
+    # Cluster the spectra per charge. All non-empty charge buckets are clustered
+    # in a single shared worker pool (`cluster.generate_clusters_multi`) so cores
+    # stay busy across bucket boundaries instead of idling at each bucket's
+    # end-of-pool barrier; the resulting partitions are identical to clustering
+    # each bucket on its own.
+    consensus_params = {}
+    if config.consensus_method == "average":
+        consensus_params["min_mz"] = config.min_mz
+        consensus_params["max_mz"] = config.max_mz
+        consensus_params["bin_size"] = 2 * config.fragment_tol
+        consensus_params["outlier_cutoff_lower"] = config.outlier_cutoff_lower
+        consensus_params["outlier_cutoff_upper"] = config.outlier_cutoff_upper
+
+    bucket_datasets = []
     for bucket in charge_buckets:
         dataset_path = os.path.join(
             config.work_dir,
@@ -185,31 +200,26 @@ def main(args: Union[str, List[str], None] = None) -> int:
         # No valid spectra found with the current charge.
         if dataset.count_rows() == 0:
             continue
-        # Cluster spectra and get representative spectra.
-        consensus_params = {}
-        if config.consensus_method == "average":
-            consensus_params["min_mz"] = config.min_mz
-            consensus_params["max_mz"] = config.max_mz
-            consensus_params["bin_size"] = 2 * config.fragment_tol
-            consensus_params["outlier_cutoff_lower"] = (
-                config.outlier_cutoff_lower
-            )
-            consensus_params["outlier_cutoff_upper"] = (
-                config.outlier_cutoff_upper
-            )
-        clusters, rep_spectra = cluster.generate_clusters(
-            dataset,
-            config.linkage,
-            config.distance_threshold,
-            config.min_matched_peaks,
-            config.precursor_tol[0],
-            config.precursor_tol[1],
-            config.rt_tol,
-            config.fragment_tol,
-            config.batch_size,
-            config.consensus_method,
-            consensus_params,
-        )
+        bucket_datasets.append(dataset)
+
+    cluster_results = cluster.generate_clusters_multi(
+        bucket_datasets,
+        config.linkage,
+        config.distance_threshold,
+        config.min_matched_peaks,
+        config.precursor_tol[0],
+        config.precursor_tol[1],
+        config.rt_tol,
+        config.fragment_tol,
+        config.batch_size,
+        config.consensus_method,
+        consensus_params,
+    )
+
+    clusters_all, current_label, representatives = [], 0, []
+    for dataset, (clusters, rep_spectra) in zip(
+        bucket_datasets, cluster_results
+    ):
         # Make sure that different charges have non-overlapping cluster labels.
         clusters += current_label
         rep_spectra = [
@@ -228,9 +238,10 @@ def main(args: Union[str, List[str], None] = None) -> int:
                     "retention_time",
                 ]
             ).to_pandas()
-            # Must match the ordering used in `generate_clusters` exactly so the
-            # positionally-aligned cluster labels bind to the correct spectra;
-            # `identifier` is the unique tiebreaker that makes both sorts agree.
+            # Must match the ordering used in `_prepare_bucket_chunks` exactly so
+            # the positionally-aligned cluster labels bind to the correct
+            # spectra; `identifier` is the unique tiebreaker that makes both
+            # sorts agree.
             .sort_values(["precursor_mz", "retention_time", "identifier"])
         )
         metadata["cluster"] = clusters
@@ -311,7 +322,6 @@ def _prepare_spectra(
     # Per-charge locks so writers serialize only within a charge's dataset,
     # not across unrelated charges.
     lance_locks = _PerChargeLockRegistry()
-    charges = set()
     schema = pa.schema(
         [
             pa.field("identifier", pa.string()),
@@ -432,9 +442,7 @@ def _discover_auto_buckets(
         key = name[len(prefix) : -len(suffix)]
         bucket = (key,) if key == "unknown" else (int(key),)
         buckets.append(bucket)
-    return sorted(
-        buckets, key=lambda b: (isinstance(b[0], str), b[0])
-    )
+    return sorted(buckets, key=lambda b: (isinstance(b[0], str), b[0]))
 
 
 def _create_lance_dataset(
@@ -460,10 +468,14 @@ def _create_lance_dataset(
         "spectra",
         f"spectra_charge{bucket_key_to_str(charge_bucket)}.lance",
     )
+    # Use mode="create" (not "overwrite"): this is only called when the dataset
+    # does not yet exist (guarded by the caller), and "overwrite"/"append" on a
+    # missing path makes lance emit a redundant WARN ("No existing dataset ...,
+    # it will be created") that duplicates the debug message below.
     dataset = lance.write_dataset(
         pa.Table.from_pylist([], schema),
         lance_path,
-        mode="overwrite",
+        mode="create",
         data_storage_version="stable",
     )
     logger.debug("Creating lance dataset at %s", lance_path)

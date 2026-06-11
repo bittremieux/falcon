@@ -3,6 +3,8 @@ import logging
 import math
 import multiprocessing
 import tempfile
+import time
+from collections import defaultdict
 from functools import partial
 from typing import List, Tuple
 
@@ -11,10 +13,10 @@ import joblib
 import lance
 import numba as nb
 import numpy as np
+import pandas as pd
 import scipy.cluster.hierarchy as sch
 import spectrum_utils.utils as suu
 from scipy.cluster.hierarchy import fcluster
-from tqdm import tqdm
 
 from . import similarity
 from .consensus import (
@@ -25,6 +27,31 @@ from .consensus import (
 from .distance_matrix import compute_condensed_distance_matrix
 
 logger = logging.getLogger("falcon")
+
+# Number of cluster tasks (cost-balanced chunks of m/z splits) to create per CPU
+# worker. Making the global task count several times the worker count lets joblib
+# load-balance dynamically — a worker that finishes early steals the next task —
+# instead of stranding cores on the tail of a fixed one-chunk-per-worker split.
+_CHUNKS_PER_WORKER = 8
+
+
+def _format_hms(seconds: float) -> str:
+    """Format a duration in seconds as ``HH:MM:SS`` (hours not zero-padded)."""
+    seconds = int(seconds)
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h:d}:{m:02d}:{s:02d}"
+
+
+def _charge_label(dataset: "lance.LanceDataset") -> str:
+    """
+    Human-readable charge of a per-charge bucket, parsed from its dataset URI
+    (e.g. ``spectra_charge_2.lance`` -> ``2``, ``spectra_charge_1_2`` -> ``1, 2``,
+    ``spectra_charge_unknown`` -> ``unknown``).
+    """
+    return (
+        dataset.uri.split("spectra_charge_")[-1].split(".")[0].replace("_", ", ")
+    )
 
 
 def generate_clusters(
@@ -78,15 +105,235 @@ def generate_clusters(
     Tuple[np.ndarray, List[ConsensusTuple]]
         The cluster labels and the representative spectra for each cluster.
     """
-    # Hierarchical clustering using the precomputed pairwise distance matrix.
-    min_samples = 2
+    # Single-bucket convenience wrapper around the shared-pool implementation.
+    return generate_clusters_multi(
+        [dataset],
+        linkage,
+        distance_threshold,
+        min_matches,
+        precursor_tol_mass,
+        precursor_tol_mode,
+        rt_tol,
+        fragment_tol,
+        batch_size,
+        consensus_method,
+        consensus_params,
+    )[0]
+
+
+def generate_clusters_multi(
+    bucket_datasets: List["lance.LanceDataset"],
+    linkage: str,
+    distance_threshold: float,
+    min_matches: int,
+    precursor_tol_mass: float,
+    precursor_tol_mode: str,
+    rt_tol: float,
+    fragment_tol: float,
+    batch_size: int,
+    consensus_method: str,
+    consensus_params: dict,
+) -> List[Tuple[np.ndarray, List[ConsensusTuple]]]:
+    """
+    Cluster several per-charge datasets using a single shared worker pool.
+
+    All buckets' m/z-split tasks are dispatched into one ``joblib`` pool, so a
+    worker that finishes one bucket's work immediately picks up another bucket's
+    work instead of each bucket running its own pool with an end-of-bucket
+    barrier (which left cores idle between/within small buckets). Clustering of
+    each m/z split is independent of every other split and bucket, so the
+    resulting partitions are identical to clustering the buckets one at a time.
+
+    Parameters
+    ----------
+    bucket_datasets : List[lance.LanceDataset]
+        The per-charge datasets to cluster.
+    linkage, distance_threshold, min_matches, precursor_tol_mass,
+    precursor_tol_mode, rt_tol, fragment_tol, batch_size, consensus_method,
+    consensus_params
+        See `generate_clusters`; applied identically to every bucket.
+
+    Returns
+    -------
+    List[Tuple[np.ndarray, List[ConsensusTuple]]]
+        For each input dataset (in the same order): the cluster labels and the
+        representative spectra for that bucket.
+    """
     logger.debug(
         "Hierarchical clustering (distance_threshold=%.4f, min_samples=%d)",
         distance_threshold,
-        min_samples,
+        2,
     )
+    # Build the m/z-split tasks for every bucket up front. `prepared` keeps only
+    # the lightweight (n, splits) needed to reassemble each bucket; the loaded
+    # metadata DataFrames are released inside `_prepare_bucket_chunks`.
+    #
+    # Create several chunks per worker (not one) so the single shared pool has
+    # many more tasks than workers and can load-balance dynamically.
+    num_chunks = _CHUNKS_PER_WORKER * multiprocessing.cpu_count()
+    prepared = []  # per bucket: (n_spectra, splits)
+    global_tasks = []  # (cost, bucket_id, n_chunk, dataset, data_chunk)
+    for bucket_id, dataset in enumerate(bucket_datasets):
+        n, splits, data_chunks = _prepare_bucket_chunks(
+            dataset,
+            precursor_tol_mass,
+            precursor_tol_mode,
+            batch_size,
+            num_chunks,
+        )
+        prepared.append((n, splits))
+        for data_chunk in data_chunks:
+            # Cost is ~quadratic in interval size (the pairwise distance matrix
+            # dominates), so use it to schedule the heaviest chunks first and to
+            # drive the progress estimate (cost ~ compute time, so % of cost
+            # done grows ~linearly with wall-clock when all cores are busy).
+            cost = sum(len(idx_iv) ** 2 for _, _, idx_iv, _ in data_chunk)
+            n_chunk = sum(len(idx_iv) for _, _, idx_iv, _ in data_chunk)
+            global_tasks.append(
+                (cost, bucket_id, n_chunk, dataset, data_chunk)
+            )
+
+    # Dispatch the heaviest chunks first so the dominant bucket's big intervals
+    # start immediately and the many small-bucket chunks backfill around them,
+    # instead of the dominant bucket (often the last one, e.g. unknown charge)
+    # running alone at the end with cores tapering off. Sort on cost only —
+    # datasets are not orderable.
+    global_tasks.sort(key=lambda t: t[0], reverse=True)
+
+    # Cluster all m/z splits from all buckets in one shared pool, streaming
+    # results as each chunk finishes so progress can be reported on long runs.
+    results_by_bucket = defaultdict(list)
+    if global_tasks:
+        process_chunk = partial(
+            _cluster_chunk_tagged,
+            linkage=linkage,
+            distance_threshold=distance_threshold,
+            min_matches=min_matches,
+            precursor_tol_mass=precursor_tol_mass,
+            precursor_tol_mode=precursor_tol_mode,
+            rt_tol=rt_tol,
+            fragment_mz_tol=fragment_tol,
+            consensus_method=consensus_method,
+            consensus_params=consensus_params,
+            batch_size=batch_size,
+        )
+        total_cost = sum(t[0] for t in global_tasks)
+        total_spectra = sum(n for n, _ in prepared)
+        logger.info(
+            "Clustering %d spectra across %d charge bucket(s) in %d task(s) "
+            "on %d worker(s)...",
+            total_spectra,
+            len(bucket_datasets),
+            len(global_tasks),
+            multiprocessing.cpu_count(),
+        )
+        # `generator_unordered` yields each chunk's result the moment it
+        # finishes (not in submission order), which is what makes the progress
+        # below reflect actual completions; each result carries its bucket_id so
+        # it can still be routed back to the right bucket.
+        results = joblib.Parallel(
+            n_jobs=-1,
+            backend="loky",
+            verbose=0,
+            return_as="generator_unordered",
+        )(
+            joblib.delayed(process_chunk)(
+                data_chunk,
+                dataset=dataset,
+                bucket_id=bucket_id,
+                cost=cost,
+                n_chunk=n_chunk,
+            )
+            for cost, bucket_id, n_chunk, dataset, data_chunk in global_tasks
+        )
+        done_cost = done_spectra = done_tasks = 0
+        next_log_pct, start = 5, time.time()
+        for bucket_id, cost, n_chunk, chunk_results in results:
+            results_by_bucket[bucket_id].extend(chunk_results)
+            done_cost += cost
+            done_spectra += n_chunk
+            done_tasks += 1
+            pct = 100 * done_cost / total_cost if total_cost else 100
+            if pct >= next_log_pct or done_tasks == len(global_tasks):
+                elapsed = time.time() - start
+                eta = elapsed * (total_cost - done_cost) / done_cost
+                logger.info(
+                    "Clustering progress: %3.0f%% | %d/%d tasks | "
+                    "%d/%d spectra processed | elapsed %s | ETA ~%s",
+                    pct,
+                    done_tasks,
+                    len(global_tasks),
+                    done_spectra,
+                    total_spectra,
+                    _format_hms(elapsed),
+                    _format_hms(eta),
+                )
+                # Advance to the next 5% milestone past the current progress.
+                next_log_pct = (int(pct) // 5 + 1) * 5
+
+    # Reassemble each bucket independently from its split results.
+    return [
+        _finalize_bucket(
+            n,
+            splits,
+            results_by_bucket[bucket_id],
+            _charge_label(bucket_datasets[bucket_id]),
+        )
+        for bucket_id, (n, splits) in enumerate(prepared)
+    ]
+
+
+def _cluster_chunk_tagged(
+    data_chunk: List[Tuple], dataset: "lance.LanceDataset", **cluster_kwargs
+) -> Tuple[int, int, int, List[Tuple]]:
+    """
+    Run `cluster_chunk` and tag the result for routing and progress accounting.
+
+    Returns ``(bucket_id, cost, n_chunk, chunk_results)``. The tag travels with
+    the result so that, even when results are streamed out of submission order
+    (`generator_unordered`), each chunk can be routed back to its bucket and its
+    cost/size counted toward progress. `bucket_id`, `cost` and `n_chunk` are
+    popped from `cluster_kwargs` (the rest are forwarded to `cluster_chunk`).
+    """
+    bucket_id = cluster_kwargs.pop("bucket_id")
+    cost = cluster_kwargs.pop("cost")
+    n_chunk = cluster_kwargs.pop("n_chunk")
+    return (
+        bucket_id,
+        cost,
+        n_chunk,
+        cluster_chunk(data_chunk, dataset=dataset, **cluster_kwargs),
+    )
+
+
+def _prepare_bucket_chunks(
+    dataset: "lance.LanceDataset",
+    precursor_tol_mass: float,
+    precursor_tol_mode: str,
+    batch_size: int,
+    num_chunks: int,
+) -> Tuple[int, "nb.typed.List", List[List[Tuple]]]:
+    """
+    Load and sort one bucket's metadata and build its m/z-split cluster tasks.
+
+    Parameters
+    ----------
+    num_chunks : int
+        Target number of cost-balanced chunks to bundle this bucket's m/z splits
+        into. Empty chunks are dropped, so a bucket with fewer splits than
+        `num_chunks` simply yields one chunk per split.
+
+    Returns
+    -------
+    Tuple[int, nb.typed.List, List[List[Tuple]]]
+        The number of spectra, the m/z split boundaries, and the cost-balanced
+        chunks (each a list of ``(task_id, row_ids, idx_interval, mz_interval)``)
+        ready to hand to `cluster_chunk`. The loaded DataFrame is released before
+        returning; only the lightweight arrays referenced by the chunks survive.
+    """
     # Load only the columns needed for sorting and splitting; full spectra data
-    # (mz, intensity) is fetched on demand per interval inside _cluster_mz_interval.
+    # (mz, intensity) is fetched on demand per interval inside
+    # _cluster_mz_interval.
     data = dataset.to_table(
         columns=["identifier", "precursor_mz", "retention_time"]
     ).to_pandas()
@@ -99,116 +346,91 @@ def generate_clusters(
     data = data.reset_index().sort_values(
         ["precursor_mz", "retention_time", "identifier"],
     )
-    # Cluster per contiguous block of precursor m/z's (relative to the
-    # precursor m/z threshold).
+    n = data.shape[0]
     logger.info(
-        "Cluster %d spectra with charge %s",
-        len(data),
-        dataset.uri.split("spectra_charge_")[-1]
-        .split(".")[0]
-        .replace("_", ", "),
+        "Cluster %d spectra with charge %s", n, _charge_label(dataset)
     )
+    idx = data["index"].values
+    mzs = data["precursor_mz"].values
+    splits = _get_precursor_mz_splits(
+        mzs, precursor_tol_mass, precursor_tol_mode, batch_size
+    )
+    # Per m/z split clustering, bundled into cost-balanced chunks to amortize
+    # per-task dispatch overhead while keeping enough chunks for load balancing.
+    chunks = cost_based_chunking(splits, num_chunks)
+    data_chunks = []
+    for chunk in chunks:
+        data_chunk = []
+        for task_id, (interval_start, interval_stop) in chunk:
+            row_ids = idx[interval_start:interval_stop]
+            idx_interval = idx[interval_start:interval_stop]
+            mz_interval = mzs[interval_start:interval_stop]
+            data_chunk.append(
+                (task_id, row_ids.tolist(), idx_interval, mz_interval)
+            )
+        data_chunks.append(data_chunk)
+    return n, splits, data_chunks
+
+
+def _finalize_bucket(
+    n: int,
+    splits: "nb.typed.List",
+    flattened_results: List[
+        Tuple[int, Tuple[List[ConsensusTuple], np.ndarray]]
+    ],
+    charge: str,
+) -> Tuple[np.ndarray, List[ConsensusTuple]]:
+    """
+    Assemble one bucket's per-split results into cluster labels and reps.
+
+    Parameters
+    ----------
+    n : int
+        The number of spectra in the bucket.
+    splits : nb.typed.List
+        The m/z split boundaries from `_prepare_bucket_chunks`.
+    flattened_results : List[Tuple[int, Tuple[List[ConsensusTuple], np.ndarray]]]
+        The ``(task_id, (rep_spectra, labels))`` results for this bucket's splits
+        (in any order; re-sorted by task_id here).
+    charge : str
+        Human-readable charge label of this bucket (for logging).
+
+    Returns
+    -------
+    Tuple[np.ndarray, List[ConsensusTuple]]
+        The cluster labels (aligned to the bucket's sorted order) and the
+        representative spectra with bucket-unique cluster IDs.
+    """
     with tempfile.NamedTemporaryFile(suffix=".npy") as cluster_file:
         cluster_filename = cluster_file.name
         cluster_labels = np.lib.format.open_memmap(
-            cluster_filename, mode="w+", dtype=np.int32, shape=(data.shape[0],)
+            cluster_filename, mode="w+", dtype=np.int32, shape=(n,)
         )
         cluster_labels.fill(-1)
         representative_spectra = []
-        with tqdm(
-            total=len(data), desc="Clustering", unit="spectra", smoothing=0
-        ) as pbar:
-            idx = data["index"].values
-            mzs = data["precursor_mz"].values
-            splits = _get_precursor_mz_splits(
-                mzs, precursor_tol_mass, precursor_tol_mode, batch_size
-            )
-            # Per m/z split clustering.
-            # TODO: check if still needed with joblib
-            chunks = cost_based_chunking(splits, multiprocessing.cpu_count())
-            # Cluster m/z splits
-            if len(chunks) > 0:
-                # Process chunks
-                process_chunk = partial(
-                    cluster_chunk,
-                    dataset=dataset,
-                    linkage=linkage,
-                    distance_threshold=distance_threshold,
-                    min_matches=min_matches,
-                    precursor_tol_mass=precursor_tol_mass,
-                    precursor_tol_mode=precursor_tol_mode,
-                    rt_tol=rt_tol,
-                    fragment_mz_tol=fragment_tol,
-                    consensus_method=consensus_method,
-                    consensus_params=consensus_params,
-                )
-                data_chunks = []
-                for chunk in chunks:
-                    data_chunk = []
-                    for task_id, (interval_start, interval_stop) in chunk:
-                        row_ids = idx[interval_start:interval_stop]
-                        idx_interval = idx[interval_start:interval_stop]
-                        mz_interval = mzs[interval_start:interval_stop]
-                        data_chunk.append(
-                            (
-                                task_id,
-                                row_ids.tolist(),
-                                idx_interval,
-                                mz_interval,
-                            )
-                        )
-                    data_chunks.append(data_chunk)
-
-                results = joblib.Parallel(
-                    n_jobs=-1, backend="loky", verbose=0
-                )(
-                    joblib.delayed(process_chunk)(data_chunk)
-                    for data_chunk in data_chunks
-                )
-                flattened_results = [
-                    split_result
-                    for chunk_results in results
-                    for split_result in chunk_results
+        # Restore split order so positional scatter into cluster_labels is
+        # correct regardless of worker completion order.
+        for task_id, (interval_rep_spectra, labels) in sorted(
+            flattened_results, key=lambda x: x[0]
+        ):
+            if interval_rep_spectra is not None:
+                # add task id (mz_split) to rep_spectra
+                interval_rep_spectra = [
+                    s._replace(mz_split=np.int32(task_id))
+                    for s in interval_rep_spectra
                 ]
-                flattened_results.sort(key=lambda x: x[0])
-                n_total = len(data)
-                n_processed = 0
-                next_heartbeat = n_total // 10
-                for task_id, (
-                    interval_rep_spectra,
-                    labels,
-                ) in flattened_results:
-                    if interval_rep_spectra is not None:
-                        # add task id (mz_split) to rep_spectra
-                        interval_rep_spectra = [
-                            s._replace(mz_split=np.int32(task_id))
-                            for s in interval_rep_spectra
-                        ]
-                        representative_spectra.extend(interval_rep_spectra)
-                        cluster_labels[
-                            splits[task_id] : splits[task_id + 1]
-                        ] = labels
-                        n_processed += len(labels)
-                        pbar.update(len(labels))
-                        if (
-                            next_heartbeat > 0
-                            and n_processed >= next_heartbeat
-                        ):
-                            logger.info(
-                                "Clustering progress: %d/%d spectra (%.0f%%)",
-                                n_processed,
-                                n_total,
-                                100 * n_processed / n_total,
-                            )
-                            next_heartbeat += n_total // 10
-            representative_spectra = _assign_global_cluster_labels(
-                cluster_labels, representative_spectra, splits
-            )
+                representative_spectra.extend(interval_rep_spectra)
+                cluster_labels[splits[task_id] : splits[task_id + 1]] = labels
+        representative_spectra = _assign_global_cluster_labels(
+            cluster_labels, representative_spectra, splits
+        )
         _, counts = np.unique(cluster_labels, return_counts=True)
         n_clusters = np.count_nonzero(counts > 1)
         n_noise = np.count_nonzero(counts == 1)
         logger.info(
-            "%d spectra grouped in %d clusters, %d spectra remain as singletons",
+            "Charge %s: %d spectra grouped in %d clusters, %d spectra remain "
+            "as singletons",
+            charge,
             counts[counts > 1].sum(),
             n_clusters,
             n_noise,
@@ -328,6 +550,7 @@ def cluster_chunk(
     fragment_mz_tol: float,
     consensus_method: str,
     consensus_params: dict,
+    batch_size: int = None,
 ) -> List[Tuple[int, Tuple[List[ConsensusTuple], np.ndarray]]]:
     """
     Cluster all m/z intervals in the given chunk.
@@ -361,39 +584,84 @@ def cluster_chunk(
         ('medoid' or 'average').
     consensus_params : dict
         Additional parameters for the consensus spectrum computation.
+    batch_size : int, optional
+        Maximum number of spectra to hold in memory per batched Lance read.
+        Intervals are read in groups whose cumulative size stays within this
+        cap, bounding a worker's resident memory to roughly one interval's worth
+        regardless of the chunk's total size (important at hundreds of millions
+        / billions of spectra). If `None`, the whole chunk is read at once.
 
     Returns
     -------
     List[Tuple[int, Tuple[List[ConsensusTuple], np.ndarray]]]
         For each task: the task index and the result of `_cluster_mz_interval`.
     """
-
-    return [
-        (
-            i,
-            _cluster_mz_interval(
-                dataset,
-                row_ids,
-                idx,
-                mzs,
-                linkage,
-                distance_threshold,
-                min_matches,
-                precursor_tol_mass,
-                precursor_tol_mode,
-                rt_tol,
-                fragment_mz_tol,
-                consensus_method,
-                consensus_params,
-            ),
-        )
-        for i, row_ids, idx, mzs in chunk
+    if not chunk:
+        return []
+    columns = [
+        "identifier",
+        "precursor_mz",
+        "precursor_charge",
+        "retention_time",
+        "mz",
+        "intensity",
     ]
+
+    def _cluster_group(group):
+        # One batched Lance read for the group amortizes the per-interval read
+        # and pandas-conversion overhead; `take` preserves index order, so each
+        # interval gets a contiguous slice in its original `row_ids` order.
+        group_row_ids = [rid for _, row_ids, _, _ in group for rid in row_ids]
+        group_spectra = dataset.take(
+            indices=group_row_ids, columns=columns
+        ).to_pandas()
+        out, offset = [], 0
+        for i, row_ids, idx, mzs in group:
+            interval_spectra = group_spectra.iloc[
+                offset : offset + len(row_ids)
+            ]
+            offset += len(row_ids)
+            out.append(
+                (
+                    i,
+                    _cluster_mz_interval(
+                        interval_spectra,
+                        idx,
+                        mzs,
+                        linkage,
+                        distance_threshold,
+                        min_matches,
+                        precursor_tol_mass,
+                        precursor_tol_mode,
+                        rt_tol,
+                        fragment_mz_tol,
+                        consensus_method,
+                        consensus_params,
+                    ),
+                )
+            )
+        return out
+
+    # Read intervals in groups capped at `batch_size` spectra so a single read
+    # never holds more than ~one interval's worth in memory, while still
+    # amortizing the read over many small intervals. A single interval (already
+    # <= batch_size) is never split across reads.
+    results = []
+    group, group_size = [], 0
+    for task in chunk:
+        m = len(task[1])
+        if group and batch_size is not None and group_size + m > batch_size:
+            results.extend(_cluster_group(group))
+            group, group_size = [], 0
+        group.append(task)
+        group_size += m
+    if group:
+        results.extend(_cluster_group(group))
+    return results
 
 
 def _cluster_mz_interval(
-    dataset: lance.LanceDataset,
-    row_ids: List[int],
+    spectra: pd.DataFrame,
     idx: np.ndarray,
     mzs: np.ndarray,
     linkage: str,
@@ -411,10 +679,9 @@ def _cluster_mz_interval(
 
     Parameters
     ----------
-    dataset : lance.LanceDataset
-        The dataset from which spectra are fetched on demand.
-    row_ids : List[int]
-        Lance row indices of the spectra in this interval.
+    spectra : pd.DataFrame
+        This interval's spectra (identifier, precursor_mz, precursor_charge,
+        retention_time, mz, intensity), pre-fetched in batch by `cluster_chunk`.
     idx : np.ndarray
         Sorted positional indices of the spectra within the global ordering.
     mzs : np.ndarray
@@ -447,20 +714,9 @@ def _cluster_mz_interval(
         The representative spectrum for each cluster and the cluster label
         array aligned to the input interval order.
     """
-    spectra = dataset.take(
-        indices=row_ids,
-        columns=[
-            "identifier",
-            "precursor_mz",
-            "precursor_charge",
-            "retention_time",
-            "mz",
-            "intensity",
-        ],
-    ).to_pandas()
-    # Sort with the same total-order key as the outer `data` sort in
-    # `generate_clusters` so this interval's spectra line up positionally with
-    # the `idx`/`mzs` arrays (which come from that outer order). `idx`/`mzs`
+    # Sort with the same total-order key as the outer sort in
+    # `_prepare_bucket_chunks` so this interval's spectra line up positionally
+    # with the `idx`/`mzs` arrays (which come from that outer order). `idx`/`mzs`
     # (outer order) and `rts`/`labels` (this order) are used together below, so
     # any mismatch on (precursor_mz, retention_time) ties would corrupt the
     # clustering; `identifier` is the unique tiebreaker that keeps them aligned.
@@ -468,9 +724,19 @@ def _cluster_mz_interval(
         ["precursor_mz", "retention_time", "identifier"]
     )
     rts = spectra["retention_time"].values
-    spectra = spectra.apply(
-        similarity.df_row_to_spectrum_tuple, axis=1
-    ).tolist()
+    # Build SpectrumTuples straight from the columns instead of a row-wise
+    # pandas `apply` (which constructs a Series per spectrum and dominates the
+    # single-threaded per-interval cost on large intervals).
+    precursor_mz = spectra["precursor_mz"].to_numpy()
+    precursor_charge = spectra["precursor_charge"].to_numpy()
+    mz = spectra["mz"].to_numpy()
+    intensity = spectra["intensity"].to_numpy()
+    spectra = [
+        similarity.SpectrumTuple(
+            precursor_mz[i], precursor_charge[i], mz[i], intensity[i]
+        )
+        for i in range(len(precursor_mz))
+    ]
     n_spectra = len(spectra)
     cluster_labels = -np.ones(n_spectra, np.int32)
     if n_spectra > 1:
