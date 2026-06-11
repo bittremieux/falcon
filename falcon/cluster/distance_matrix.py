@@ -1,3 +1,4 @@
+import os
 import tempfile
 from typing import List
 
@@ -40,6 +41,13 @@ def compute_condensed_distance_matrix(
         dtype=np.float32,
         shape=(n * (n - 1) // 2,),
     )
+    # Unlink the backing file now that it is mapped. On POSIX the inode (and its
+    # data) stays alive until this memmap is released (e.g. the `del pdist` in
+    # `_cluster_mz_interval`), after which the OS reclaims the space
+    # automatically. Without this the temp file is never removed and leaks for
+    # the lifetime of the process, accumulating one file per m/z interval and
+    # potentially filling the disk on large datasets.
+    os.unlink(pdist_filename)
 
     _condensed_distance_matrix_parallel(
         condensed_dist_matrix,
