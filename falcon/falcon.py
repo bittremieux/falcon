@@ -27,6 +27,13 @@ logger = logging.getLogger("falcon")
 
 utils.set_seeds()
 
+# Flush a charge bucket's buffered spectra to its lance dataset once this many
+# have accumulated, bounding the per-bucket in-memory batch.
+_LANCE_WRITE_BATCH_SIZE = 10_000
+# Cap on spectra buffered in the reader -> writer queue, bounding peak memory
+# during spectrum preprocessing.
+_MAX_SPECTRA_IN_MEMORY = 1_000_000
+
 
 def main(args: Union[str, List[str], None] = None) -> int:
     # Configure logging.
@@ -317,8 +324,7 @@ def _prepare_spectra(
     max_file_workers = min(len(input_filenames), multiprocessing.cpu_count())
     # Restrict the number of spectra simultaneously in memory to avoid
     # excessive memory requirements.
-    max_spectra_in_memory = 1_000_000
-    spectra_queue = queue.Queue(maxsize=max_spectra_in_memory)
+    spectra_queue = queue.Queue(maxsize=_MAX_SPECTRA_IN_MEMORY)
     # Per-charge locks so writers serialize only within a charge's dataset,
     # not across unrelated charges.
     lance_locks = _PerChargeLockRegistry()
@@ -537,7 +543,7 @@ def _write_spectra_lance(
     spectra_queue: queue.Queue,
     lance_locks: "_PerChargeLockRegistry",
     schema: pa.Schema,
-    charge_to_bucket: Dict[int, Tuple[int, str]],
+    charge_to_bucket: Dict[Union[int, str], Tuple[Union[int, str], ...]],
     catch_other_charges: bool,
     auto_bucket: bool,
 ) -> None:
@@ -552,8 +558,9 @@ def _write_spectra_lance(
         Per-charge locks to synchronize writes within each dataset.
     schema : pa.Schema
         The schema of the dataset.
-    charge_buckets : list of sets
-        The precursor charge buckets to assign spectra to.
+    charge_to_bucket : Dict[Union[int, str], Tuple[Union[int, str], ...]]
+        Mapping from each precursor charge to its bucket key (the sorted tuple
+        of charges sharing that bucket).
     catch_other_charges : bool
         Whether to catch charges not in any bucket.
     auto_bucket : bool
@@ -592,7 +599,7 @@ def _write_spectra_lance(
         if bucket_key is not None:
             spec_to_write[bucket_key].append(spec)
 
-            if len(spec_to_write[bucket_key]) >= 10_000:
+            if len(spec_to_write[bucket_key]) >= _LANCE_WRITE_BATCH_SIZE:
                 _write_to_dataset(
                     spec_to_write[bucket_key],
                     bucket_key,

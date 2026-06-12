@@ -7,6 +7,13 @@ import numpy as np
 
 from . import similarity
 
+# A cluster needs at least this many spectra to compute a medoid; smaller
+# clusters fall back to using their first spectrum as the representative.
+_MIN_MEDOID_CLUSTER_SIZE = 3
+# Drop a consensus peak unless it is present in at least this fraction of the
+# cluster's spectra.
+_MIN_BIN_OCCUPANCY_FRACTION = 0.7
+
 ConsensusTuple = collections.namedtuple(
     "ConsensusTuple",
     [
@@ -196,8 +203,8 @@ def _get_cluster_medoids(
     cluster_ids = []
 
     for start_i, stop_i in _get_cluster_group_idx(labels):
-        # If less than 3 spectra in cluster, use the first spectrum as medoid.
-        if stop_i - start_i > 2:
+        # Smaller clusters use the first spectrum as medoid (see constant).
+        if stop_i - start_i >= _MIN_MEDOID_CLUSTER_SIZE:
             row_sum = np.zeros(stop_i - start_i, np.float32)
             for row in range(stop_i - start_i):
                 for col in range(row + 1, stop_i - start_i):
@@ -405,10 +412,10 @@ def _spectrum_binning(
                 bins_mz[bin_idx].append(mz)
                 bins_peak_presence[bin_idx] = 1
         bins_spectra_count += bins_peak_presence
-    # Mark peaks that appear in less than 70% of the spectra as empty for removal
+    # Mark peaks present in too few of the spectra as empty for removal.
     for i in range(n_bins):
         if bins_indices[i] != -1:
-            if bins_spectra_count[i] < 0.7 * n_spectra:
+            if bins_spectra_count[i] < _MIN_BIN_OCCUPANCY_FRACTION * n_spectra:
                 bins_indices[i] = -1
     # Remove empty bins
     mask = bins_indices != -1

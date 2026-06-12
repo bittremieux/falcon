@@ -57,6 +57,15 @@ _INTERVAL_COLUMNS = [
 # amortized over the cosine work.
 _MIN_PAIRS_PER_TILE = 4_000_000
 
+# Minimum spectra a cluster needs to survive post-processing splitting; passed
+# as ``min_samples`` to `_postprocess_cluster` (singletons are dropped).
+_MIN_CLUSTER_SAMPLES = 2
+
+# Trigger an explicit `gc.collect()` only after finishing an interval with more
+# than this many spectra; below it the per-interval allocations are small enough
+# that forcing collection is pure overhead.
+_GC_COLLECT_MIN_SPECTRA = 2**11
+
 
 def _tile_threshold(batch_size: int) -> int:
     """
@@ -198,7 +207,7 @@ def generate_clusters_multi(
     logger.debug(
         "Hierarchical clustering (distance_threshold=%.4f, min_samples=%d)",
         distance_threshold,
-        2,
+        _MIN_CLUSTER_SAMPLES,
     )
     # Build the m/z-split tasks for every bucket up front. `prepared` keeps only
     # the lightweight (n, splits) needed to reassemble each bucket; the loaded
@@ -1051,7 +1060,7 @@ def _cluster_mz_interval(
                 precursor_tol_mass,
                 precursor_tol_mode,
                 rt_tol,
-                2,
+                _MIN_CLUSTER_SAMPLES,
                 current_label,
             )
             current_label += n_clusters
@@ -1095,7 +1104,7 @@ def _cluster_mz_interval(
             cluster_labels = labels[rev_order]
         # Force memory clearing.
         del pdist
-        if n_spectra > 2**11:
+        if n_spectra > _GC_COLLECT_MIN_SPECTRA:
             gc.collect()
     else:  # mz split contains only 1 spectrum
         spec = spectra[0]

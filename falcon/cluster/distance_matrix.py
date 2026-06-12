@@ -1,6 +1,6 @@
 import os
 import tempfile
-from typing import List
+from typing import List, Tuple
 
 import numba as nb
 import numpy as np
@@ -20,7 +20,7 @@ def compute_condensed_distance_matrix(
     ----------
     spec_tuples : List[similarity.SpectrumTuple]
         The spectra to compute the pairwise distance matrix for.
-    fragment_mz_tolerance : float
+    fragment_mz_tol : float
         The fragment m/z tolerance.
     min_matches : int
         The minimum number of matched peaks to consider the spectra similar.
@@ -59,7 +59,7 @@ def compute_condensed_distance_matrix(
     return condensed_dist_matrix
 
 
-def open_shared_condensed(n: int):
+def open_shared_condensed(n: int) -> Tuple[str, np.ndarray]:
     """
     Create a named, on-disk condensed distance matrix that several processes
     can fill concurrently.
