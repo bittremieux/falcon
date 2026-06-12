@@ -1,6 +1,5 @@
 import argparse
 import textwrap
-import ast
 
 import configargparse
 
@@ -98,9 +97,9 @@ class Config:
             "--linkage",
             type=str,
             default="complete",
+            choices=["single", "complete", "average"],
             help="Linkage criterion for hierarchical clustering "
-            "(default: %(default)s). Should be one of "
-            "'single', 'complete', 'average'.",
+            "(default: %(default)s).",
         )
         self._parser.add_argument(
             "--distance_threshold",
@@ -121,8 +120,9 @@ class Config:
             "--consensus_method",
             type=str,
             default="medoid",
+            choices=["medoid", "average"],
             help="Method to use for consensus spectrum computation "
-            "(default: %(default)s). Should be one of 'medoid', 'average'.",
+            "(default: %(default)s).",
         )
         self._parser.add_argument(
             "--outlier_cutoff_lower",
@@ -248,6 +248,33 @@ class Config:
                 )
             )
 
+        self._validate()
+
+    def _validate(self) -> None:
+        """
+        Validate parsed settings that argparse cannot check on its own.
+
+        Reports problems via ``argparse`` (a usage message and exit), matching
+        how invalid ``choices`` are reported, so bad values fail fast at startup
+        instead of deep inside the pipeline.
+        """
+        ns = self._namespace
+        mode = ns["precursor_tol"][1]
+        if mode not in ("ppm", "Da"):
+            self._parser.error(
+                f'--precursor_tol mode must be "ppm" or "Da", got "{mode}"'
+            )
+        if ns["distance_threshold"] <= 0:
+            self._parser.error(
+                "--distance_threshold must be positive, got "
+                f"{ns['distance_threshold']}"
+            )
+        if ns["batch_size"] < 1:
+            self._parser.error(
+                "--batch_size must be a positive integer, got "
+                f"{ns['batch_size']}"
+            )
+
     def parse_and_validate_charge_buckets(self, bucket_args):
         """
         Parse and validate the precursor charge buckets.
@@ -272,26 +299,61 @@ class Config:
                 buckets.append("other")
                 continue
 
-            try:
-                values = set(
-                    ast.literal_eval(raw.replace("unknown", "'unknown'"))
-                )
-            except Exception as e:
-                raise argparse.ArgumentTypeError(
-                    f"Invalid charge bucket syntax: {raw}"
-                ) from e
+            values = self._parse_charge_bucket(raw)
 
-            # Check for duplicates across buckets
+            # Check for duplicates across buckets.
             overlap = values & seen_values
             if overlap:
-                raise argparse.ArgumentTypeError(
-                    f"Charge value(s) {sorted(overlap, key=lambda x: (isinstance(x, str), x))} appear in more than one bucket"
+                self._parser.error(
+                    f"Charge value(s) "
+                    f"{sorted(overlap, key=lambda x: (isinstance(x, str), x))} "
+                    f"appear in more than one bucket"
                 )
 
             seen_values |= values
             buckets.append(values)
 
         return buckets
+
+    def _parse_charge_bucket(self, raw):
+        """
+        Parse a single charge bucket specification into a set of values.
+
+        Accepts a (optionally bracketed) comma-separated list of integer charges
+        and/or the ``unknown`` sentinel, e.g. ``[1]``, ``[2, 3]``, ``[unknown]``
+        or ``[1, unknown]``.
+
+        Parameters
+        ----------
+        raw : str
+            The bucket specification.
+
+        Returns
+        -------
+        set
+            The charges (``int``) and/or ``"unknown"`` in the bucket.
+        """
+        inner = raw
+        if inner.startswith("[") and inner.endswith("]"):
+            inner = inner[1:-1]
+        values = set()
+        for token in inner.split(","):
+            token = token.strip()
+            if not token:
+                continue
+            if token == "unknown":
+                values.add("unknown")
+            else:
+                try:
+                    values.add(int(token))
+                except ValueError:
+                    self._parser.error(
+                        f"Invalid charge bucket value '{token}' in '{raw}' "
+                        f"(expected integers and/or 'unknown')"
+                    )
+        if not values:
+            self._parser.error(f"Empty charge bucket: '{raw}'")
+        return values
 
     def __getattr__(self, option):
         if self._namespace is None:
