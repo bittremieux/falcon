@@ -1,5 +1,4 @@
 import logging
-import os
 from typing import Dict, IO, Iterable, Union
 
 import pyteomics.mzxml
@@ -7,6 +6,7 @@ import spectrum_utils.spectrum as sus
 from lxml.etree import LxmlError
 
 from ..config import config
+from . import _reader_utils
 
 logger = logging.getLogger("falcon")
 
@@ -27,7 +27,7 @@ def get_spectra(source: Union[IO, str]) -> Iterable[sus.MsmsSpectrum]:
         An iterator over the spectra in the given file.
     """
     with pyteomics.mzxml.MzXML(source) as f_in:
-        filename = os.path.splitext(os.path.basename(f_in.name))[0]
+        filename = _reader_utils.base_filename(source, f_in)
         try:
             for spectrum_dict in f_in:
                 if int(spectrum_dict.get("msLevel", -1)) > 1:
@@ -36,8 +36,10 @@ def get_spectra(source: Union[IO, str]) -> Iterable[sus.MsmsSpectrum]:
                     spectrum_dict["id"] = f"{filename}:scan:{scan_nr}"
                     try:
                         yield _parse_spectrum(spectrum_dict)
-                    except (ValueError, KeyError):
-                        pass
+                    except (ValueError, KeyError) as e:
+                        _reader_utils.log_skipped_spectrum(
+                            source, spectrum_dict["id"], e
+                        )
         except LxmlError as e:
             logger.warning("Failed to read file %s: %s", source, e)
 

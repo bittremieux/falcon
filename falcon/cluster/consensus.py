@@ -1,6 +1,6 @@
 import collections
 import math
-from typing import List, Optional, Tuple, Iterator
+from typing import List, Optional, Sequence, Tuple, Iterator
 
 import numba as nb
 import numpy as np
@@ -91,71 +91,63 @@ def _get_representative_spectra(
         The representative spectra for each cluster.
     """
     if consensus_method == "medoid":
-        (
-            precursor_mzs,
-            precursor_charges,
-            mzs,
-            intensities,
-            retention_times,
-            cluster_ids,
-        ) = _get_cluster_medoids(
+        columns = _get_cluster_medoids(
             spectra, labels, rts, order_map, **consensus_params
         )
-        # create consensus spectra outside of numba
-        medoids = [
-            ConsensusTuple(
-                precursor_mz=np.float32(precursor_mzs[i]),
-                precursor_charge=(
-                    np.int32(precursor_charges[i])
-                    if not np.isnan(precursor_charges[i])
-                    else np.nan
-                ),
-                mz=mzs[i].astype(np.float32),
-                intensity=intensities[i].astype(np.float32),
-                retention_time=np.float32(retention_times[i]),
-                cluster_id=np.int32(cluster_ids[i]),
-                mz_split=None,
-            )
-            for i in range(len(precursor_mzs))
-        ]
-        return medoids
     elif consensus_method == "average":
-        (
-            precursor_mzs,
-            precursor_charges,
-            mzs,
-            intensities,
-            retention_times,
-            cluster_ids,
-        ) = _get_cluster_average(
-            spectra,
-            labels,
-            rts,
-            order_map,
-            **consensus_params,
+        columns = _get_cluster_average(
+            spectra, labels, rts, order_map, **consensus_params
         )
-        # create consensus spectra outside of numba
-        avg_spectra = [
-            ConsensusTuple(
-                precursor_mz=np.float32(precursor_mzs[i]),
-                precursor_charge=(
-                    np.int32(precursor_charges[i])
-                    if not np.isnan(precursor_charges[i])
-                    else np.nan
-                ),
-                mz=mzs[i].astype(np.float32),
-                intensity=intensities[i].astype(np.float32),
-                retention_time=np.float32(retention_times[i]),
-                cluster_id=np.int32(cluster_ids[i]),
-                mz_split=None,
-            )
-            for i in range(len(precursor_mzs))
-        ]
-        return avg_spectra
     else:
         raise ValueError(
             f"Unknown consensus spectrum method: {consensus_method}"
         )
+    # Build the consensus spectra outside of numba (which cannot construct the
+    # namedtuples); both methods return the same six column arrays.
+    return _consensus_tuples_from_columns(*columns)
+
+
+def _consensus_tuples_from_columns(
+    precursor_mzs: np.ndarray,
+    precursor_charges: np.ndarray,
+    mzs: Sequence[np.ndarray],
+    intensities: Sequence[np.ndarray],
+    retention_times: np.ndarray,
+    cluster_ids: np.ndarray,
+) -> List[ConsensusTuple]:
+    """
+    Assemble ConsensusTuple objects from the per-cluster column arrays produced
+    by the numba consensus routines.
+
+    Parameters
+    ----------
+    precursor_mzs, precursor_charges, retention_times, cluster_ids : np.ndarray
+        One scalar value per cluster. A NaN precursor charge is preserved as
+        ``np.nan``.
+    mzs, intensities : Sequence[np.ndarray]
+        One m/z (resp. intensity) array per cluster.
+
+    Returns
+    -------
+    List[ConsensusTuple]
+        The representative spectrum for each cluster.
+    """
+    return [
+        ConsensusTuple(
+            precursor_mz=np.float32(precursor_mzs[i]),
+            precursor_charge=(
+                np.int32(precursor_charges[i])
+                if not np.isnan(precursor_charges[i])
+                else np.nan
+            ),
+            mz=mzs[i].astype(np.float32),
+            intensity=intensities[i].astype(np.float32),
+            retention_time=np.float32(retention_times[i]),
+            cluster_id=np.int32(cluster_ids[i]),
+            mz_split=None,
+        )
+        for i in range(len(precursor_mzs))
+    ]
 
 
 @nb.njit(fastmath=True, boundscheck=False)

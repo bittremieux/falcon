@@ -36,37 +36,73 @@ _MAX_SPECTRA_IN_MEMORY = 1_000_000
 
 
 def main(args: Union[str, List[str], None] = None) -> int:
-    # Configure logging.
-    logger = utils.configure_logger()
-
-    # Load the configuration.
+    utils.configure_logger()
     config.parse(args)
-    logger.info("falcon version %s", str(__version__))
-    logger.debug("work_dir = %s", config.work_dir)
-    logger.debug("overwrite = %s", config.overwrite)
-    logger.debug("export_representatives = %s", config.export_representatives)
-    logger.debug("precursor_tol = %.2f %s", *config.precursor_tol)
-    logger.debug("rt_tol = %s", config.rt_tol)
-    logger.debug("fragment_tol = %.2f", config.fragment_tol)
-    logger.debug("linkage = %s", config.linkage)
-    logger.debug("distance_threshold = %.3f", config.distance_threshold)
-    logger.debug("min_matched_peaks = %d", config.min_matched_peaks)
-    logger.debug("consensus_method = %s", config.consensus_method)
-    logger.debug("outlier_cutoff_lower = %.2f", config.outlier_cutoff_lower)
-    logger.debug("outlier_cutoff_upper = %.2f", config.outlier_cutoff_upper)
-    logger.debug("batch_size = %d", config.batch_size)
-    logger.debug(
-        "precursor_charge_buckets = %s", config.precursor_charge_buckets
-    )
-    logger.debug("min_peaks = %d", config.min_peaks)
-    logger.debug("min_mz_range = %.2f", config.min_mz_range)
-    logger.debug("min_mz = %.2f", config.min_mz)
-    logger.debug("max_mz = %.2f", config.max_mz)
-    logger.debug("remove_precursor_tol = %.2f", config.remove_precursor_tol)
-    logger.debug("min_intensity = %.2f", config.min_intensity)
-    logger.debug("max_peaks_used = %d", config.max_peaks_used)
-    logger.debug("scaling = %s", config.scaling)
+    _log_config()
 
+    rm_work_dir = _setup_work_dir()
+    # Abort if outputs already exist and --overwrite was not given.
+    if _validate_outputs():
+        logging.shutdown()
+        return 1
+    _warn_aggressive_outlier_cutoffs()
+
+    process_spectrum = _build_process_spectrum()
+    charge_buckets = _load_or_prepare_buckets(process_spectrum)
+    bucket_datasets, cluster_results = _run_clustering(charge_buckets)
+    _export_results(bucket_datasets, cluster_results)
+
+    if rm_work_dir:
+        shutil.rmtree(config.work_dir)
+    logging.shutdown()
+    return 0
+
+
+# Config attributes dumped at debug level on startup. `precursor_tol` is logged
+# separately because it is a (value, unit) pair.
+_CONFIG_LOG_FIELDS = [
+    "work_dir",
+    "overwrite",
+    "export_representatives",
+    "rt_tol",
+    "fragment_tol",
+    "linkage",
+    "distance_threshold",
+    "min_matched_peaks",
+    "consensus_method",
+    "outlier_cutoff_lower",
+    "outlier_cutoff_upper",
+    "batch_size",
+    "precursor_charge_buckets",
+    "min_peaks",
+    "min_mz_range",
+    "min_mz",
+    "max_mz",
+    "remove_precursor_tol",
+    "min_intensity",
+    "max_peaks_used",
+    "scaling",
+]
+
+
+def _log_config() -> None:
+    """Log the falcon version and the active configuration (debug level)."""
+    logger.info("falcon version %s", str(__version__))
+    logger.debug("precursor_tol = %.2f %s", *config.precursor_tol)
+    for field in _CONFIG_LOG_FIELDS:
+        logger.debug("%s = %s", field, getattr(config, field))
+
+
+def _setup_work_dir() -> bool:
+    """
+    Create the working directory and its ``spectra`` subdirectory.
+
+    Returns
+    -------
+    bool
+        Whether the working directory was created as a temporary directory and
+        should be removed on exit.
+    """
     rm_work_dir = False
     if config.work_dir is None:
         config.work_dir = tempfile.mkdtemp()
@@ -79,45 +115,55 @@ def main(args: Union[str, List[str], None] = None) -> int:
         )
     os.makedirs(config.work_dir, exist_ok=True)
     os.makedirs(os.path.join(config.work_dir, "spectra"), exist_ok=True)
+    return rm_work_dir
 
-    # Clean all intermediate and final results if "overwrite" is specified,
-    # otherwise abort if the output files already exist.
-    exit_exists = False
-    if os.path.isfile(f"{config.output_filename}.csv"):
-        if config.overwrite:
-            logger.warning(
-                "Output file %s (cluster assignments) already "
-                "exists and will be overwritten",
-                f"{config.output_filename}.csv",
-            )
-            os.remove(f"{config.output_filename}.csv")
-        else:
-            logger.error(
-                "Output file %s (cluster assignments) already "
-                "exists, aborting...",
-                f"{config.output_filename}.csv",
-            )
-            exit_exists = True
-    if os.path.isfile(f"{config.output_filename}.mgf"):
-        if config.overwrite:
-            logger.warning(
-                "Output file %s (cluster representatives) already "
-                "exists and will be overwritten",
-                f"{config.output_filename}.mgf",
-            )
-            os.remove(f"{config.output_filename}.mgf")
-        else:
-            logger.error(
-                "Output file %s (cluster representatives) already "
-                "exists, aborting...",
-                f"{config.output_filename}.mgf",
-            )
-            exit_exists = True
-    if exit_exists:
-        logging.shutdown()
-        return 1
 
-    # Check if the spectral averaging configuration is valid.
+def _check_existing_output(suffix: str, description: str) -> bool:
+    """
+    Handle a pre-existing output file: remove it under ``--overwrite``, else
+    log an error.
+
+    Returns
+    -------
+    bool
+        Whether the file exists and must not be overwritten (the run should
+        abort).
+    """
+    path = f"{config.output_filename}.{suffix}"
+    if not os.path.isfile(path):
+        return False
+    if config.overwrite:
+        logger.warning(
+            "Output file %s (%s) already exists and will be overwritten",
+            path,
+            description,
+        )
+        os.remove(path)
+        return False
+    logger.error(
+        "Output file %s (%s) already exists, aborting...", path, description
+    )
+    return True
+
+
+def _validate_outputs() -> bool:
+    """
+    Check both output files for pre-existing results.
+
+    Returns
+    -------
+    bool
+        Whether the run should abort (an output exists without --overwrite).
+    """
+    # Evaluate both (no short-circuit) so the .mgf file is still removed under
+    # --overwrite even when the .csv check already decided to abort.
+    csv_abort = _check_existing_output("csv", "cluster assignments")
+    mgf_abort = _check_existing_output("mgf", "cluster representatives")
+    return csv_abort or mgf_abort
+
+
+def _warn_aggressive_outlier_cutoffs() -> None:
+    """Warn when both averaging outlier cutoffs are set below 1."""
     if (
         config.consensus_method == "average"
         and config.outlier_cutoff_lower < 1
@@ -130,10 +176,13 @@ def main(args: Union[str, List[str], None] = None) -> int:
             "outlier_cutoff_upper to a value >= 1."
         )
 
+
+def _build_process_spectrum() -> Callable:
+    """Build the configured single-spectrum preprocessing function."""
     _, min_mz, max_mz = spectrum.get_dim(
         config.min_mz, config.max_mz, config.fragment_tol
     )
-    process_spectrum = functools.partial(
+    return functools.partial(
         spectrum.process_spectrum,
         min_peaks=config.min_peaks,
         min_mz_range=config.min_mz_range,
@@ -145,6 +194,18 @@ def main(args: Union[str, List[str], None] = None) -> int:
         scaling=None if config.scaling == "off" else config.scaling,
     )
 
+
+def _load_or_prepare_buckets(
+    process_spectrum: Callable,
+) -> List[Union[Set[Union[int, str]], str]]:
+    """
+    Return the charge buckets, reusing cached spectra when possible.
+
+    Under ``--overwrite`` the intermediate ``spectra`` directory is cleared and
+    the spectra are re-read and re-partitioned; otherwise a cached partitioning
+    is reused after validating it against the current
+    ``--precursor_charge_buckets`` configuration.
+    """
     if config.overwrite:
         for filename in os.listdir(os.path.join(config.work_dir, "spectra")):
             path = os.path.join(config.work_dir, "spectra", filename)
@@ -169,25 +230,39 @@ def main(args: Union[str, List[str], None] = None) -> int:
                 "--precursor_charge_buckets configuration, rerun "
                 "with --overwrite or a different --work_dir."
             )
-        charge_buckets = cached["buckets"]
-    else:
-        # Recalculate the charge buckets and recreate dataset.
-        charge_buckets = _prepare_spectra(
-            process_spectrum, config.precursor_charge_buckets
-        )
-        joblib.dump(
-            {
-                "config": config.precursor_charge_buckets,
-                "buckets": charge_buckets,
-            },
-            charge_path,
-        )
+        return cached["buckets"]
 
-    # Cluster the spectra per charge. All non-empty charge buckets are clustered
-    # in a single shared worker pool (`cluster.generate_clusters_multi`) so cores
-    # stay busy across bucket boundaries instead of idling at each bucket's
-    # end-of-pool barrier; the resulting partitions are identical to clustering
-    # each bucket on its own.
+    # Recalculate the charge buckets and recreate dataset.
+    charge_buckets = _prepare_spectra(
+        process_spectrum, config.precursor_charge_buckets
+    )
+    joblib.dump(
+        {
+            "config": config.precursor_charge_buckets,
+            "buckets": charge_buckets,
+        },
+        charge_path,
+    )
+    return charge_buckets
+
+
+def _run_clustering(
+    charge_buckets: List[Union[Set[Union[int, str]], str]],
+) -> Tuple[list, list]:
+    """
+    Cluster every non-empty charge bucket in a single shared worker pool.
+
+    All non-empty charge buckets are clustered together (rather than one pool
+    per bucket) so cores stay busy across bucket boundaries instead of idling at
+    each bucket's end-of-pool barrier; the resulting partitions are identical to
+    clustering each bucket on its own.
+
+    Returns
+    -------
+    Tuple[list, list]
+        The per-bucket lance datasets (non-empty only) and the matching
+        clustering results, aligned positionally.
+    """
     consensus_params = {}
     if config.consensus_method == "average":
         consensus_params["min_mz"] = config.min_mz
@@ -222,7 +297,17 @@ def main(args: Union[str, List[str], None] = None) -> int:
         config.consensus_method,
         consensus_params,
     )
+    return bucket_datasets, cluster_results
 
+
+def _export_results(bucket_datasets: list, cluster_results: list) -> None:
+    """
+    Assemble cluster assignments and representatives and write the outputs.
+
+    Cluster labels from different charge buckets are offset so they do not
+    overlap, the per-bucket assignments are concatenated, and the ``.csv`` (and
+    optionally ``.mgf``) outputs are written on background IO threads.
+    """
     clusters_all, current_label, representatives = [], 0, []
     for dataset, (clusters, rep_spectra) in zip(
         bucket_datasets, cluster_results
@@ -288,12 +373,6 @@ def main(args: Union[str, List[str], None] = None) -> int:
         write_mgf_worker.start()
         write_mgf_worker.join()
     write_csv_worker.join()
-
-    if rm_work_dir:
-        shutil.rmtree(config.work_dir)
-
-    logging.shutdown()
-    return 0
 
 
 def _prepare_spectra(

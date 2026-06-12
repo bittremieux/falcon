@@ -9,6 +9,7 @@ import pyteomics.mgf
 import spectrum_utils.spectrum as sus
 
 from ..cluster import cluster
+from . import _reader_utils
 
 USI_PATTERN = re.compile(r"^mzspec:[^:\s]+:[^:\s]+:(scan:\d+|\d+)(:[^:\s]+)?$")
 
@@ -29,14 +30,14 @@ def get_spectra(source: Union[IO, str]) -> Iterable[sus.MsmsSpectrum]:
         An iterator over the spectra in the given file.
     """
     with pyteomics.mgf.MGF(source) as f_in:
-        base_filename = os.path.splitext(os.path.basename(f_in.name))[0]
+        base = _reader_utils.base_filename(source, f_in)
 
         for spectrum_i, spectrum_dict in enumerate(f_in):
             params = spectrum_dict.get("params", {})
 
             # Prefer original filename from params if available
             filename = os.path.splitext(
-                os.path.basename(params.get("filename", base_filename))
+                os.path.basename(params.get("filename", base))
             )[0]
 
             if "title" not in params or not (
@@ -53,7 +54,10 @@ def get_spectra(source: Union[IO, str]) -> Iterable[sus.MsmsSpectrum]:
 
             try:
                 yield _parse_spectrum(spectrum_dict)
-            except (ValueError, KeyError):
+            except (ValueError, KeyError) as e:
+                _reader_utils.log_skipped_spectrum(
+                    source, params.get("title"), e
+                )
                 continue
 
 

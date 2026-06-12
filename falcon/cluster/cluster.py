@@ -166,6 +166,50 @@ def generate_clusters(
     )[0]
 
 
+def _build_giant_tile_tasks(
+    giants: List[dict], n_workers: int, memmap_paths: List[str]
+) -> List[tuple]:
+    """
+    Allocate a shared condensed-distance memmap for each giant interval and
+    split its distance build into work-balanced row-band tiles.
+
+    Each giant's backing-file path is recorded on the giant (``g["path"]``) and
+    appended to ``memmap_paths`` as it is created, so the caller's ``finally``
+    cleanup removes every file even if this raises partway through.
+
+    Parameters
+    ----------
+    giants : List[dict]
+        The giant intervals (each with ``n``, ``cost``, ``row_ids``), mutated in
+        place to record the allocated ``path``.
+    n_workers : int
+        Worker count; caps the number of tiles per interval.
+    memmap_paths : List[str]
+        Accumulator of allocated backing-file paths, mutated in place.
+
+    Returns
+    -------
+    List[tuple]
+        Tile tasks ``(giant_idx, row_ids, r0, r1, path, tile_cost)``. Several
+        processes fill disjoint row-bands of the same memmap concurrently.
+    """
+    tile_tasks = []  # (giant_idx, row_ids, r0, r1, path, tile_cost)
+    for gi, g in enumerate(giants):
+        n = g["n"]
+        path, mm = open_shared_condensed(n)
+        mm.flush()
+        del mm  # workers reopen the file by path; drop the writer view here
+        memmap_paths.append(path)
+        g["path"] = path
+        total_pairs = n * (n - 1) // 2
+        n_tiles = min(n_workers, max(1, total_pairs // _MIN_PAIRS_PER_TILE))
+        for r0, r1 in _interval_row_bounds(n, n_tiles):
+            tile_pairs = (2 * n - 1 - r0 - r1) * (r1 - r0) / 2
+            tile_cost = g["cost"] * tile_pairs / total_pairs
+            tile_tasks.append((gi, g["row_ids"], r0, r1, path, tile_cost))
+    return tile_tasks
+
+
 def generate_clusters_multi(
     bucket_datasets: List["lance.LanceDataset"],
     linkage: str,
@@ -240,22 +284,33 @@ def generate_clusters_multi(
             # dominates), so use it to schedule the heaviest chunks first and to
             # drive the progress estimate (cost ~ compute time, so % of cost
             # done grows ~linearly with wall-clock when all cores are busy).
-            cost = sum(len(idx_iv) ** 2 for _, _, idx_iv, _ in data_chunk)
-            n_chunk = sum(len(idx_iv) for _, _, idx_iv, _ in data_chunk)
+            cost = sum(
+                len(idx_interval) ** 2 for _, _, idx_interval, _ in data_chunk
+            )
+            n_chunk = sum(
+                len(idx_interval) for _, _, idx_interval, _ in data_chunk
+            )
             chunk_tasks.append(
                 (cost, bucket_id, n_chunk, dataset, data_chunk)
             )
-        for task_id, row_ids, idx_iv, mz_iv, n_iv in giant_intervals:
+        for (
+            task_id,
+            row_ids,
+            idx_interval,
+            mz_interval,
+            n_interval,
+        ) in giant_intervals:
             giants.append(
                 {
                     "bucket_id": bucket_id,
                     "dataset": dataset,
                     "task_id": task_id,
                     "row_ids": row_ids,
-                    "idx": idx_iv,
-                    "mz": mz_iv,
-                    "n": n_iv,
-                    "cost": n_iv * n_iv,  # progress weight (chunk convention)
+                    "idx": idx_interval,
+                    "mz": mz_interval,
+                    "n": n_interval,
+                    # progress weight (chunk convention)
+                    "cost": n_interval * n_interval,
                 }
             )
 
@@ -269,26 +324,10 @@ def generate_clusters_multi(
     results_by_bucket = defaultdict(list)
     memmap_paths = []
     try:
-        # Allocate one shared, on-disk condensed matrix per giant interval and
-        # build its work-balanced distance tiles. Several processes fill disjoint
-        # row-bands of the same memmap concurrently; the file is unlinked in the
-        # `finally` once every tile and the finalize step are done.
-        tile_tasks = []  # (giant_idx, row_ids, r0, r1, path, tile_cost)
-        for gi, g in enumerate(giants):
-            n = g["n"]
-            path, mm = open_shared_condensed(n)
-            mm.flush()
-            del mm  # workers reopen the file by path; drop the writer view here
-            memmap_paths.append(path)
-            g["path"] = path
-            total_pairs = n * (n - 1) // 2
-            n_tiles = min(
-                n_workers, max(1, total_pairs // _MIN_PAIRS_PER_TILE)
-            )
-            for r0, r1 in _interval_row_bounds(n, n_tiles):
-                tile_pairs = (2 * n - 1 - r0 - r1) * (r1 - r0) / 2
-                tile_cost = g["cost"] * tile_pairs / total_pairs
-                tile_tasks.append((gi, g["row_ids"], r0, r1, path, tile_cost))
+        # Allocate the shared condensed matrices and their distance tiles. The
+        # memmaps are filled by disjoint row-band workers below and unlinked in
+        # the `finally` once every tile and the finalize step are done.
+        tile_tasks = _build_giant_tile_tasks(giants, n_workers, memmap_paths)
 
         total_cost = sum(t[0] for t in chunk_tasks) + sum(
             g["cost"] for g in giants
@@ -960,6 +999,31 @@ def _interval_spectrum_tuples(
     return spectra, rts
 
 
+def _singleton_consensus_tuple(
+    spec: "similarity.SpectrumTuple", retention_time, cluster_id
+) -> ConsensusTuple:
+    """
+    Build the representative ConsensusTuple for a cluster of a single spectrum.
+
+    Shared by the two singleton paths in `_cluster_mz_interval` (an interval of
+    one spectrum, and an interval where refinement left every spectrum in its
+    own cluster).
+    """
+    return ConsensusTuple(
+        precursor_mz=np.float32(spec.precursor_mz),
+        precursor_charge=(
+            np.int32(spec.precursor_charge)
+            if not np.isnan(spec.precursor_charge)
+            else np.nan
+        ),
+        mz=spec.mz.astype(np.float32),
+        intensity=spec.intensity.astype(np.float32),
+        retention_time=np.float32(retention_time),
+        cluster_id=np.int32(cluster_id),
+        mz_split=None,
+    )
+
+
 def _cluster_mz_interval(
     spectra: pd.DataFrame,
     idx: np.ndarray,
@@ -1044,14 +1108,26 @@ def _cluster_mz_interval(
         )
         # Refine initial clusters to make sure spectra within a cluster don't
         # have an excessive precursor m/z difference.
-        order = np.argsort(labels)
-        rev_order = np.argsort(order)
+        #
+        # Refinement and representative selection sort `labels` twice and must
+        # finally return one label per spectrum in the interval's input order.
+        # Track each forward permutation and its inverse:
+        #   label_order        sort by the initial linkage labels, giving the
+        #                      contiguous label groups `_postprocess_cluster`
+        #                      expects; label_order_inv undoes it.
+        #   refined_order      re-sort by the refined labels produced below;
+        #                      refined_order_inv undoes it.
+        # `order_map` composes both forward sorts to index back into `pdist`
+        # (built in input order); `cluster_labels` composes both inverses to
+        # scatter labels back to the input order.
+        label_order = np.argsort(labels)
+        label_order_inv = np.argsort(label_order)
         idx, mzs, rts = (
-            idx[order],
-            mzs[order],
-            rts[order],
+            idx[label_order],
+            mzs[label_order],
+            rts[label_order],
         )
-        labels, current_label = labels[order], 0
+        labels, current_label = labels[label_order], 0
         for start_i, stop_i in _get_cluster_group_idx(labels):
             n_clusters = _postprocess_cluster(
                 labels[start_i:stop_i],
@@ -1066,12 +1142,12 @@ def _cluster_mz_interval(
             current_label += n_clusters
         # Get representative spectra for clusters.
         if current_label < n_spectra:
-            order_ = np.argsort(labels)
-            rev_order_ = np.argsort(order_)
-            idx = idx[order_]
-            labels = labels[order_]
-            rts = rts[order_]
-            order_map = np.arange(len(labels))[order][order_]
+            refined_order = np.argsort(labels)
+            refined_order_inv = np.argsort(refined_order)
+            idx = idx[refined_order]
+            labels = labels[refined_order]
+            rts = rts[refined_order]
+            order_map = np.arange(len(labels))[label_order][refined_order]
             if consensus_method == "medoid":
                 consensus_params["pdist"] = pdist
             rep_spectra = _get_representative_spectra(  # representative spectra are sorted by label
@@ -1082,47 +1158,22 @@ def _cluster_mz_interval(
                 consensus_method,
                 consensus_params,
             )
-            cluster_labels = labels[rev_order_[rev_order]]
+            cluster_labels = labels[refined_order_inv[label_order_inv]]
         else:  # only singletons
-            rep_spectra = spectra
+            # Restore input order once, then one representative per spectrum.
+            rts_in = rts[label_order_inv]
+            labels_in = labels[label_order_inv]
             rep_spectra = [
-                ConsensusTuple(
-                    precursor_mz=np.float32(spec.precursor_mz),
-                    precursor_charge=(
-                        np.int32(spec.precursor_charge)
-                        if not np.isnan(spec.precursor_charge)
-                        else np.nan
-                    ),
-                    mz=spec.mz.astype(np.float32),
-                    intensity=spec.intensity.astype(np.float32),
-                    retention_time=np.float32(rts[rev_order][i]),
-                    cluster_id=np.int32(labels[rev_order][i]),
-                    mz_split=None,
-                )
-                for i, spec in enumerate(rep_spectra)
+                _singleton_consensus_tuple(spec, rts_in[i], labels_in[i])
+                for i, spec in enumerate(spectra)
             ]
-            cluster_labels = labels[rev_order]
+            cluster_labels = labels[label_order_inv]
         # Force memory clearing.
         del pdist
         if n_spectra > _GC_COLLECT_MIN_SPECTRA:
             gc.collect()
     else:  # mz split contains only 1 spectrum
-        spec = spectra[0]
-        rep_spectra = [
-            ConsensusTuple(
-                precursor_mz=np.float32(spec.precursor_mz),
-                precursor_charge=(
-                    np.int32(spec.precursor_charge)
-                    if not np.isnan(spec.precursor_charge)
-                    else np.nan
-                ),
-                mz=spec.mz.astype(np.float32),
-                intensity=spec.intensity.astype(np.float32),
-                retention_time=np.float32(rts[0]),
-                cluster_id=np.int32(0),
-                mz_split=None,
-            )
-        ]
+        rep_spectra = [_singleton_consensus_tuple(spectra[0], rts[0], 0)]
         cluster_labels[0] = 0
     return rep_spectra, cluster_labels
 
