@@ -1,6 +1,7 @@
 import pytest
 import numpy as np
 from falcon.cluster import distance_matrix, cluster
+from falcon.cluster.similarity import SpectrumTuple
 
 
 class TestCondensedIndex:
@@ -76,3 +77,49 @@ class TestComputeCondensedDistanceMatrix:
             [spec1, spec2], fragment_mz_tol=0.5, min_matches=100
         )
         assert abs(pdist[0] - 1.0) < 0.01
+
+
+def _random_spectra(n, rng, n_peaks=30, mz_max=200.0):
+    """Random spectra with overlapping peaks so cosine distances vary."""
+    specs = []
+    for _ in range(n):
+        mz = np.sort(rng.uniform(0.0, mz_max, n_peaks)).astype(np.float32)
+        intensity = rng.random(n_peaks).astype(np.float32)
+        intensity /= np.linalg.norm(intensity)
+        specs.append(
+            SpectrumTuple(float(rng.uniform(100, 1000)), 1, mz, intensity)
+        )
+    return specs
+
+
+class TestTiledCondensed:
+    """The tiled distance build must reproduce the full matrix bit-for-bit."""
+
+    @pytest.mark.parametrize("min_matches", [0, 3])
+    @pytest.mark.parametrize("n_tiles", [1, 7])
+    def test_tiled_matches_full(self, min_matches, n_tiles):
+        rng = np.random.default_rng(0)
+        spectra = _random_spectra(600, rng)
+        frag = 0.05
+        n = len(spectra)
+
+        ref = np.array(
+            distance_matrix.compute_condensed_distance_matrix(
+                spectra, frag, min_matches
+            )
+        )
+        # Sanity: the interval has genuine (non-trivial) distances to compare.
+        assert (ref < 0.99).any()
+
+        out = np.full(n * (n - 1) // 2, np.nan, np.float32)
+        bounds = cluster._interval_row_bounds(n, n_tiles)
+        # Row-bands must cover [0, n) exactly once (no gap, no overlap).
+        assert bounds[0][0] == 0 and bounds[-1][1] == n
+        assert all(bounds[i][1] == bounds[i + 1][0] for i in range(len(bounds) - 1))
+        for r0, r1 in bounds:
+            distance_matrix._condensed_rows(
+                out, spectra, r0, r1, frag, min_matches
+            )
+
+        assert not np.isnan(out).any()  # every pair written exactly once
+        assert np.array_equal(out, ref)
