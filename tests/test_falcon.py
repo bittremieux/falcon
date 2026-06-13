@@ -9,7 +9,7 @@ import numpy as np
 import pyarrow as pa
 import pytest
 
-from falcon.falcon import (
+from falcon.spectra_io import (
     _PerChargeLockRegistry,
     _discover_auto_buckets,
     _write_spectra_lance,
