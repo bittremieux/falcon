@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<indexedmzML xmlns="http://psi.hupo.org/ms/mzml">
+<mzML xmlns="http://psi.hupo.org/ms/mzml" version="1.1.0">
+ <run id="run1">
+  <spectrumList count="2">
+   <spectrum index="0" id="controllerType=0 controllerNumber=1 scan=1" defaultArrayLength="1">
+    <cvParam cvRef="MS" accession="MS:1000511" name="ms level" value="1"/>
+    <binaryDataArrayList count="2">
+     <binaryDataArray encodedLength="8">
+      <cvParam cvRef="MS" accession="MS:1000523" name="64-bit float"/>
+      <cvParam cvRef="MS" accession="MS:1000514" name="m/z array"/>
+      <binary>AAAAAAAAWUA=</binary>
+     </binaryDataArray>
+     <binaryDataArray encodedLength="8">
+      <cvParam cvRef="MS" accession="MS:1000523" name="64-bit float"/>
+      <cvParam cvRef="MS" accession="MS:1000515" name="intensity array"/>
+      <binary>AAAAAAAAWUA=</binary>
+     </binaryDataArray>
+    </binaryDataArrayList>
+   </spectrum>
+   <spectrum index="1" id="controllerType=0 controllerNumber=1 scan=2" defaultArrayLength="1">
+    <cvParam cvRef="MS" accession="MS:1000511" name="ms level" value="2"/>
+    <scanList count="1">
+     <scan>
+      <cvParam cvRef="MS" accession="MS:1000016" name="scan start time" value="6.0" unitName="second"/>
+     </scan>
+    </scanList>
+    <precursorList count="1">
+     <precursor>
+      <selectedIonList count="1">
+       <selectedIon>
+        <cvParam cvRef="MS" accession="MS:1000744" name="selected ion m/z" value="400.0"/>
+        <cvParam cvRef="MS" accession="MS:1000041" name="charge state" value="2"/>
+       </selectedIon>
+      </selectedIonList>
+     </precursor>
+    </precursorList>
+    <binaryDataArrayList count="2">
+     <binaryDataArray encodedLength="8">
+      <cvParam cvRef="MS" accession="MS:1000523" name="64-bit float"/>
+      <cvParam cvRef="MS" accession="MS:1000514" name="m/z array"/>
+      <binary>AAAAAAAAWUA=</binary>
+     </binaryDataArray>
+     <binaryDataArray encodedLength="8">
+      <cvParam cvRef="MS" accession="MS:1000523" name="64-bit float"/>
+      <cvParam cvRef="MS" accession="MS:1000515" name="intensity array"/>
+      <binary>AAAAAAAAWUA=</binary>
+     </binaryDataArray>
+    </binaryDataArrayList>
+   </spectrum>
+  </spectrumList>
+ </run>
+</mzML>
+</indexedmzML>

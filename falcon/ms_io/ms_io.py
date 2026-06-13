@@ -38,7 +38,6 @@ def get_spectra(filename: str) -> Iterator[MsmsSpectrum]:
         raise ValueError(f'Unknown spectrum file type with extension "{ext}"')
 
     for spec in spectrum_io.get_spectra(filename):
-        spec.is_processed = False
         yield spec
 
 

@@ -6,7 +6,7 @@ import spectrum_utils.spectrum as sus
 from lxml.etree import LxmlError
 
 from ..config import config
-
+from . import reader_utils
 
 logger = logging.getLogger("falcon")
 
@@ -27,13 +27,28 @@ def get_spectra(source: Union[IO, str]) -> Iterable[sus.MsmsSpectrum]:
         An iterator over the spectra in the given file.
     """
     with pyteomics.mzml.MzML(source) as f_in:
+        filename = reader_utils.base_filename(source, f_in)
         try:
             for spectrum_dict in f_in:
                 if int(spectrum_dict.get("ms level", -1)) > 1:
+                    # USI-inspired cluster identifier.
+                    scan_idx = spectrum_dict["id"].find("scan=")
+                    if scan_idx == -1:
+                        logger.warning(
+                            "Skipping spectrum with unrecognized id "
+                            "(no 'scan=' field) in %s: %s",
+                            source,
+                            spectrum_dict["id"],
+                        )
+                        continue
+                    scan_nr = spectrum_dict["id"][scan_idx + 5 :]
+                    spectrum_dict["id"] = f"{filename}:scan:{scan_nr}"
                     try:
                         yield _parse_spectrum(spectrum_dict)
-                    except (ValueError, KeyError):
-                        pass
+                    except (ValueError, KeyError) as e:
+                        reader_utils.log_skipped_spectrum(
+                            source, spectrum_dict["id"], e
+                        )
         except LxmlError as e:
             logger.warning("Failed to read file %s: %s", source, e)
 
@@ -56,7 +71,7 @@ def _parse_spectrum(spectrum_dict: Dict) -> sus.MsmsSpectrum:
     mz_array = spectrum_dict["m/z array"]
     intensity_array = spectrum_dict["intensity array"]
     retention_time = spectrum_dict["scanList"]["scan"][0].get(
-        "scan start time", -1
+        "scan start time", float("nan")
     )
 
     precursor = spectrum_dict["precursorList"]["precursor"][0]

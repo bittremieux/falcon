@@ -1,10 +1,17 @@
 import math
-from typing import Dict, IO, Iterable, Union
+import os
+import re
+from typing import Dict, IO, Iterable, List, Union
 
+import numba as nb
+import numpy as np
 import pyteomics.mgf
 import spectrum_utils.spectrum as sus
 
-from ..config import config
+from ..cluster import cluster
+from . import reader_utils
+
+USI_PATTERN = re.compile(r"^mzspec:[^:\s]+:[^:\s]+:(scan:\d+|\d+)(:[^:\s]+)?$")
 
 
 def get_spectra(source: Union[IO, str]) -> Iterable[sus.MsmsSpectrum]:
@@ -23,11 +30,35 @@ def get_spectra(source: Union[IO, str]) -> Iterable[sus.MsmsSpectrum]:
         An iterator over the spectra in the given file.
     """
     with pyteomics.mgf.MGF(source) as f_in:
+        base = reader_utils.base_filename(source, f_in)
+
         for spectrum_i, spectrum_dict in enumerate(f_in):
+            params = spectrum_dict.get("params", {})
+
+            # Prefer original filename from params if available
+            filename = os.path.splitext(
+                os.path.basename(params.get("filename", base))
+            )[0]
+
+            if "title" not in params or not (
+                USI_PATTERN.match(params["title"])
+                or params["title"].startswith(f"{filename}:cluster:")
+            ):
+                if "scans" in params:
+                    usi = f"{filename}:scan:{params['scans']}"
+                elif "scan" in params:
+                    usi = f"{filename}:scan:{params['scan']}"
+                else:
+                    usi = f"{filename}:index:{spectrum_i}"
+                params["title"] = usi
+
             try:
                 yield _parse_spectrum(spectrum_dict)
-            except (ValueError, KeyError):
-                pass
+            except (ValueError, KeyError) as e:
+                reader_utils.log_skipped_spectrum(
+                    source, params.get("title"), e
+                )
+                continue
 
 
 def _parse_spectrum(spectrum_dict: Dict) -> sus.MsmsSpectrum:
@@ -48,7 +79,9 @@ def _parse_spectrum(spectrum_dict: Dict) -> sus.MsmsSpectrum:
 
     mz_array = spectrum_dict["m/z array"]
     intensity_array = spectrum_dict["intensity array"]
-    retention_time = float(spectrum_dict["params"].get("rtinseconds", -1))
+    retention_time = float(
+        spectrum_dict["params"].get("rtinseconds", float("nan"))
+    )
 
     precursor_mz = float(spectrum_dict["params"]["pepmass"][0])
     if "charge" in spectrum_dict["params"]:
@@ -67,7 +100,9 @@ def _parse_spectrum(spectrum_dict: Dict) -> sus.MsmsSpectrum:
     )
 
 
-def write_spectra(filename: str, spectra: Iterable[sus.MsmsSpectrum]) -> None:
+def write_spectra(
+    filename: str, spectra: List[cluster.ConsensusTuple]
+) -> None:
     """
     Write the given spectra to an MGF file.
 
@@ -75,20 +110,26 @@ def write_spectra(filename: str, spectra: Iterable[sus.MsmsSpectrum]) -> None:
     ----------
     filename : str
         The MGF file name where the spectra will be written.
-    spectra : Iterable[MsmsSpectrum]
-        The spectra to be written to the MGF file.
+    spectra : List[cluster.ConsensusTuple]
+        The representative spectra to be written to the MGF file.
     """
     with open(filename, "w") as f_out:
-        pyteomics.mgf.write(_spectra_to_dicts(spectra), f_out, use_numpy=True)
+        pyteomics.mgf.write(
+            _spectra_to_dicts(spectra),
+            f_out,
+            use_numpy=True,
+        )
 
 
-def _spectra_to_dicts(spectra: Iterable[sus.MsmsSpectrum]) -> Iterable[Dict]:
+def _spectra_to_dicts(
+    spectra: List[cluster.ConsensusTuple],
+) -> Iterable[Dict]:
     """
     Convert MsmsSpectrum objects to Pyteomics MGF cluster dictionaries.
 
     Parameters
     ----------
-    spectra : Iterable[MsmsSpectrum]
+    spectra : List[cluster.ConsensusTuple]
         The spectra to be converted to Pyteomics MGF dictionaries.
 
     Returns
@@ -96,21 +137,39 @@ def _spectra_to_dicts(spectra: Iterable[sus.MsmsSpectrum]) -> Iterable[Dict]:
     Iterable[Dict]
         The given spectra as Pyteomics MGF dictionaries.
     """
-    for spectrum in spectra:
+    for i, spectrum in enumerate(spectra):
         params = {
-            "title": spectrum.identifier,
-            "pepmass": spectrum.precursor_mz,
+            "title": f"falcon:cluster:{spectrum.cluster_id}",
+            "scans": i + 1,
+            "pepmass": float(spectrum.precursor_mz),
         }
-        if not math.isnan(spectrum.precursor_charge):
-            params["charge"] = spectrum.precursor_charge
-        if hasattr(spectrum, "retention_time"):
-            params["rtinseconds"] = spectrum.retention_time
-        if hasattr(spectrum, "scan"):
-            params["scan"] = spectrum.scan
-        if hasattr(spectrum, "cluster"):
-            params["cluster"] = spectrum.cluster
+        if not math.isnan(float(spectrum.precursor_charge)):
+            params["charge"] = int(spectrum.precursor_charge)
+        if not math.isnan(float(spectrum.retention_time)):
+            params["rtinseconds"] = float(spectrum.retention_time)
         yield {
             "params": params,
             "m/z array": spectrum.mz,
-            "intensity array": spectrum.intensity,
+            "intensity array": _scale_intensities(spectrum.intensity),
         }
+
+
+@nb.njit(cache=True, fastmath=True)
+def _scale_intensities(intensity: np.ndarray) -> np.ndarray:
+    """
+    Scale the intensities to the range [0, 1000].
+
+    Parameters
+    ----------
+    intensity : np.ndarray
+        The intensity array to be scaled.
+
+    Returns
+    -------
+    np.ndarray
+        The scaled intensities.
+    """
+    max_i = np.max(intensity) if intensity.size else np.float32(0.0)
+    if max_i <= 0.0:
+        return intensity
+    return intensity * (np.float32(1000.0) / max_i)

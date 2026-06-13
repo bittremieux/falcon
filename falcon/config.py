@@ -97,9 +97,9 @@ class Config:
             "--linkage",
             type=str,
             default="complete",
+            choices=["single", "complete", "average"],
             help="Linkage criterion for hierarchical clustering "
-            "(default: %(default)s). Should be one of "
-            "'single', 'complete', 'average'.",
+            "(default: %(default)s).",
         )
         self._parser.add_argument(
             "--distance_threshold",
@@ -117,10 +117,49 @@ class Config:
             "(default: %(default)s). Typically 6 for metabolomics data.",
         )
         self._parser.add_argument(
+            "--consensus_method",
+            type=str,
+            default="medoid",
+            choices=["medoid", "average"],
+            help="Method to use for consensus spectrum computation "
+            "(default: %(default)s).",
+        )
+        self._parser.add_argument(
+            "--outlier_cutoff_lower",
+            type=float,
+            default=1.5,
+            help="Number of standard deviations below the median for outlier rejection "
+            "(default: %(default)s). Only used when consensus_method='average'.",
+        )
+        self._parser.add_argument(
+            "--outlier_cutoff_upper",
+            type=float,
+            default=1.5,
+            help="Number of standard deviations above the median for outlier rejection "
+            "(default: %(default)s). Only used when consensus_method='average'.",
+        )
+        self._parser.add_argument(
             "--batch_size",
             type=int,
             default=2**15,
             help="Batch size for clustering (default: %(default)s).",
+        )
+        self._parser.add_argument(
+            "--precursor_charge_buckets",
+            nargs="+",
+            default=None,
+            metavar="BUCKET",
+            help=(
+                "Charge buckets for precursor charges. Clustering will be "
+                "performed separately within each bucket. If not specified, "
+                "every distinct precursor charge is caught and "
+                "clustered separately, including spectra with a missing "
+                "charge. To group charges instead, pass one bucket per "
+                "argument, e.g. '[1]' '[2]' '[3]' '[4]' '[unknown]' 'other' "
+                "(each bucket is a list of charges; 'unknown' matches missing "
+                "charges and 'other' catches any charge not in a named "
+                "bucket)."
+            ),
         )
 
         # PREPROCESSING
@@ -199,6 +238,122 @@ class Config:
         self._namespace["precursor_tol"][0] = float(
             self._namespace["precursor_tol"][0]
         )
+
+        # When no buckets are specified, leave the value as None so that each
+        # distinct charge (including missing charges) is clustered separately.
+        if self._namespace["precursor_charge_buckets"] is not None:
+            self._namespace["precursor_charge_buckets"] = (
+                self.parse_and_validate_charge_buckets(
+                    self._namespace["precursor_charge_buckets"]
+                )
+            )
+
+        self._validate()
+
+    def _validate(self) -> None:
+        """
+        Validate parsed settings that argparse cannot check on its own.
+
+        Reports problems via ``argparse`` (a usage message and exit), matching
+        how invalid ``choices`` are reported, so bad values fail fast at startup
+        instead of deep inside the pipeline.
+        """
+        ns = self._namespace
+        mode = ns["precursor_tol"][1]
+        if mode not in ("ppm", "Da"):
+            self._parser.error(
+                f'--precursor_tol mode must be "ppm" or "Da", got "{mode}"'
+            )
+        if ns["distance_threshold"] <= 0:
+            self._parser.error(
+                "--distance_threshold must be positive, got "
+                f"{ns['distance_threshold']}"
+            )
+        if ns["batch_size"] < 1:
+            self._parser.error(
+                "--batch_size must be a positive integer, got "
+                f"{ns['batch_size']}"
+            )
+
+    def parse_and_validate_charge_buckets(self, bucket_args):
+        """
+        Parse and validate the precursor charge buckets.
+
+        Parameters
+        ----------
+        bucket_args : list of str
+            List of charge bucket specifications as strings.
+
+        Returns
+        -------
+        List of charge buckets, where each bucket is either a set of
+        integers (charges) or the string "other".
+        """
+        buckets = []
+        seen_values = set()
+
+        for raw in bucket_args:
+            raw = raw.strip()
+
+            if raw == "other":
+                buckets.append("other")
+                continue
+
+            values = self._parse_charge_bucket(raw)
+
+            # Check for duplicates across buckets.
+            overlap = values & seen_values
+            if overlap:
+                self._parser.error(
+                    f"Charge value(s) "
+                    f"{sorted(overlap, key=lambda x: (isinstance(x, str), x))} "
+                    f"appear in more than one bucket"
+                )
+
+            seen_values |= values
+            buckets.append(values)
+
+        return buckets
+
+    def _parse_charge_bucket(self, raw):
+        """
+        Parse a single charge bucket specification into a set of values.
+
+        Accepts a (optionally bracketed) comma-separated list of integer charges
+        and/or the ``unknown`` sentinel, e.g. ``[1]``, ``[2, 3]``, ``[unknown]``
+        or ``[1, unknown]``.
+
+        Parameters
+        ----------
+        raw : str
+            The bucket specification.
+
+        Returns
+        -------
+        set
+            The charges (``int``) and/or ``"unknown"`` in the bucket.
+        """
+        inner = raw
+        if inner.startswith("[") and inner.endswith("]"):
+            inner = inner[1:-1]
+        values = set()
+        for token in inner.split(","):
+            token = token.strip()
+            if not token:
+                continue
+            if token == "unknown":
+                values.add("unknown")
+            else:
+                try:
+                    values.add(int(token))
+                except ValueError:
+                    self._parser.error(
+                        f"Invalid charge bucket value '{token}' in '{raw}' "
+                        f"(expected integers and/or 'unknown')"
+                    )
+        if not values:
+            self._parser.error(f"Empty charge bucket: '{raw}'")
+        return values
 
     def __getattr__(self, option):
         if self._namespace is None:

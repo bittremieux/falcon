@@ -1,4 +1,3 @@
-import collections
 import math
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -8,20 +7,6 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as ss
 import spectrum_utils.spectrum as sus
-
-
-MsmsSpectrumNb = collections.namedtuple(
-    "MsmsSpectrumNb",
-    [
-        "filename",
-        "identifier",
-        "precursor_mz",
-        "precursor_charge",
-        "retention_time",
-        "mz",
-        "intensity",
-    ],
-)
 
 
 @nb.njit(cache=True)
@@ -165,7 +150,6 @@ def process_spectrum(
         "mz": spectrum.mz,
         "intensity": intensity,
         "retention_time": spectrum.retention_time,
-        "filename": spectrum.filename,
     }
 
 
@@ -197,126 +181,3 @@ def get_dim(
     start_dim = min_mz - min_mz % bin_size
     end_dim = max_mz + bin_size - max_mz % bin_size
     return math.ceil((end_dim - start_dim) / bin_size), start_dim, end_dim
-
-
-def to_vector(
-    spectra: List[Dict],
-    transformation: ss.csr_matrix,
-    min_mz: float,
-    bin_size: float,
-    dim: int,
-    norm: bool,
-) -> np.ndarray:
-    """
-    Convert spectra to dense NumPy vectors.
-
-    Peaks are first discretized to mass bins of width `bin_size` starting from
-    `min_mz`, after which they are transformed using sparse random projections.
-
-    Parameters
-    ----------
-    spectra : List[Dict]
-        The spectra to be converted to vectors.
-    transformation : ss.csr_matrix
-        Sparse random projection transformation to convert sparse spectrum
-        vectors to low-dimensional dense vectors.
-    min_mz : float
-        The minimum m/z to include in the vectors.
-    bin_size : float
-        The bin size in m/z used to divide the m/z range.
-    dim : int
-        The high-resolution vector dimensionality.
-    norm : bool
-        Normalize the vector to unit length or not.
-
-    Returns
-    -------
-    np.ndarray
-        The low-dimensional transformed spectrum vectors.
-    """
-    mzs = [spec["mz"] for spec in spectra]
-    intensities = [spec["intensity"] for spec in spectra]
-    data, indices, indptr = _to_vector(mzs, intensities, min_mz, bin_size)
-    vectors = ss.csr_matrix(
-        (data, indices, indptr), (len(spectra), dim), np.float32, False
-    )
-    vectors_transformed = (vectors @ transformation).toarray()
-    if norm:
-        # Normalize the vectors for inner product search.
-        faiss.normalize_L2(vectors_transformed)
-    return vectors_transformed
-
-
-@nb.njit(cache=True)
-def _to_vector(
-    mzs: List[np.ndarray],
-    intensities: List[np.ndarray],
-    min_mz: float,
-    bin_size: float,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Convert spectra to a binned sparse vectors.
-
-    Peaks are discretized to mass bins of width `bin_size` starting from
-    `min_mz`.
-
-    Parameters
-    ----------
-    mzs : List[np.ndarray]
-        mz values of the peaks in the spectra.
-    intensities : List[np.ndarray]
-        Intensities of the peaks in the spectra.
-    min_mz : float
-        The minimum m/z to include in the vectors.
-    bin_size : float
-        The bin size in m/z used to divide the m/z range.
-
-    Returns
-    -------
-    Tuple[np.ndarray, np.ndarray, np.ndarray]
-        A SciPy CSR matrix represented by its `data`, `indices`, and `indptr`
-        elements.
-    """
-    n_spectra = len(mzs)
-    n_peaks = 0
-    for mz in mzs:
-        n_peaks += len(mz)
-    data = np.zeros(n_peaks, np.float32)
-    indices = np.zeros(n_peaks, np.int32)
-    indptr = np.zeros(n_spectra + 1, np.int32)
-    i, j = 0, 1
-    for mz, intensity in zip(mzs, intensities):
-        n_peaks_spectra = len(mz)
-        data[i : i + n_peaks_spectra] = intensity
-        mz = [math.floor((mz - min_mz) / bin_size) for mz in mz]
-        indices[i : i + n_peaks_spectra] = mz
-        indptr[j] = indptr[j - 1] + n_peaks_spectra
-        i += n_peaks_spectra
-        j += 1
-    return data, indices, indptr
-
-
-def df_row_to_spec(row: pd.Series) -> MsmsSpectrumNb:
-    """
-    Convert a row from a DataFrame to a `MsmsSpectrum`.
-
-    Parameters
-    ----------
-    row : pd.Series
-        A row from a DataFrame containing the spectrum metadata.
-
-    Returns
-    -------
-    MsmsSpectrumNb
-        The spectrum object.
-    """
-    spectrum = MsmsSpectrumNb(
-        row["filename"],
-        row["identifier"],
-        row["precursor_mz"],
-        row["precursor_charge"],
-        row["retention_time"],
-        row["mz"],
-        row["intensity"],
-    )
-    return spectrum

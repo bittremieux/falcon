@@ -6,7 +6,7 @@ import spectrum_utils.spectrum as sus
 from lxml.etree import LxmlError
 
 from ..config import config
-
+from . import reader_utils
 
 logger = logging.getLogger("falcon")
 
@@ -27,13 +27,19 @@ def get_spectra(source: Union[IO, str]) -> Iterable[sus.MsmsSpectrum]:
         An iterator over the spectra in the given file.
     """
     with pyteomics.mzxml.MzXML(source) as f_in:
+        filename = reader_utils.base_filename(source, f_in)
         try:
             for spectrum_dict in f_in:
                 if int(spectrum_dict.get("msLevel", -1)) > 1:
+                    # USI-inspired cluster identifier.
+                    scan_nr = int(spectrum_dict["id"])
+                    spectrum_dict["id"] = f"{filename}:scan:{scan_nr}"
                     try:
                         yield _parse_spectrum(spectrum_dict)
-                    except (ValueError, KeyError):
-                        pass
+                    except (ValueError, KeyError) as e:
+                        reader_utils.log_skipped_spectrum(
+                            source, spectrum_dict["id"], e
+                        )
         except LxmlError as e:
             logger.warning("Failed to read file %s: %s", source, e)
 
@@ -55,11 +61,13 @@ def _parse_spectrum(spectrum_dict: Dict) -> sus.MsmsSpectrum:
     spectrum_id = spectrum_dict["id"]
     mz_array = spectrum_dict["m/z array"]
     intensity_array = spectrum_dict["intensity array"]
-    retention_time = spectrum_dict.get("retentionTime", -1)
+    retention_time = spectrum_dict.get("retentionTime", float("nan"))
 
     precursor_mz = spectrum_dict["precursorMz"][0]["precursorMz"]
     if "precursorCharge" in spectrum_dict["precursorMz"][0]:
-        precursor_charge = spectrum_dict["precursorMz"][0]["precursorCharge"]
+        precursor_charge = int(
+            spectrum_dict["precursorMz"][0]["precursorCharge"]
+        )
     else:
         precursor_charge = None
 
